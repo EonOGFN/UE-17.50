@@ -217,8 +217,8 @@ void FHairCardsVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryS
 
 void FHairCardsVertexFactory::ValidateCompiledResult(const FVertexFactoryType* Type, EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors)
 {
-#if VF_CARDS_SUPPORT_GPU_SCENE
-	if (Type->SupportsPrimitiveIdStream() 
+	if (VF_CARDS_SUPPORT_GPU_SCENE
+		&& Type->SupportsPrimitiveIdStream() 
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform)) 
 		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
 	{

@@ -1762,15 +1762,12 @@ bool UGroomAsset::BuildCardsGeometry(uint32 GroupIndex)
 			{
 				// Reload/Update texture resources when the groom asset is saved, so that the textures 
 				// content is up to date with what has been saved.
-				if (IsInGameThread())
-				{
-					FHairGroupCardsTextures& Textures = HairGroupsCards[SourceIt].Textures;
-					if (Textures.DepthTexture != nullptr)		Textures.DepthTexture->UpdateResource();
-					if (Textures.TangentTexture != nullptr)		Textures.TangentTexture->UpdateResource();
-					if (Textures.AttributeTexture != nullptr)	Textures.AttributeTexture->UpdateResource();
-					if (Textures.CoverageTexture != nullptr)	Textures.CoverageTexture->UpdateResource();
-					if (Textures.AuxilaryDataTexture != nullptr)Textures.AuxilaryDataTexture->UpdateResource();
-				}
+				FHairGroupCardsTextures& Textures = HairGroupsCards[SourceIt].Textures;
+				if (Textures.DepthTexture != nullptr)		Textures.DepthTexture->UpdateResource();
+				if (Textures.TangentTexture != nullptr)		Textures.TangentTexture->UpdateResource();
+				if (Textures.AttributeTexture != nullptr)	Textures.AttributeTexture->UpdateResource();
+				if (Textures.CoverageTexture != nullptr)	Textures.CoverageTexture->UpdateResource();
+				if (Textures.AuxilaryDataTexture != nullptr)Textures.AuxilaryDataTexture->UpdateResource();
 			}
 		}
 	}
@@ -2077,15 +2074,12 @@ bool UGroomAsset::BuildMeshesGeometry(uint32 GroupIndex)
 			{
 				// Reload/Update texture resources when the groom asset is saved, so that the textures 
 				// content is up to date with what has been saved.
-				if (IsInGameThread())
-				{
-					FHairGroupCardsTextures& Textures = HairGroupsMeshes[SourceIt].Textures;
-					if (Textures.DepthTexture != nullptr)		Textures.DepthTexture->UpdateResource();
-					if (Textures.TangentTexture != nullptr)		Textures.TangentTexture->UpdateResource();
-					if (Textures.AttributeTexture != nullptr)	Textures.AttributeTexture->UpdateResource();
-					if (Textures.CoverageTexture != nullptr)	Textures.CoverageTexture->UpdateResource();
-					if (Textures.AuxilaryDataTexture != nullptr)Textures.AuxilaryDataTexture->UpdateResource();
-				}
+				FHairGroupCardsTextures& Textures = HairGroupsMeshes[SourceIt].Textures;
+				if (Textures.DepthTexture != nullptr)		Textures.DepthTexture->UpdateResource();
+				if (Textures.TangentTexture != nullptr)		Textures.TangentTexture->UpdateResource();
+				if (Textures.AttributeTexture != nullptr)	Textures.AttributeTexture->UpdateResource();
+				if (Textures.CoverageTexture != nullptr)	Textures.CoverageTexture->UpdateResource();
+				if (Textures.AuxilaryDataTexture != nullptr)Textures.AuxilaryDataTexture->UpdateResource();
 			}
 		}
 	}
