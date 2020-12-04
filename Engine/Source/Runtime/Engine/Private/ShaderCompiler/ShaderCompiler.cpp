@@ -4997,7 +4997,7 @@ FString SaveGlobalShaderFile(EShaderPlatform Platform, FString SavePath, class I
 	}
 
 #if WITH_EDITOR
-	if (FShaderCodeLibrary::NeedsShaderStableKeys(Platform))
+	if (FShaderLibraryCooker::NeedsShaderStableKeys(Platform))
 	{
 		GlobalShaderMap->SaveShaderStableKeys(Platform);
 	}
