@@ -197,7 +197,6 @@ FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,
 	bShouldRenderCustomDepth = false;
 	bRequiresPixelProjectedPlanarRelfectionPass = false;
 	bRequriesAmbientOcclusionPass = false;
-	bRequiresDistanceFieldShadowingPass = false;
 
 	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
 	NumMSAASamples = (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() : 1);
@@ -346,18 +345,6 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 		// Only support forward shading, we don't want to break tiled deferred shading.
 		&& !bDeferredShading;
 
-	bRequiresDistanceField = IsMobileDistanceFieldEnabled(ShaderPlatform)
-		&& ViewFamily.EngineShowFlags.Lighting
-		&& !Views[0].bIsReflectionCapture
-		&& !Views[0].bIsPlanarReflection
-		&& !ViewFamily.EngineShowFlags.HitProxies
-		&& !ViewFamily.EngineShowFlags.VisualizeLightCulling
-		&& !ViewFamily.UseDebugViewPS()
-		&& !bDeferredShading;
-
-	bRequiresDistanceFieldShadowingPass = bRequiresDistanceField && IsMobileDistanceFieldShadowingEnabled(ShaderPlatform);
-		
-
 	// Whether we need to store depth for post-processing
 	// On PowerVR we see flickering of shadows and depths not updating correctly if targets are discarded.
 	// See CVarMobileForceDepthResolve use in ConditionalResolveSceneDepth.
@@ -369,7 +356,6 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 		bRequiresMultiPass || 
 		bForceDepthResolve ||
 		bRequriesAmbientOcclusionPass ||
-		bRequiresDistanceFieldShadowingPass ||
 		bRequiresPixelProjectedPlanarRelfectionPass ||
 		bSeparateTranslucencyActive ||
 		Views[0].bIsReflectionCapture ||
@@ -420,15 +406,6 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	else
 	{
 		ReleaseAmbientOcclusionOutputs();
-	}
-
-	if(bRequiresDistanceFieldShadowingPass)
-	{
-		InitSDFShadowingOutputs(RHICmdList, SceneContext.SceneDepthZ);
-	}
-	else
-	{
-		ReleaseSDFShadowingOutputs();
 	}
 
 	//make sure all the targets we're going to use will be safely writable.
@@ -513,11 +490,6 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		UploadDynamicPrimitiveShaderDataForView(RHICmdList, *Scene, Views[ViewIndex]);
-	}
-
-	if (bRequiresDistanceField)
-	{
-		PrepareDistanceFieldScene(RHICmdList, false);
 	}
 
 	extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
@@ -731,12 +703,6 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	if (!bGammaSpace || bRenderToSceneColor)
 	{
 		RHICmdList.Transition(FRHITransitionInfo(SceneColor, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-	}
-
-	if (bRequiresDistanceFieldShadowingPass)
-	{
-		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderSDFShadowing);
-		RenderSDFShadowing(RHICmdList);
 	}
 
 	if (bRequriesAmbientOcclusionPass)
