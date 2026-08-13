@@ -1,0 +1,142 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../Montecarlo.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../SceneTextureParameters.ush"
+#include "../PathTracing/Utilities/PathTracingRandomSequence.ush"
+#include "RayTracingCommon.ush"
+#include "RayTracingDeferredShadingCommon.ush"
+
+uint SamplesPerPixel;
+float MaxRayDistance;
+float Intensity;
+float MaxNormalBias;
+RaytracingAccelerationStructure TLAS;
+RWTexture2D<float> RWOcclusionMaskUAV;
+RWTexture2D<float> RWHitDistanceUAV;
+
+
+void GenerateCosineNormalRay(
+	float3 WorldPosition,
+	float3 WorldNormal,
+	inout RandomSequence RandSequence,
+	out float3 RayOrigin,
+	out float3 RayDirection,
+	out float RayTMin,
+	out float RayTMax
+)
+{
+	// Draw random variable
+	float2 BufferSize = View.BufferSizeAndInvSize.xy;
+	uint DummyVariable;
+	float2 RandSample = RandomSequence_GenerateSample2D(RandSequence, DummyVariable);
+
+	// Perform cosine-hemispherical sampling and convert to world-space
+	float4 Direction_Tangent = CosineSampleHemisphere(RandSample);
+	float3 Direction_World = TangentToWorld(Direction_Tangent.xyz, WorldNormal);
+
+	RayOrigin = WorldPosition;
+	RayDirection = Direction_World;
+	RayTMin = 0.0;
+	RayTMax = MaxRayDistance;
+}
+
+RAY_TRACING_ENTRY_RAYGEN(AmbientOcclusionRGS)
+{
+	uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin;
+
+	RandomSequence RandSequence;
+	uint LinearIndex = CalcLinearIndex(PixelCoord);
+	RandomSequence_Initialize(RandSequence, LinearIndex, View.StateFrameIndex);
+
+	// Get G-Buffer surface data
+	float2 InvBufferSize = View.BufferSizeAndInvSize.zw;
+	float2 UV = (float2(PixelCoord) + 0.5) * InvBufferSize;
+
+#if 0
+	FGBufferData GBufferData = GetGBufferDataFromSceneTextures(UV);
+#else
+	//#dxr-todo: workaround for flickering. UE-87281
+	FGBufferData GBufferData = GetGBufferDataFromSceneTexturesLoad(PixelCoord);
+#endif
+
+	float Depth = GBufferData.Depth;
+	float DeviceZ = SceneDepthBuffer.Load(int3(PixelCoord, 0)).r;
+	float3 WorldPosition = ReconstructWorldPositionFromDeviceZ(PixelCoord, DeviceZ);
+	float3 WorldNormal = GBufferData.WorldNormal;
+
+	float RayCount = 0.0;
+	float Visibility = 0.0;
+	float ClosestRayHitDistance = INFINITE_FLOAT;
+	// Declaring intensity as a local variable is a workaround for a shader compiler bug with NV drivers 430.39 and 430.64.
+	const float IntensityLocal = Intensity;
+	uint SamplesPerPixelLocal = SamplesPerPixel;
+	
+	// Mask out depth values beyond far plane
+	bool IsFiniteDepth = DeviceZ > 0.0;
+	bool bTraceRay = (IsFiniteDepth && GBufferData.ShadingModelID != SHADINGMODELID_UNLIT);
+	if (!bTraceRay)
+	{
+		Visibility = 1.0;
+		RayCount = SamplesPerPixel;
+		SamplesPerPixelLocal = 0.0;
+	}
+
+	for (uint SampleIndex = 0; SampleIndex < SamplesPerPixelLocal; ++SampleIndex)
+	{
+		RayDesc Ray;
+		GenerateCosineNormalRay(WorldPosition, WorldNormal, RandSequence, Ray.Origin, Ray.Direction, Ray.TMin, Ray.TMax);
+		ApplyCameraRelativeDepthBias(Ray, PixelCoord, DeviceZ, WorldNormal, MaxNormalBias);
+
+		if (dot(WorldNormal, Ray.Direction) <= 0.0) // TODO(Denoiser): does it needs to be handled by the denoiser?
+			continue;
+
+		uint RayFlags = 0;
+		const uint InstanceInclusionMask = RAY_TRACING_MASK_SHADOW | RAY_TRACING_MASK_THIN_SHADOW;
+
+#if !ENABLE_MATERIALS
+		RayFlags |= RAY_FLAG_FORCE_OPAQUE;
+#endif
+#if !ENABLE_TWO_SIDED_GEOMETRY
+		RayFlags |= RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+#endif
+
+		FMinimalPayload MinimalPayload = TraceVisibilityRay(
+			TLAS,
+			RayFlags,
+			InstanceInclusionMask,
+			Ray);
+
+		RayCount += 1;
+		Visibility += MinimalPayload.IsMiss() ? 1.0 : 1.0 - IntensityLocal;
+		if (MinimalPayload.IsHit())
+		{
+			ClosestRayHitDistance = min(ClosestRayHitDistance, MinimalPayload.HitT);
+		}
+	}
+
+	// Output.
+	{
+		float2 RawOutput = 1;
+
+		if (SamplesPerPixelLocal == 0)
+		{
+			RawOutput.x = 1;
+			RawOutput.y = -2;
+		}
+		else if (RayCount == 0)
+		{
+			RawOutput.x = 1;
+			RawOutput.y = -1;
+		}
+		else
+		{
+			RawOutput.x = Visibility / RayCount;
+			RawOutput.y = ClosestRayHitDistance;
+		}
+
+		RWOcclusionMaskUAV[PixelCoord] = RawOutput.x;
+		RWHitDistanceUAV[PixelCoord] = RawOutput.y;
+	}
+}

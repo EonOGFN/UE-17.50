@@ -1,0 +1,64 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"
+#include "MovieSceneNameableTrack.h"
+#include "Compilation/IMovieSceneTrackTemplateProducer.h"
+#include "MovieSceneSkeletalAnimationTrack.generated.h"
+
+/**
+ * Handles animation of skeletal mesh actors
+ */
+UCLASS(MinimalAPI)
+class UMovieSceneSkeletalAnimationTrack
+	: public UMovieSceneNameableTrack
+	, public IMovieSceneTrackTemplateProducer
+{
+	GENERATED_UCLASS_BODY()
+
+public:
+
+	/** Adds a new animation to this track */
+	MOVIESCENETRACKS_API virtual UMovieSceneSection* AddNewAnimationOnRow(FFrameNumber KeyTime, class UAnimSequenceBase* AnimSequence, int32 RowIndex);
+
+	/** Adds a new animation to this track on the next available/non-overlapping row */
+	MOVIESCENETRACKS_API virtual UMovieSceneSection* AddNewAnimation(FFrameNumber KeyTime, class UAnimSequenceBase* AnimSequence) { return AddNewAnimationOnRow(KeyTime, AnimSequence, INDEX_NONE); }
+
+	/** Gets the animation sections at a certain time */
+	MOVIESCENETRACKS_API TArray<UMovieSceneSection*> GetAnimSectionsAtTime(FFrameNumber Time);
+
+public:
+
+	// UMovieSceneTrack interface
+
+	virtual void PostLoad() override;
+	virtual void RemoveAllAnimationData() override;
+	virtual bool HasSection(const UMovieSceneSection& Section) const override;
+	virtual void AddSection(UMovieSceneSection& Section) override;
+	virtual void RemoveSection(UMovieSceneSection& Section) override;
+	virtual void RemoveSectionAt(int32 SectionIndex) override;
+	virtual bool IsEmpty() const override;
+	virtual const TArray<UMovieSceneSection*>& GetAllSections() const override;
+	virtual bool SupportsType(TSubclassOf<UMovieSceneSection> SectionClass) const override;
+	virtual UMovieSceneSection* CreateNewSection() override;
+	virtual bool PopulateEvaluationTree(TMovieSceneEvaluationTree<FMovieSceneTrackEvaluationData>& OutData) const override;
+	virtual bool SupportsMultipleRows() const override;
+
+	// ~IMovieSceneTrackTemplateProducer interface
+	virtual FMovieSceneEvalTemplatePtr CreateTemplateForSection(const UMovieSceneSection& InSection) const override;
+
+#if WITH_EDITORONLY_DATA
+	virtual FText GetDefaultDisplayName() const override;
+#endif
+
+private:
+
+	/** List of all animation sections */
+	UPROPERTY()
+	TArray<UMovieSceneSection*> AnimationSections;
+
+	UPROPERTY()
+	bool bUseLegacySectionIndexBlend;
+};

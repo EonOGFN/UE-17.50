@@ -1,0 +1,74 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "NiagaraMergeable.h"
+#include "NiagaraCommon.h"
+#include "NiagaraTypes.h"
+#include "NiagaraSimulationStageBase.generated.h"
+
+class UNiagaraScript;
+
+/**
+* A base class for niagara simulation stages.  This class should be derived to add stage specific information.
+*/
+UCLASS()
+class NIAGARA_API UNiagaraSimulationStageBase : public UNiagaraMergeable
+{
+	GENERATED_BODY()
+
+public:
+	UNiagaraSimulationStageBase()
+	{
+		bEnabled = true;
+	}
+
+	UPROPERTY()
+	UNiagaraScript* Script;
+
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
+	FName SimulationStageName;
+
+	UPROPERTY()
+	uint32 bEnabled : 1;
+
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
+#if WITH_EDITOR
+	void SetEnabled(bool bEnabled);
+	void RequestRecompile();
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+};
+
+UCLASS(meta = (DisplayName = "Generic Simulation Stage"))
+class NIAGARA_API UNiagaraSimulationStageGeneric : public UNiagaraSimulationStageBase
+{
+	GENERATED_BODY()
+
+public:
+	UNiagaraSimulationStageGeneric()
+		: Iterations(1)
+	{
+	}
+
+	/** Determine which elements this script is iterating over. You are not allowed to */
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
+	ENiagaraIterationSource IterationSource;
+
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
+	int32 Iterations;
+
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "Emitter Reset Only", Tooltip = "When enabled the stage will only run on the first tick after the emitter is reset, only valid for data interface iteration stages", EditCondition = "IterationSource == ENiagaraIterationSource::DataInterface"))
+	uint32 bSpawnOnly : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "Partial Particle Update", Tooltip = "When enabled we will not output all particle variables to improve performance where possible.  This option is hazardous if you are reading data from other particles.", EditCondition = "IterationSource == ENiagaraIterationSource::Particles"))
+	uint32 bPartialParticleUpdate : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "IterationSource == ENiagaraIterationSource::DataInterface"))
+	FNiagaraVariableDataInterfaceBinding DataInterface;
+
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+};

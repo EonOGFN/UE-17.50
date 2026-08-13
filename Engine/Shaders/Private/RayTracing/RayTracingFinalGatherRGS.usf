@@ -1,0 +1,186 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../RectLight.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../ShadingModels.ush"
+#include "../SceneTextureParameters.ush"
+
+#include "RayTracingCommon.ush"
+#include "RayTracingDeferredShadingCommon.ush"
+#include "RayTracingHitGroupCommon.ush"
+#include "RayTracingGatherPoints.ush"
+
+#include "../PathTracing/Light/PathTracingLightSampling.ush"
+#include "../PathTracing/Material/PathTracingMaterialSampling.ush"
+
+#include "../QuasiRandom.ush"
+
+#define USE_PATHTRACING_MATERIALS 0
+
+uint SampleIndex;
+uint SamplesPerPixel;
+uint UpscaleFactor;
+uint RenderTileOffsetX;
+uint RenderTileOffsetY;
+float DiffuseThreshold;
+float MaxNormalBias;
+float FinalGatherDistance;
+
+RaytracingAccelerationStructure TLAS;
+
+int2 GatherPointsResolution;
+StructuredBuffer<FGatherPoints> GatherPointsBuffer;
+
+RWTexture2D<float4> RWGlobalIlluminationUAV;
+RWTexture2D<float> RWRayDistanceUAV;
+
+uint DispatchThreadIdToLinearIndex(uint2 DispatchThreadId)
+{
+	return DispatchThreadId.y * GatherPointsResolution.x + DispatchThreadId.x;
+}
+
+RAY_TRACING_ENTRY_RAYGEN(RayTracingFinalGatherRGS)
+{
+	uint2 DispatchThreadId = DispatchRaysIndex().xy + View.ViewRectMin + uint2(RenderTileOffsetX, RenderTileOffsetY);
+	RWGlobalIlluminationUAV[DispatchThreadId] = 0.0;
+	RWRayDistanceUAV[DispatchThreadId] = float2(-1.0, 0.0);
+
+	// Get G-Buffer surface data
+	uint2 PixelCoord = GetPixelCoord(DispatchThreadId, UpscaleFactor);
+	float2 InvBufferSize = View.BufferSizeAndInvSize.zw;
+	float2 UV = (float2(PixelCoord) + 0.5) * InvBufferSize;
+
+#if 0
+	FGBufferData GBufferData = GetGBufferDataFromSceneTextures(UV);
+#else
+	//#dxr-todo: workaround for flickering. UE-87281
+	FGBufferData GBufferData = GetGBufferDataFromSceneTexturesLoad(PixelCoord);
+#endif
+
+	// Remap DiffuseColor when using SubsurfaceProfile (GBuffer decoding replaces with 100% albedo)
+	if (UseSubsurfaceProfile(GBufferData.ShadingModelID))
+	{
+		GBufferData.DiffuseColor = GBufferData.StoredBaseColor;
+	}
+
+	// Cull based on shading model
+	uint ShadingModelID = GBufferData.ShadingModelID;
+	if (ShadingModelID == SHADINGMODELID_UNLIT)
+	{
+		return;
+	}
+
+	// Remap DiffuseColor when using SubsurfaceProfile (GBuffer decoding replaces with 100% albedo)
+	if (UseSubsurfaceProfile(GBufferData.ShadingModelID))
+	{
+		GBufferData.DiffuseColor = GBufferData.StoredBaseColor;
+	}
+	float3 DiffuseColor = GBufferData.DiffuseColor;
+	if (Luminance(DiffuseColor) < DiffuseThreshold)
+	{
+		return;
+	}
+
+	// Construct position, normal, and view direction
+	float DeviceZ = SceneDepthBuffer.Load(int3(PixelCoord, 0)).r;
+	float3 WorldPosition;
+	float3 CameraDirection;
+	ReconstructWorldPositionAndCameraDirectionFromDeviceZ(PixelCoord, DeviceZ, WorldPosition, CameraDirection);
+	float3 WorldNormal = GBufferData.WorldNormal;
+
+	uint GatherPointsIndex = DispatchThreadIdToLinearIndex(DispatchThreadId);
+
+	// Define rejection criteria and evaluate
+	bool bShouldReject[MAXIMUM_GATHER_POINTS_PER_PIXEL];
+
+	// Create ray differential based on rejection distance (in pixels)
+	UV = (float2(PixelCoord) + 0.5 + float2(0.0, FinalGatherDistance * UpscaleFactor)) * InvBufferSize;
+	RayDesc Ray = CreatePrimaryRay(UV);
+
+	// Intersect ray differential with normal to find world-space distance
+	float d = -dot(WorldNormal, WorldPosition);
+	float T = -(d + dot(WorldNormal, Ray.Origin)) / dot(WorldNormal, Ray.Direction);
+	float3 WorldDeltaPosition = Ray.Origin + T * Ray.Direction;
+	float RejectionDistance = length(WorldDeltaPosition - WorldPosition);
+
+	FRejectionCriteria RejectionCriteria = CreateRejectionCriteria(WorldPosition, RejectionDistance);
+	CreateRejectionMask(RejectionCriteria, GatherPointsBuffer, GatherPointsIndex, 0, GatherPointsResolution.x * GatherPointsResolution.y, SamplesPerPixel, bShouldReject);
+
+	float3 ExitantRadiance = 0.0;
+	float HitDistance = 1.0e7;
+	float HitCount = 0.0;
+	uint ValidSamplesPerPixel = 0;
+	for (uint LocalSampleIndex = 0; LocalSampleIndex < SamplesPerPixel; ++LocalSampleIndex)
+	{
+
+		if (bShouldReject[LocalSampleIndex])
+		{
+			continue;
+		}
+		ValidSamplesPerPixel++;
+
+		FGatherSample GatherSample = ReadGatherSample(GatherPointsBuffer, GatherPointsIndex, LocalSampleIndex, GatherPointsResolution.x * GatherPointsResolution.y);
+		float3 GPPosition = GatherSample.Position;
+		float3 GPIrradiance = GatherSample.Irradiance;
+
+		// Initialize throughput based on BRDF
+		half3 N = WorldNormal;
+		half3 V = -CameraDirection;
+		half3 L = normalize(GPPosition - WorldPosition);
+		float NoL = saturate(dot(N, L));
+		FShadowTerms ShadowTerms = { 0.0, 0.0, 0.0, InitHairTransmittanceData() };
+		FDirectLighting LightingSample = EvaluateBxDF(GBufferData, N, V, L, NoL, ShadowTerms);
+		float3 RayThroughput = LightingSample.Diffuse / DiffuseColor;
+		float RayPdf = NoL / PI;
+
+		// Create ray
+		RayDesc Ray;
+		Ray.Origin = WorldPosition;
+		Ray.Direction = normalize(GPPosition - WorldPosition);
+		Ray.TMin = 0.01;
+		float RayLength = length(GPPosition - WorldPosition);
+		Ray.TMax = max(RayLength - 0.01, Ray.TMin);
+
+		// Trace ray
+		uint RayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+		const uint InstanceInclusionMask = RAY_TRACING_MASK_OPAQUE;
+
+#if !ENABLE_TWO_SIDED_GEOMETRY
+		RayFlags |= RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+#endif
+
+		FMinimalPayload MinimalPayload = TraceVisibilityRay(
+			TLAS,
+			RayFlags,
+			InstanceInclusionMask,
+			Ray);
+
+		// No hit indicates successful next-event connection
+		if (MinimalPayload.IsMiss() && RayPdf > 0.0)
+		{
+			ExitantRadiance += GPIrradiance * RayThroughput / RayPdf;
+			HitDistance = min(HitDistance, Ray.TMax);
+			HitCount += 1.0;
+		}
+	}
+
+	float AmbientOcclusion = 0.0;
+	if (ValidSamplesPerPixel > 0)
+	{
+		ExitantRadiance /= ValidSamplesPerPixel;
+		AmbientOcclusion = HitCount / ValidSamplesPerPixel;
+	}
+#if USE_PREEXPOSURE
+	ExitantRadiance *= View.PreExposure;
+#endif
+	ExitantRadiance = ClampToHalfFloatRange(ExitantRadiance);
+
+	if (HitCount == 0.0)
+	{
+		HitDistance = -1.0;
+	}
+
+	RWGlobalIlluminationUAV[DispatchThreadId] = float4(ExitantRadiance, AmbientOcclusion);
+	RWRayDistanceUAV[DispatchThreadId] = float2(HitDistance, ValidSamplesPerPixel);
+}

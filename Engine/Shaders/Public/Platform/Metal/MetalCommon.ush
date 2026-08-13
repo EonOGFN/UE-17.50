@@ -1,0 +1,67 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	MetalCommon.usf: Common Metal shader code
+=============================================================================*/
+
+// Update this GUID to improve shader recompilation for Metal only shaders
+// GUID = E3AC9C39-C9CD-48C1-8F24-DEDF572A4871
+
+#pragma once
+
+#if VERTEXSHADER && HULLSHADER
+#ifndef TESSELLATIONSHADER
+#define TESSELLATIONSHADER 1
+#endif
+#endif
+
+#define STRONG_TYPE
+#define StrongTypedBuffer Buffer
+
+/* Too many bugs to enable wave-intrinsics just yet, but we are getting there.
+#if ((MAX_SHADER_LANGUAGE_VERSION >= 3 && COMPUTESHADER) || (MAX_SHADER_LANGUAGE_VERSION >= 4 && PIXELSHADER))
+#define COMPILER_SUPPORTS_WAVE_ONCE 1
+#define COMPILER_SUPPORTS_WAVE_VOTE 1
+#define COMPILER_SUPPORTS_WAVE_MINMAX 1
+#define COMPILER_SUPPORTS_WAVE_BIT_ORAND 1
+#endif
+*/
+
+#define COMPILER_SUPPORTS_MINMAX3 0
+
+#if IOS
+#if COMPILER_HLSLCC > 1
+
+// Determine dimension of color attachment SV_Target0 for subpass input
+#ifndef SUBPASS_COLOR0_ATTACHMENT_DIM
+#define SUBPASS_COLOR0_ATTACHMENT_DIM 4
+#endif
+
+#if SUBPASS_COLOR0_ATTACHMENT_DIM == 1
+	#define SUBPASS_COLOR0_ATTACHMENT_VEC float
+#elif SUBPASS_COLOR0_ATTACHMENT_DIM == 2
+	#define SUBPASS_COLOR0_ATTACHMENT_VEC float2
+#elif SUBPASS_COLOR0_ATTACHMENT_DIM == 3
+	#define SUBPASS_COLOR0_ATTACHMENT_VEC float3
+#else
+	#define SUBPASS_COLOR0_ATTACHMENT_VEC float4
+#endif
+
+#if PIXELSHADER
+	// The load operation here will be patched by the MetalShaderCompiler,
+	// do NOT change any character in the "FramebufferFetchES2" macro definition, including white spaces!
+ 	Texture2D<SUBPASS_COLOR0_ATTACHMENT_VEC> gl_LastFragData;
+	#define FramebufferFetchES2() gl_LastFragData.Load(uint3(0, 0, 0), 0)
+#else
+	#define FramebufferFetchES2() ((SUBPASS_COLOR0_ATTACHMENT_VEC)0)
+#endif // PIXELSHADER
+
+// Special case for fetching depth attachment
+#if SUBPASS_COLOR0_ATTACHMENT_DIM == 1
+	#define DepthbufferFetchES2() FramebufferFetchES2()
+#else
+	#define DepthbufferFetchES2() FramebufferFetchES2().w
+#endif
+
+#endif // COMPILER_HLSLCC > 1
+#endif // IOS

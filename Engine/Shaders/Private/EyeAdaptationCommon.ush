@@ -1,0 +1,27 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	EyeAdaptationCommon.usf: PostProcessing shared functions and structures.
+=============================================================================*/
+
+#pragma once
+
+
+// Single pixel RT used for EyeAdaptation, use function EyeAdaptationLookup() to access.
+Texture2D EyeAdaptation;
+Buffer<float4> EyeAdaptationBuffer;
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
+
+//Provides access to the EyeAdaptation RT. Only available in SM5.
+float EyeAdaptationLookup()
+{
+	// TODO: scalar load from structured buffer 
+	return EyeAdaptation.Load(int3(0, 0, 0)).x;
+}
+#else
+float EyeAdaptationLookup()
+{
+	return EyeAdaptationBuffer[0].x;
+}
+#endif
+

@@ -1,0 +1,60 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "VirtualCamera",
+	"Description": "",
+	"Category": "Virtual Production",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"EnabledByDefault": false,
+	"Modules":
+	[
+		{
+			"Name": "VirtualCamera",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "PostDefault",
+			"WhitelistPlatforms" :
+			[
+				"Win64",
+				"Win32",
+				"Linux",
+				"Mac"
+			]
+		},
+		{
+			"Name": "VirtualCameraEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins":
+	[
+		{
+			"Name": "MediaIOFramework",
+			"Enabled": true
+		},
+		{
+			"Name": "RemoteSession",
+			"Enabled": true
+		},
+		{
+			"Name": "LevelSequenceEditor",
+			"Enabled": true
+		},
+		{
+			"Name": "Takes",
+			"Enabled": true
+		},
+		{
+			"Name": "VirtualProductionUtilities",
+			"Enabled": true
+		}
+	]
+}

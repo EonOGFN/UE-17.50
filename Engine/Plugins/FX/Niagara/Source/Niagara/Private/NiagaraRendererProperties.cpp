@@ -1,0 +1,245 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#include "NiagaraRendererProperties.h"
+#include "NiagaraTypes.h"
+#include "NiagaraCommon.h"
+#include "NiagaraDataSet.h"
+#include "NiagaraConstants.h"
+#include "NiagaraEmitter.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Styling/SlateIconFinder.h"
+
+void FNiagaraRendererLayout::Initialize(int32 NumVariables)
+{
+	VFVariables_GT.Reset(NumVariables);
+	VFVariables_GT.AddDefaulted(NumVariables);
+	TotalFloatComponents_GT = 0;
+	TotalHalfComponents_GT = 0;
+}
+
+bool FNiagaraRendererLayout::SetVariable(const FNiagaraDataSetCompiledData* CompiledData, const FNiagaraVariable& Variable, int32 VFVarOffset)
+{
+	// No compiled data, nothing to bind
+	if (CompiledData == nullptr)
+	{
+		return false;
+	}
+
+	// use the DataSetVariable to figure out the information about the data that we'll be sending to the renderer
+	const int32 VariableIndex = CompiledData->Variables.IndexOfByPredicate(
+		[&](const FNiagaraVariable& InVariable)
+		{
+			return InVariable.GetName() == Variable.GetName();
+		}
+	);
+	if (VariableIndex == INDEX_NONE)
+	{
+		VFVariables_GT[VFVarOffset] = FNiagaraRendererVariableInfo();
+		return false;
+	}
+
+	const FNiagaraVariable& DataSetVariable = CompiledData->Variables[VariableIndex];
+	const FNiagaraTypeDefinition& VarType = DataSetVariable.GetType();
+
+	const bool bHalfVariable = VarType == FNiagaraTypeDefinition::GetHalfDef()
+		|| VarType == FNiagaraTypeDefinition::GetHalfVec2Def()
+		|| VarType == FNiagaraTypeDefinition::GetHalfVec3Def()
+		|| VarType == FNiagaraTypeDefinition::GetHalfVec4Def();
+
+
+	const FNiagaraVariableLayoutInfo& DataSetVariableLayout = CompiledData->VariableLayouts[VariableIndex];
+	const int32 VarSize = bHalfVariable ? sizeof(FFloat16) : sizeof(float);
+	const int32 NumComponents = DataSetVariable.GetSizeInBytes() / VarSize;
+	const int32 Offset = bHalfVariable ? DataSetVariableLayout.HalfComponentStart : DataSetVariableLayout.FloatComponentStart;
+	int32& TotalVFComponents = bHalfVariable ? TotalHalfComponents_GT : TotalFloatComponents_GT;
+
+	int32 GPULocation = INDEX_NONE;
+	bool bUpload = true;
+	if (Offset != INDEX_NONE)
+	{
+		if (FNiagaraRendererVariableInfo* ExistingVarInfo = VFVariables_GT.FindByPredicate([&](const FNiagaraRendererVariableInfo& VarInfo) { return VarInfo.DatasetOffset == Offset && VarInfo.bHalfType == bHalfVariable; }))
+		{
+			//Don't need to upload this var again if it's already been uploaded for another var info. Just point to that.
+			//E.g. when custom sorting uses age.
+			GPULocation = ExistingVarInfo->GPUBufferOffset;
+			bUpload = false;
+		}
+		else
+		{
+			//For CPU Sims we pack just the required data tightly in a GPU buffer we upload. For GPU sims the data is there already so we just provide the real data location.
+			GPULocation = CompiledData->SimTarget == ENiagaraSimTarget::CPUSim ? TotalVFComponents : Offset;
+			TotalVFComponents += NumComponents;
+		}
+	}
+
+	VFVariables_GT[VFVarOffset] = FNiagaraRendererVariableInfo(Offset, GPULocation, NumComponents, bUpload, bHalfVariable);
+
+	return Offset != INDEX_NONE;
+}
+
+
+bool FNiagaraRendererLayout::SetVariableFromBinding(const FNiagaraDataSetCompiledData* CompiledData, const FNiagaraVariableAttributeBinding& VariableBinding, int32 VFVarOffset)
+{
+	if (VariableBinding.IsParticleBinding())
+		return SetVariable(CompiledData, VariableBinding.GetDataSetBindableVariable(), VFVarOffset);
+	return false;
+}
+
+void FNiagaraRendererLayout::Finalize()
+{
+	ENQUEUE_RENDER_COMMAND(NiagaraFinalizeLayout)
+	(
+		[this, VFVariables=VFVariables_GT,TotalFloatComponents=TotalFloatComponents_GT, TotalHalfComponents=TotalHalfComponents_GT](FRHICommandListImmediate& RHICmdList) mutable
+		{
+			VFVariables_RT = MoveTemp(VFVariables);
+			TotalFloatComponents_RT = TotalFloatComponents;
+			TotalHalfComponents_RT = TotalHalfComponents;
+		}
+	);
+}
+
+#if WITH_EDITORONLY_DATA
+bool UNiagaraRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
+{
+	if (InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace))
+	{
+		return true;
+	}
+	return false;
+}
+
+const TArray<FNiagaraVariable>& UNiagaraRendererProperties::GetBoundAttributes()
+{
+	CurrentBoundAttributes.Reset();
+
+	for (const FNiagaraVariableAttributeBinding* AttributeBinding : AttributeBindings)
+	{
+		if (AttributeBinding->GetParamMapBindableVariable().IsValid())
+		{
+			CurrentBoundAttributes.Add(AttributeBinding->GetParamMapBindableVariable());
+		}
+		/*
+		else if (AttributeBinding->DataSetVariable.IsValid())
+		{
+			CurrentBoundAttributes.Add(AttributeBinding->DataSetVariable);
+		}
+		else
+		{
+			CurrentBoundAttributes.Add(AttributeBinding->DefaultValueIfNonExistent);
+		}*/
+	}
+
+	return CurrentBoundAttributes;
+}
+
+const FSlateBrush* UNiagaraRendererProperties::GetStackIcon() const
+{
+	return FSlateIconFinder::FindIconBrushForClass(GetClass());
+}
+
+FText UNiagaraRendererProperties::GetWidgetDisplayName() const
+{
+	return GetClass()->GetDisplayNameText();
+}
+
+#endif
+
+uint32 UNiagaraRendererProperties::ComputeMaxUsedComponents(const FNiagaraDataSetCompiledData* CompiledDataSetData) const
+{
+	enum BaseType
+	{
+		BaseType_Int,
+		BaseType_Float,
+		BaseType_Half,
+		BaseType_NUM
+	};
+
+	TArray<int32, TInlineAllocator<32>> SeenOffsets[BaseType_NUM];
+	uint32 NumComponents[BaseType_NUM] = { 0 };
+
+	auto AccumulateUniqueComponents = [&](BaseType Type, uint32 ComponentCount, int32 ComponentOffset)
+	{
+		if (!SeenOffsets[Type].Contains(ComponentOffset))
+		{
+			SeenOffsets[Type].Add(ComponentOffset);
+			NumComponents[Type] += ComponentCount;
+		}
+	};
+
+	for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
+	{
+		const FNiagaraVariable& Var = Binding->GetDataSetBindableVariable();
+
+		const int32 VariableIndex = CompiledDataSetData->Variables.IndexOfByKey(Var);
+		if ( VariableIndex != INDEX_NONE )
+		{
+			const FNiagaraVariableLayoutInfo& DataSetVarLayout = CompiledDataSetData->VariableLayouts[VariableIndex];
+
+			if (const uint32 FloatCount = DataSetVarLayout.GetNumFloatComponents())
+			{
+				AccumulateUniqueComponents(BaseType_Float, FloatCount, DataSetVarLayout.FloatComponentStart);
+			}
+
+			if (const uint32 IntCount = DataSetVarLayout.GetNumInt32Components())
+			{
+				AccumulateUniqueComponents(BaseType_Int, IntCount, DataSetVarLayout.Int32ComponentStart);
+			}
+
+			if (const uint32 HalfCount = DataSetVarLayout.GetNumHalfComponents())
+			{
+				AccumulateUniqueComponents(BaseType_Half, HalfCount, DataSetVarLayout.HalfComponentStart);
+			}
+		}
+	}
+
+	uint32 MaxNumComponents = 0;
+
+	for (uint32 ComponentCount : NumComponents)
+	{
+		MaxNumComponents = FMath::Max(MaxNumComponents, ComponentCount);
+	}
+
+	return MaxNumComponents;
+}
+
+bool UNiagaraRendererProperties::NeedsLoadForTargetPlatform(const class ITargetPlatform* TargetPlatform)const
+{
+	return bIsEnabled && Platforms.IsEnabledForPlatform(TargetPlatform->IniPlatformName());
+}
+
+void UNiagaraRendererProperties::PostLoadBindings(ENiagaraRendererSourceDataMode InSourceMode)
+{
+	
+	for (int32 i = 0; i < AttributeBindings.Num(); i++)
+	{
+		FNiagaraVariableAttributeBinding* Binding = const_cast<FNiagaraVariableAttributeBinding*>(AttributeBindings[i]);
+		Binding->PostLoad(InSourceMode);
+	}
+
+	UpdateSourceModeDerivates(InSourceMode);
+
+}
+
+void UNiagaraRendererProperties::PostInitProperties()
+{
+	Super::PostInitProperties();
+#if WITH_EDITOR
+	if (HasAnyFlags(RF_ClassDefaultObject) == false)
+	{
+		SetFlags(RF_Transactional);
+	}
+#endif
+}
+
+void UNiagaraRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode)
+{
+	UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>();
+	if (SrcEmitter)
+	{
+		//TArray<const FNiagaraVariableAttributeBinding*> AttributeBindings;
+		//GetBindingsArray(AttributeBindings);
+		for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
+		{
+			((FNiagaraVariableAttributeBinding*)Binding)->CacheValues(SrcEmitter, InSourceMode);
+		}
+	}
+}
