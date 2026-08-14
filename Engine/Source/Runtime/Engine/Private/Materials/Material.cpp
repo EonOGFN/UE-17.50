@@ -876,17 +876,6 @@ FMaterialResource* FindOrCreateMaterialResource(TArray<FMaterialResource*>& Mate
 	
 	// make sure the material resource we found has the correct owner
 	// special case for nullptrs: since the Material and MI get fed to the reference collector, they can be zeroed out by GC or utility tools
-	if (!(CurrentOwnerMaterial == OwnerMaterial || CurrentOwnerMaterial == nullptr))
-	{
-		// UE-101396: output debug info before hitting the check below.
-		UE_LOG(LogConsoleResponse, Display, TEXT("Going to hit check() %d %d %d %d"), NumMaterialResourcesForDebug, InFeatureLevel, InQualityLevel, QualityLevelForResource);
-		UE_LOG(LogConsoleResponse, Display, TEXT("OwnerMaterial"));
-		OwnerMaterial->DumpDebugInfo();
-		UE_LOG(LogConsoleResponse, Display, TEXT("OwnerMaterialInstance"));
-		if (OwnerMaterialInstance != nullptr) OwnerMaterialInstance->DumpDebugInfo();
-		UE_LOG(LogConsoleResponse, Display, TEXT("CurrentOwnerMaterial"));
-		if (CurrentOwnerMaterial != nullptr) CurrentOwnerMaterial->DumpDebugInfo();
-	}
 	checkf(CurrentOwnerMaterial == OwnerMaterial || CurrentOwnerMaterial == nullptr, TEXT("expected FMaterialResource with material %s, got %s"),
 		*GetNameSafe(OwnerMaterial), *GetNameSafe(CurrentOwnerMaterial));
 	checkf(CurrentOwnerMaterialInstance == OwnerMaterialInstance || CurrentOwnerMaterialInstance == nullptr, TEXT("expected FMaterialResource with MI %s, got %s"),
