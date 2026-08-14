@@ -142,6 +142,7 @@ private:
 	TSharedRef<SDockTab> SpawnLevelEditorTab(const FSpawnTabArgs& Args, FName TabIdentifier, FString InitializationPayload);
 	bool CanSpawnEditorModeToolbarTab(const FSpawnTabArgs& Args) const;
 	bool CanSpawnEditorModeToolboxTab(const FSpawnTabArgs& Args) const;
+	bool HasAnyHostedEditorModeToolkit() const;
 
 	//TSharedRef<SDockTab> SpawnLevelEditorModeTab(const FSpawnTabArgs& Args, FEdMode* EditorMode);
 	TSharedRef<SDockTab> SummonDetailsPanel( FName Identifier );
@@ -218,6 +219,9 @@ private:
 
 	/** Handles Editor map changes */
 	void HandleEditorMapChange( uint32 MapChangeFlags );
+
+	/** Handles deletion of assets */
+	void HandleAssetsDeleted(const TArray<UClass*>& DeletedClasses);
 
 	/** Called when actors are selected or unselected */
 	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh = false);

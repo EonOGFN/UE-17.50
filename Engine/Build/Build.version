@@ -1,10 +1,10 @@
 {
 	"MajorVersion": 4,
 	"MinorVersion": 26,
-	"PatchVersion": 0,
-	"Changelist": 0,
+	"PatchVersion": 1,
+	"Changelist": 17388565,
 	"CompatibleChangelist": 0,
 	"IsLicenseeVersion": 0,
 	"IsPromotedBuild": 0,
-	"BranchName": "UE4"
+	"BranchName": "++Fortnite+Dev-Valkyrie"
 }

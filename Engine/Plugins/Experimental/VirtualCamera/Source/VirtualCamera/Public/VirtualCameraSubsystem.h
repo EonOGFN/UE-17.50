@@ -5,14 +5,12 @@
 #include "Delegates/DelegateCombinations.h"
 #include "IVirtualCameraController.h"
 #include "Subsystems/EngineSubsystem.h"
-
 #include "VirtualCameraSubsystem.generated.h"
-
-class UWorld;
-class UVirtualCameraUserSettings;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnStreamStarted);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnStreamStopped);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelectedAnyActor, AActor*, SelectedActor);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelectedViewportActor, AActor*, SelectedActor);
 
 UCLASS(BlueprintType, Category = "VirtualCamera", DisplayName = "VirtualCameraSubsystem")
 class VIRTUALCAMERA_API UVirtualCameraSubsystem : public UEngineSubsystem
@@ -33,6 +31,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VirtualCamera | Streaming")
 	bool IsStreaming() const;
 
+	UFUNCTION()
+	void HandleSelectionChangedEvent(UObject* SelectedObject);
+
+	UFUNCTION()
+	void HandleSelectObjectEvent(UObject* SelectedObject);
+
 	UFUNCTION(BlueprintCallable, Category = "VirtualCamera")
 	TScriptInterface<IVirtualCameraController> GetVirtualCameraController() const;
 	
@@ -48,12 +52,17 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "VirtualCamera | Streaming")
 	FOnStreamStopped OnStreamStoppedDelegate;
 	
-	UFUNCTION(BlueprintPure, Category = "VirtualCamera")
-	UVirtualCameraUserSettings* GetUserSettings();
+	UPROPERTY(BlueprintAssignable, Category = "VirtualCamera | Streaming")
+	FOnSelectedAnyActor OnSelectedAnyActorDelegate; 
+
+	UPROPERTY(BlueprintAssignable, Category = "VirtualCamera | Streaming")
+	FOnSelectedViewportActor OnSelectedActorInViewportDelegate;
+
+
 
 private:
 
-	UPROPERTY(Transient)
+	UPROPERTY(Transient) 
 	TScriptInterface<IVirtualCameraController> ActiveCameraController;
 
 	bool bIsStreaming;

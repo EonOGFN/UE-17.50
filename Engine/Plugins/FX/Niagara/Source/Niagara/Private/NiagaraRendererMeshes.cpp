@@ -55,15 +55,12 @@ struct FNiagaraDynamicDataMesh : public FNiagaraDynamicDataBase
 class FNiagaraMeshCollectorResourcesMesh : public FOneFrameResource
 {
 public:
-	FNiagaraMeshVertexFactory* VertexFactory = nullptr;
+	FNiagaraMeshVertexFactory VertexFactory;
 	FNiagaraMeshUniformBufferRef UniformBuffer;
 
 	virtual ~FNiagaraMeshCollectorResourcesMesh()
 	{
-		if (VertexFactory)
-		{
-			VertexFactory->SetSortedIndices(nullptr, 0xFFFFFFFF);
-		}
+		VertexFactory.ReleaseResource();
 	}
 };
 
@@ -80,8 +77,10 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	UStaticMesh* Mesh = Properties->ParticleMesh;
 	check(Mesh);
 
-	MeshRenderData = Mesh->RenderData.Get();
+	MeshRenderData = Mesh->GetRenderData();
 	FacingMode = Properties->FacingMode;
+	PivotOffset = Properties->PivotOffset;
+	PivotOffsetSpace = Properties->PivotOffsetSpace;
 	bLockedAxisEnable = Properties->bLockedAxisEnable;
 	LockedAxis = Properties->LockedAxis;
 	LockedAxisSpace = Properties->LockedAxisSpace;
@@ -94,7 +93,7 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	bEnableCulling = bEnableFrustumCulling;
 	DistanceCullRange = FVector2D(0, FLT_MAX);
 	RendererVisibility = Properties->RendererVisibility;	
-	LocalCullingSphere = Mesh->ExtendedBounds.GetSphere();
+	LocalCullingSphere = Mesh->GetExtendedBounds().GetSphere();
 
 	if (Properties->bEnableCameraDistanceCulling)
 	{
@@ -139,23 +138,11 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 }
 
 FNiagaraRendererMeshes::~FNiagaraRendererMeshes()
-{
-	for (FNiagaraMeshVertexFactory* VertexFactory : VertexFactories)
-	{
-		delete VertexFactory;
-	}
-	VertexFactories.Empty();
+{	
 }
 
 void FNiagaraRendererMeshes::ReleaseRenderThreadResources()
 {
-	FNiagaraRenderer::ReleaseRenderThreadResources();
-	for (FNiagaraMeshVertexFactory* VertexFactory : VertexFactories)
-	{
-		VertexFactory->ReleaseResource();
-		delete VertexFactory;
-	}
-	VertexFactories.Empty();
 }
 
 int32 FNiagaraRendererMeshes::GetMaxIndirectArgs() const
@@ -214,7 +201,6 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 {
 	check(SceneProxy);
 
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRender);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes);
 	PARTICLE_PERF_STAT_CYCLES(SceneProxy->PerfAsset, GetDynamicMeshElements);
 
@@ -252,7 +238,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 	for (FMaterialRenderProxy* MaterialProxy : DynamicDataMesh->Materials)
 	{
 		check(MaterialProxy);
-		EBlendMode BlendMode = MaterialProxy->GetMaterial(FeatureLevel)->GetBlendMode();
+		EBlendMode BlendMode = MaterialProxy->GetIncompleteMaterialWithFallback(FeatureLevel).GetBlendMode();
 		bHasTranslucentMaterials |= IsTranslucentBlendMode(BlendMode);
 	}
 
@@ -305,15 +291,20 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 	const int32 SectionCount = LODModel.Sections.Num();
 
 	{
-		int32 VertexFactoryIndex = 0;
-
 		// Compute the per-view uniform buffers.
 		const int32 NumViews = Views.Num();
 		for (int32 ViewIndex = 0; ViewIndex < NumViews; ViewIndex++)
 		{
 			if (VisibilityMap & (1 << ViewIndex))
 			{
-				const FSceneView* View = Views[ViewIndex];
+				const FSceneView* View = Views[ViewIndex];				
+				
+				const bool bIsInstancedStereo = View->bIsInstancedStereoEnabled && IStereoRendering::IsStereoEyeView(*View);				
+				if (bIsInstancedStereo && !IStereoRendering::IsAPrimaryView(*View))
+				{
+					// One eye renders everything, so we can skip non-primaries
+					continue;
+				}
 
 				int32 CulledGPUCountOffset = bDoGPUCulling ? Batcher->GetGPUInstanceCounterManager().AcquireCulledEntry() : INDEX_NONE;
 
@@ -328,37 +319,20 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 							bDoGPUCulling ? CulledGPUCountOffset : SourceParticleData->GetGPUInstanceCountBufferOffset(),
 							IndexInfoPerSection[LODIndex][SectionIdx].Key,
 							IndexInfoPerSection[LODIndex][SectionIdx].Value,
+							bIsInstancedStereo,
 							bDoGPUCulling);
 					}
 				}
 
-				// Get the next vertex factory to use
-				FNiagaraMeshVertexFactory* VertexFactory = nullptr;
-				if (VertexFactories.IsValidIndex(VertexFactoryIndex))
-				{
-					VertexFactory = VertexFactories[VertexFactoryIndex];
-					++VertexFactoryIndex;
-
-					if (VertexFactory->GetLODIndex() != LODIndex)
-					{
-						SetupVertexFactory(VertexFactory, LODModel);
-						VertexFactory->SetLODIndex(LODIndex);
-					}
-				}
-				else
-				{
-					check(VertexFactoryIndex == VertexFactories.Num());
-					VertexFactory = new FNiagaraMeshVertexFactory();
-					VertexFactories.Add(VertexFactory);
-
-					VertexFactory->SetParticleFactoryType(NVFT_Mesh);
-					VertexFactory->SetLODIndex(LODIndex);
-					VertexFactory->InitResource();
-					SetupVertexFactory(VertexFactory, LODModel);
-				}
-
 				FNiagaraMeshCollectorResourcesMesh& CollectorResources = Collector.AllocateOneFrameResource<FNiagaraMeshCollectorResourcesMesh>();
-				CollectorResources.VertexFactory = VertexFactory;
+
+				// Get the next vertex factory to use
+				// TODO: Find a way to safely pool these such that they won't be concurrently accessed by multiple views
+				FNiagaraMeshVertexFactory* VertexFactory = &CollectorResources.VertexFactory;
+				VertexFactory->SetParticleFactoryType(NVFT_Mesh);
+				VertexFactory->SetLODIndex(LODIndex);
+				VertexFactory->InitResource();
+				SetupVertexFactory(VertexFactory, LODModel);
 
 				FNiagaraMeshUniformParameters PerViewUniformParameters;// = UniformParameters;
 				FMemory::Memzero(&PerViewUniformParameters, sizeof(PerViewUniformParameters)); // Clear unset bytes
@@ -366,6 +340,29 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 				PerViewUniformParameters.bLocalSpace = bLocalSpace;
 				PerViewUniformParameters.PrevTransformAvailable = false;
 				PerViewUniformParameters.DeltaSeconds = ViewFamily.DeltaWorldTime;				
+
+				// Calculate pivot offset
+				FVector WorldSpacePivotOffset = FVector(0, 0, 0);
+				FSphere OffsetCullingSphere = LocalCullingSphere;
+				if (PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::Mesh)
+				{
+					OffsetCullingSphere.Center += PivotOffset;
+
+					PerViewUniformParameters.PivotOffset = PivotOffset;
+					PerViewUniformParameters.bPivotOffsetIsWorldSpace = false;
+				}
+				else
+				{
+					WorldSpacePivotOffset = PivotOffset;
+					if (PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::Local || (bLocalSpace && PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::Simulation))
+					{
+						// The offset is in local space, transform it to world
+						WorldSpacePivotOffset = SceneProxy->GetLocalToWorld().TransformVector(WorldSpacePivotOffset);
+					}
+
+					PerViewUniformParameters.PivotOffset = WorldSpacePivotOffset;
+					PerViewUniformParameters.bPivotOffsetIsWorldSpace = true;
+				}
 
 				TConstArrayView<FNiagaraRendererVariableInfo> VFVariables = RendererLayout->GetVFVariables_RenderThread();
 				PerViewUniformParameters.PositionDataOffset = VFVariables[ENiagaraMeshVFLayout::Position].GetGPUOffset();
@@ -393,7 +390,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 				PerViewUniformParameters.LockedAxisSpace = (uint32)LockedAxisSpace;
 
 				//Sort particles if needed.
-				CollectorResources.VertexFactory->SetSortedIndices(nullptr, 0xFFFFFFFF);
+				VertexFactory->SetSortedIndices(nullptr, 0xFFFFFFFF);
 
 				FNiagaraGPUSortInfo SortInfo;
 				int32 SortVarIdx = INDEX_NONE;
@@ -403,7 +400,8 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 					SortInfo.SortMode = SortMode;
 					SortInfo.SetSortFlags(GNiagaraGPUSortingUseMaxPrecision != 0, bHasTranslucentMaterials); 
 					SortInfo.bEnableCulling = bDoGPUCulling;
-					SortInfo.LocalBSphere = LocalCullingSphere;
+					SortInfo.LocalBSphere = OffsetCullingSphere;
+					SortInfo.CullingWorldSpaceOffset = WorldSpacePivotOffset;
 					SortInfo.RendererVisTagAttributeOffset = RendererVisTagOffset;
 					SortInfo.RendererVisibility = RendererVisibility;
 					SortInfo.DistanceCullRange = DistanceCullRange;
@@ -411,33 +409,65 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 					SortVarIdx = bCustomSorting ? ENiagaraMeshVFLayout::CustomSorting : ENiagaraMeshVFLayout::Position;
 					SortInfo.SortAttributeOffset = VFVariables[SortVarIdx].GetGPUOffset();
 
+					auto GetViewMatrices = [](const FSceneView& View) -> const FViewMatrices&
+					{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					const FSceneViewState* ViewState = View->State != nullptr ? View->State->GetConcreteViewState() : nullptr;
-					if (ViewState && ViewState->bIsFrozen && ViewState->bIsFrozenViewMatricesCached)
-					{
-						// Use the frozen view for culling so we can test that it's working
-						const FViewMatrices& Matrices = ViewState->CachedViewMatrices;
-						SortInfo.ViewOrigin = Matrices.GetViewOrigin();
-						SortInfo.ViewDirection = Matrices.GetViewMatrix().GetColumn(2);
-
-						if (bEnableFrustumCulling)
+						const FSceneViewState* ViewState = View.State != nullptr ? View.State->GetConcreteViewState() : nullptr;
+						if (ViewState && ViewState->bIsFrozen && ViewState->bIsFrozenViewMatricesCached)
 						{
-							const FMatrix& ViewProj = Matrices.GetViewProjectionMatrix();
-							SortInfo.CullPlanes.SetNumZeroed(4);
-							ViewProj.GetFrustumLeftPlane(SortInfo.CullPlanes[0]);
-							ViewProj.GetFrustumTopPlane(SortInfo.CullPlanes[1]);
-							ViewProj.GetFrustumRightPlane(SortInfo.CullPlanes[2]);
-							ViewProj.GetFrustumBottomPlane(SortInfo.CullPlanes[3]);							
+							// Use the frozen view for culling so we can test that it's working
+							return ViewState->CachedViewMatrices;							
 						}
-					}
-					else
 #endif
+						return View.ViewMatrices;						
+					};
+
+					const FViewMatrices& ViewMatrices = GetViewMatrices(*View);					
+					SortInfo.ViewOrigin = ViewMatrices.GetViewOrigin();
+					SortInfo.ViewDirection = ViewMatrices.GetViewMatrix().GetColumn(2);
+
+					if (View->StereoPass != eSSP_FULL)
 					{
-						SortInfo.ViewOrigin = View->ViewMatrices.GetViewOrigin();
-						SortInfo.ViewDirection = View->GetViewDirection();
-						if (bEnableFrustumCulling)
+						// For VR, do distance culling and sorting from a central eye position to prevent differences between views
+						const uint32 PairedViewIdx = (ViewIndex & 1) ? (ViewIndex - 1) : (ViewIndex + 1);
+						const FSceneView* PairedView = Views[PairedViewIdx];
+						check(PairedView);
+						SortInfo.ViewOrigin = 0.5f * (SortInfo.ViewOrigin + GetViewMatrices(*PairedView).GetViewOrigin());
+					}						
+
+					if (bEnableFrustumCulling)
+					{
+						if (const FConvexVolume* ShadowFrustum = View->GetDynamicMeshElementsShadowCullFrustum())
 						{
-							SortInfo.CullPlanes = View->ViewFrustum.Planes;
+							// Ensure we don't break the maximum number of planes here
+							// (For an accurate shadow frustum, a tight hull is formed from the silhouette and back-facing planes of the view frustum)
+							check(ShadowFrustum->Planes.Num() <= FNiagaraGPUSortInfo::MaxCullPlanes);
+							SortInfo.CullPlanes = ShadowFrustum->Planes;
+						}
+						else
+						{
+							SortInfo.CullPlanes.SetNumZeroed(6);
+
+							// Gather the culling planes from the view projection matrix
+							const FMatrix& ViewProj = ViewMatrices.GetViewProjectionMatrix();
+							ViewProj.GetFrustumNearPlane(SortInfo.CullPlanes[0]);
+							ViewProj.GetFrustumFarPlane(SortInfo.CullPlanes[1]);
+							ViewProj.GetFrustumTopPlane(SortInfo.CullPlanes[2]);
+							ViewProj.GetFrustumBottomPlane(SortInfo.CullPlanes[3]);
+
+							ViewProj.GetFrustumLeftPlane(SortInfo.CullPlanes[4]);
+							if (bIsInstancedStereo)
+							{
+								// For Instanced Stereo, cull using an extended frustum that encompasses both eyes
+								ensure(View->StereoPass == eSSP_LEFT_EYE); // Sanity check that the primary eye is the left
+								const FSceneView* RightEyeView = Views[ViewIndex + 1];
+								check(RightEyeView);
+								GetViewMatrices(*RightEyeView).GetViewProjectionMatrix().GetFrustumRightPlane(SortInfo.CullPlanes[5]);
+							}
+							else
+							{
+								ViewProj.GetFrustumRightPlane(SortInfo.CullPlanes[5]);
+							}
 						}
 					}
 
@@ -494,7 +524,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 							const int32 IndexBufferOffset = Batcher->AddSortedGPUSimulation(SortInfo);
 							if (IndexBufferOffset != INDEX_NONE)
 							{
-								CollectorResources.VertexFactory->SetSortedIndices(SortInfo.AllocationInfo.BufferSRV, SortInfo.AllocationInfo.BufferOffset);
+								VertexFactory->SetSortedIndices(SortInfo.AllocationInfo.BufferSRV, SortInfo.AllocationInfo.BufferOffset);
 							}
 						}
 						else
@@ -503,7 +533,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 							FGlobalDynamicReadBuffer::FAllocation SortedIndices;
 							SortedIndices = DynamicReadBuffer.AllocateInt32(NumInstances);
 							SortIndices(SortInfo, VFVariables[SortVarIdx], *SourceParticleData, SortedIndices);
-							CollectorResources.VertexFactory->SetSortedIndices(SortedIndices.SRV, 0);
+							VertexFactory->SetSortedIndices(SortedIndices.SRV, 0);
 						}
 					}
 
@@ -538,7 +568,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 						const int32 IndexBufferOffset = Batcher->AddSortedGPUSimulation(SortInfo);
 						if (IndexBufferOffset != INDEX_NONE && SortInfo.GPUParticleCountOffset != INDEX_NONE)
 						{
-							CollectorResources.VertexFactory->SetSortedIndices(SortInfo.AllocationInfo.BufferSRV, SortInfo.AllocationInfo.BufferOffset);
+							VertexFactory->SetSortedIndices(SortInfo.AllocationInfo.BufferSRV, SortInfo.AllocationInfo.BufferOffset);
 						}
 					}
 					
@@ -549,7 +579,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 
 				// Collector.AllocateOneFrameResource uses default ctor, initialize the vertex factory
 				CollectorResources.UniformBuffer = FNiagaraMeshUniformBufferRef::CreateUniformBufferImmediate(PerViewUniformParameters, UniformBuffer_SingleFrame);
-				CollectorResources.VertexFactory->SetUniformBuffer(CollectorResources.UniformBuffer);
+				VertexFactory->SetUniformBuffer(CollectorResources.UniformBuffer);
 
 				// Increment stats
 				INC_DWORD_STAT_BY(STAT_NiagaraNumMeshVerts, NumInstances * LODModel.GetNumVertices());
@@ -567,7 +597,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 					}
 
 					FMeshBatch& Mesh = Collector.AllocateMesh();
-					Mesh.VertexFactory = CollectorResources.VertexFactory;
+					Mesh.VertexFactory = VertexFactory;
 					Mesh.LCI = NULL;
 					Mesh.ReverseCulling = SceneProxy->IsLocalToWorldDeterminantNegative();
 					Mesh.CastShadow = SceneProxy->CastsDynamicShadow();
@@ -642,7 +672,6 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		return;
 	}
 
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRender);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes);
 	check(SceneProxy);
 
@@ -873,7 +902,7 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		DispatchComputeShader(RHICmdList, GPURayTracingTransformsCS, NGroups, 1, 1);
 		GPURayTracingTransformsCS->UnbindBuffers(RHICmdList);
 
-		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToCompute, InstanceGPUTransformsBuffer.UAV);
+		RHICmdList.Transition(FRHITransitionInfo(InstanceGPUTransformsBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 	}
 
 	RayTracingInstance.BuildInstanceMaskAndFlags();
@@ -884,7 +913,6 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 
 FNiagaraDynamicDataBase* FNiagaraRendererMeshes::GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const
 {
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderGT);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraGenMeshVertexData);
 
 	const UNiagaraMeshRendererProperties* Properties = CastChecked<const UNiagaraMeshRendererProperties>(InProperties);

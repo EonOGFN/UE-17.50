@@ -46,6 +46,9 @@ TAutoConsoleVariable<float> CVarConstraintAngularStiffnessScale(
 	TEXT("The multiplier of constraint angular stiffness in simulation. Default: 100000"),
 	ECVF_ReadOnly);
 
+bool bEnableSkeletalMeshConstraints = false;
+FAutoConsoleVariableRef CVarEnableSkeletalMeshConstraints(TEXT("p.EnableSkeletalMeshConstraints"), bEnableSkeletalMeshConstraints, TEXT("Enable skeletal mesh constraints defined within the Physics Asset Editor"));
+
 /** Handy macro for setting BIT of VAR based on the bool CONDITION */
 #define SET_DRIVE_PARAM(VAR, CONDITION, BIT)   (VAR) = (CONDITION) ? ((VAR) | (BIT)) : ((VAR) & ~(BIT))
 
@@ -178,9 +181,24 @@ void FConstraintInstance::UpdateDriveTarget()
 }
 
 /** Constructor **/
+FConstraintInstanceBase::FConstraintInstanceBase()
+{
+	Reset();
+}
+
+void FConstraintInstanceBase::Reset()
+{
+	ConstraintIndex = 0;
+#if WITH_CHAOS
+	ConstraintHandle.Reset();
+#endif
+	PhysScene = nullptr;
+}
+
+
+/** Constructor **/
 FConstraintInstance::FConstraintInstance()
-	: ConstraintIndex(0)
-	, PhysScene(nullptr)
+	: FConstraintInstanceBase()
 	, AngularRotationOffset(ForceInitToZero)
 	, bScaleLinearLimits(true)
 	, AverageMass(0.f)
@@ -371,8 +389,10 @@ bool FConstraintInstance::CreateJoint_AssumesLocked(const FPhysicsActorHandle& I
 	
 	checkf(Local2.IsValid() && !Local2.ContainsNaN(), TEXT("%s"), *Local2.ToString());
 
-	ConstraintHandle = FPhysicsInterface::CreateConstraint(InActorRef1, InActorRef2, Local1, Local2);
-
+	if (bEnableSkeletalMeshConstraints)
+	{
+		ConstraintHandle = FPhysicsInterface::CreateConstraint(InActorRef1, InActorRef2, Local1, Local2);
+	}
 	if(!ConstraintHandle.IsValid())
 	{
 		UE_LOG(LogPhysics, Log, TEXT("FConstraintInstance::CreatePxJoint_AssumesLocked - Invalid 6DOF joint (%s)"), *JointName.ToString());
@@ -405,26 +425,6 @@ void FConstraintInstance::UpdateAverageMass_AssumesLocked(const FPhysicsActorHan
 	AverageMass = ComputeAverageMass_AssumesLocked(InActorRef1, InActorRef2);
 }
 
-void EnsureSleepingActorsStaySleeping_AssumesLocked(const FPhysicsActorHandle& InActorRef1, const FPhysicsActorHandle& InActorRef2)
-{
-	const bool bActor1Asleep = FPhysicsInterface::IsSleeping(InActorRef1);
-	const bool bActor2Asleep = FPhysicsInterface::IsSleeping(InActorRef2);
-
-	// creation of joints wakes up rigid bodies, so we put them to sleep again if both were initially asleep
-	if (bActor1Asleep && bActor2Asleep)
-	{
-		if(FPhysicsInterface::IsValid(InActorRef1) && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef1))
-		{
-			FPhysicsInterface::PutToSleep_AssumesLocked(InActorRef1);
-		}
-
-		if(FPhysicsInterface::IsValid(InActorRef2) && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef2))
-		{
-			FPhysicsInterface::PutToSleep_AssumesLocked(InActorRef2);
-		}
-	}
-}
-
 /** 
  *	Create physics engine constraint.
  */
@@ -455,6 +455,10 @@ void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle
 
 	UserData = FChaosUserData(this);
 
+	// Creating/Destroying a joint between two bodies will wake them, so we may want to re-sleep them
+	const bool bActor1WasAsleep = FPhysicsInterface::IsValid(ActorRef1) && FPhysicsInterface::IsSleeping(ActorRef1);
+	const bool bActor2WasAsleep = FPhysicsInterface::IsValid(ActorRef2) && FPhysicsInterface::IsSleeping(ActorRef2);
+
 	// if there's already a constraint, get rid of it first
 	if (ConstraintHandle.IsValid())
 	{
@@ -470,7 +474,13 @@ void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle
 	UpdateAverageMass_AssumesLocked(ActorRef1, ActorRef2);
 
 	ProfileInstance.Update_AssumesLocked(ConstraintHandle, AverageMass, bScaleLinearLimits ? LastKnownScale : 1.f);
-	EnsureSleepingActorsStaySleeping_AssumesLocked(ActorRef1, ActorRef2);
+
+	// Put the bodies back to sleep both bodies were asleep
+	if (bActor1WasAsleep && bActor2WasAsleep)
+	{
+		FPhysicsInterface::PutToSleep_AssumesLocked(ActorRef1);
+		FPhysicsInterface::PutToSleep_AssumesLocked(ActorRef2);
+	}
 }
 
 void FConstraintInstance::SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate)

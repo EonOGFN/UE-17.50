@@ -61,7 +61,7 @@ public:
 	 * to the hit-test ray to treat as a "hit". By default this is Euclidean distance with
 	 * a tolerance of 1.0. You probably need to replace this with your own function.
 	 */
-	TFunction<bool(const FVector3d&, const FVector3d&)> PointsWithinToleranceTest;
+	TFunction<bool(const FVector3d&, const FVector3d&, double ToleranceScale)> PointsWithinToleranceTest;
 
 public:
 	FGroupTopologySelector();
@@ -120,6 +120,17 @@ public:
 	 *  member edges were not yet all selected).
 	 */
 	bool ExpandSelectionByEdgeLoops(FGroupTopologySelection& Selection);
+
+	/**
+	 * Using the edges in the given selection as starting points, add any "edge rings" containing the edges. An
+	 * edge ring is a sequence of edges that lie on opposite sides of quad-like faces, meaning faces that have four
+	 * corners.
+	 *
+	 * @param Selection Selection to expand.
+	 * @param bool true if selection was modified (i.e., were the already selected edges part of any edge rings whose
+	 *  member edges were not yet all selected).
+	 */
+	bool ExpandSelectionByEdgeRings(FGroupTopologySelection& Selection);
 
 	/**
 	 * Render the given selection with the default settings of the FToolDataVisualizer.

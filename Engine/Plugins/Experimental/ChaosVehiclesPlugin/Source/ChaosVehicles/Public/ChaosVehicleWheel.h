@@ -21,8 +21,6 @@ class UPhysicalMaterial;
 class FChaosVehicleManager;
 class UChaosWheeledVehicleMovementComponent;
 
-using namespace Chaos;
-
 	UENUM()
 	enum class ESweepShape : uint8
 	{
@@ -39,8 +37,6 @@ using namespace Chaos;
 	UENUM()
 	enum class ESweepType : uint8
 	{
-		/** Sweeps against both simple and complex geometry. */
-		SimpleAndComplexSweep	UMETA(DisplayName = "SimpleAndComplexSweep"),
 		/** Sweeps against simple geometry only */
 		SimpleSweep				UMETA(DisplayName = "SimpleSweep"),
 		/** Sweeps against complex geometry only */
@@ -101,20 +97,16 @@ using namespace Chaos;
 		//UPROPERTY(EditAnywhere, Category = Wheel, meta = (ClampMin = "0.01", UIMin = "0.01"))
 		//float WheelMass;
 
-		/** Cheat Longitudinal Friction Force Multiplier */
+		/** Longitudinal Friction Force Multiplier */
 		UPROPERTY(EditAnywhere, Category = Wheel)
-		float CheatLongitudinalFrictionForce;
+		float LongitudinalFrictionForceMultiplier;
 
-		/** Cheat Lateral Friction Force Multiplier */
+		/** Lateral Friction Force Multiplier */
 		UPROPERTY(EditAnywhere, Category = Wheel)
-		float CheatLateralFrictionForce;
+		float LateralFrictionForceMultiplier;
 
-		/** CHEAT WHEEL LATERAL SKID GRIP LOSS */
-		UPROPERTY(EditAnywhere, Category = Wheel)
-		float CheatSkidFactor;
-
-		/** CHEAT WHEEL LATERAL SKID GRIP LOSS */
-		UPROPERTY(EditAnywhere, Category = Wheel)
+		/** Wheel Lateral Skid Grip Loss, lower number less grip on skid */
+		UPROPERTY(EditAnywhere, Category = Wheel, meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
 		float SideSlipModifier;
 
 		///** Damping rate for this wheel (Kgm^2/s) */
@@ -354,9 +346,8 @@ using namespace Chaos;
 			PWheelConfig.EngineEnabled = this->bAffectedByEngine;
 			PWheelConfig.ABSEnabled = this->bABSEnabled;
 			PWheelConfig.TractionControlEnabled = this->bTractionControlEnabled;
-			PWheelConfig.CheatLongitudinalFrictionMultiplier = this->CheatLongitudinalFrictionForce;
-			PWheelConfig.CheatLateralFrictionMultiplier = this->CheatLateralFrictionForce;
-			PWheelConfig.CheatSkidFactor = this->CheatSkidFactor;
+			PWheelConfig.LongitudinalFrictionMultiplier = this->LongitudinalFrictionForceMultiplier;
+			PWheelConfig.LateralFrictionMultiplier = this->LateralFrictionForceMultiplier;
 			PWheelConfig.SideSlipModifier = this->SideSlipModifier;
 		}
 
@@ -367,8 +358,8 @@ using namespace Chaos;
 			PSuspensionConfig.SuspensionForceOffset = this->SuspensionForceOffset;
 			PSuspensionConfig.SuspensionMaxRaise = this->SuspensionMaxRaise;
 			PSuspensionConfig.SuspensionMaxDrop = this->SuspensionMaxDrop;
-			PSuspensionConfig.SpringRate = MToCm(this->SpringRate);
-			PSuspensionConfig.SpringPreload = MToCm(this->SpringPreload);
+			PSuspensionConfig.SpringRate = Chaos::MToCm(this->SpringRate);
+			PSuspensionConfig.SpringPreload = Chaos::MToCm(this->SpringPreload);
 
 			PSuspensionConfig.DampingRatio = this->SuspensionDampingRatio;
 			PSuspensionConfig.WheelLoadRatio = this->WheelLoadRatio;

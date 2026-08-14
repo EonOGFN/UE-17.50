@@ -102,15 +102,8 @@ namespace ModDestinationLayoutUtils
 		return false;
 	}
 
-	void CustomizeChildren_AddValueRow(
-		IDetailChildrenBuilder& ChildBuilder,
-		TSharedRef<IPropertyHandle> StructPropertyHandle,
-		TSharedRef<IPropertyHandle> ValueHandle,
-		TSharedRef<IPropertyHandle> ModulatorHandle,
-		TSharedRef<IPropertyHandle> EnablementHandle)
+	FText SetMetaData(TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedRef<IPropertyHandle> ValueHandle, FText& OutUnitDisplayText, FName& OutParamName)
 	{
-		FText UnitDisplayText;
-
 		bool bClampValuesSet = false;
 		float ClampMinValue = 0.0f;
 		float ClampMaxValue = 1.0f;
@@ -130,22 +123,22 @@ namespace ModDestinationLayoutUtils
 			bClampValuesSet = true;
 		}
 
-		const FName ParamName = ModDestinationLayoutUtils::GetParameterNameFromMetaData(StructPropertyHandle);
-		if (ParamName != FName())
+		OutParamName = ModDestinationLayoutUtils::GetParameterNameFromMetaData(StructPropertyHandle);
+		if (OutParamName != FName())
 		{
 			// If parameter was provided, it overrides ClampMin/Max.  User data however overrides UIMin/Max if its
 			// in clamp range.
 			if (IAudioModulation* ModulationInterface = ModDestinationLayoutUtils::GetEditorModulationInterface())
 			{
-				Audio::FModulationParameter Parameter = ModulationInterface->GetParameter(ParamName);
+				Audio::FModulationParameter Parameter = ModulationInterface->GetParameter(OutParamName);
 				UIMinValue = Parameter.MinValue;
 				UIMaxValue = Parameter.MaxValue;
 				ClampMinValue = UIMinValue;
 				ClampMaxValue = UIMaxValue;
-				UnitDisplayText = Parameter.UnitDisplayName;
+				OutUnitDisplayText = Parameter.UnitDisplayName;
 				if (bClampValuesSet)
 				{
-					UE_LOG(LogAudioEditor, Warning, TEXT("ClampMin/Max overridden by AudioModulation plugin asset with ParamName '%s'."), *ParamName.ToString());
+					UE_LOG(LogAudioEditor, Warning, TEXT("ClampMin/Max overridden by AudioModulation plugin asset with ParamName '%s'."), *OutParamName.ToString());
 				}
 			}
 
@@ -154,7 +147,7 @@ namespace ModDestinationLayoutUtils
 				float NewMin = UIMinValue;
 				FString ParamString = StructPropertyHandle->GetMetaData("UIMin");
 				NewMin = FCString::Atof(*ParamString);
-				UIMaxValue = FMath::Clamp(NewMin, ClampMinValue, ClampMaxValue);
+				UIMinValue = FMath::Clamp(NewMin, ClampMinValue, ClampMaxValue);
 			}
 
 			if (StructPropertyHandle->HasMetaData("UIMax"))
@@ -170,6 +163,20 @@ namespace ModDestinationLayoutUtils
 		ValueHandle->SetInstanceMetaData("ClampMax", FString::Printf(TEXT("%f"), ClampMaxValue));
 		ValueHandle->SetInstanceMetaData("UIMin", FString::Printf(TEXT("%f"), UIMinValue));
 		ValueHandle->SetInstanceMetaData("UIMax", FString::Printf(TEXT("%f"), UIMaxValue));
+		
+		return OutUnitDisplayText;
+	}
+
+	void CustomizeChildren_AddValueRow(
+		IDetailChildrenBuilder& ChildBuilder,
+		TSharedRef<IPropertyHandle> StructPropertyHandle,
+		TSharedRef<IPropertyHandle> ValueHandle,
+		TSharedRef<IPropertyHandle> ModulatorHandle,
+		TSharedRef<IPropertyHandle> EnablementHandle)
+	{
+		FText UnitDisplayText = FText::GetEmpty();
+		FName ParamName;
+		SetMetaData(StructPropertyHandle, ValueHandle, UnitDisplayText, ParamName);
 
 		const FText DisplayName = StructPropertyHandle->GetPropertyDisplayName();
 		ChildBuilder.AddCustomRow(DisplayName)
@@ -284,6 +291,10 @@ namespace ModDestinationLayoutUtils
 
 	void CustomizeChildren_AddValueNoModRow(IDetailChildrenBuilder& ChildBuilder, TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedRef<IPropertyHandle> ValueHandle)
 	{
+		FText UnitDisplayText = FText::GetEmpty();
+		FName ParamName;
+		SetMetaData(StructPropertyHandle, ValueHandle, UnitDisplayText, ParamName);
+
 		const FText DisplayName = StructPropertyHandle->GetPropertyDisplayName();
 		FDetailWidgetRow& ValueNoModRow = ChildBuilder.AddCustomRow(DisplayName);
 		ValueNoModRow.NameContent()
@@ -423,6 +434,98 @@ void FSoundModulationDestinationLayoutCustomization::CustomizeChildren(TSharedRe
 	else
 	{
 		ModDestinationLayoutUtils::CustomizeChildren_AddValueNoModRow(ChildBuilder, StructPropertyHandle, ValueHandle);
+	}
+}
+
+void FSoundModulationDefaultSettingsLayoutCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+}
+
+void FSoundModulationDefaultSettingsLayoutCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
+{
+	if (ModDestinationLayoutUtils::IsModulationEnabled())
+	{
+		TMap<FName, TSharedPtr<IPropertyHandle>> PropertyHandles;
+		uint32 NumChildren;
+		StructPropertyHandle->GetNumChildren(NumChildren);
+
+		for (uint32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
+		{
+			TSharedRef<IPropertyHandle> ChildHandle = StructPropertyHandle->GetChildHandle(ChildIndex).ToSharedRef();
+			const FName PropertyName = ChildHandle->GetProperty()->GetFName();
+			PropertyHandles.Add(PropertyName, ChildHandle);
+		}
+
+		TSharedRef<IPropertyHandle> VolumeHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultSettings, VolumeModulationDestination)).ToSharedRef();
+		TSharedRef<IPropertyHandle> PitchHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultSettings, PitchModulationDestination)).ToSharedRef();
+		TSharedRef<IPropertyHandle> HighpassHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultSettings, HighpassModulationDestination)).ToSharedRef();
+		TSharedRef<IPropertyHandle> LowpassHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultSettings, LowpassModulationDestination)).ToSharedRef();
+
+		ChildBuilder.AddProperty(VolumeHandle);
+		ChildBuilder.AddProperty(PitchHandle);
+		ChildBuilder.AddProperty(HighpassHandle);
+		ChildBuilder.AddProperty(LowpassHandle);
+	}
+}
+
+void FSoundModulationDefaultRoutingSettingsLayoutCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+}
+
+void FSoundModulationDefaultRoutingSettingsLayoutCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
+{
+	if (ModDestinationLayoutUtils::IsModulationEnabled())
+	{
+		TMap<FName, TSharedPtr<IPropertyHandle>> PropertyHandles;
+		uint32 NumChildren;
+		StructPropertyHandle->GetNumChildren(NumChildren);
+
+		for (uint32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
+		{
+			TSharedRef<IPropertyHandle> ChildHandle = StructPropertyHandle->GetChildHandle(ChildIndex).ToSharedRef();
+			const FName PropertyName = ChildHandle->GetProperty()->GetFName();
+			PropertyHandles.Add(PropertyName, ChildHandle);
+		}
+
+		TSharedRef<IPropertyHandle> VolumeRouting = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, VolumeRouting)).ToSharedRef();
+		TSharedRef<IPropertyHandle> VolumeHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, VolumeModulationDestination)).ToSharedRef();
+
+		TSharedRef<IPropertyHandle> PitchRouting = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, PitchRouting)).ToSharedRef();
+		TSharedRef<IPropertyHandle> PitchHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, PitchModulationDestination)).ToSharedRef();
+
+		TSharedRef<IPropertyHandle> HighpassRouting = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, HighpassRouting)).ToSharedRef();
+		TSharedRef<IPropertyHandle> HighpassHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, HighpassModulationDestination)).ToSharedRef();
+
+		TSharedRef<IPropertyHandle> LowpassRouting = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, LowpassRouting)).ToSharedRef();
+		TSharedRef<IPropertyHandle> LowpassHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDefaultRoutingSettings, LowpassModulationDestination)).ToSharedRef();
+
+		auto ShowModSettings = [] (TSharedRef<IPropertyHandle> RoutingHandle)
+		{
+			return TAttribute<EVisibility>::Create([RoutingHandle]()
+			{
+				uint8 RoutingValue = 0;
+				if (RoutingHandle->GetValue(RoutingValue) != FPropertyAccess::Success)
+				{
+					return EVisibility::Hidden;
+				}
+
+				if (static_cast<EModulationRouting>(RoutingValue) != EModulationRouting::Override)
+				{
+					return EVisibility::Hidden;
+				}
+
+				return EVisibility::Visible;
+			});
+		};
+
+		ChildBuilder.AddProperty(VolumeRouting);
+		ChildBuilder.AddProperty(VolumeHandle).Visibility(ShowModSettings(VolumeRouting));
+		ChildBuilder.AddProperty(PitchRouting);
+		ChildBuilder.AddProperty(PitchHandle).Visibility(ShowModSettings(PitchRouting));
+		ChildBuilder.AddProperty(HighpassRouting);
+		ChildBuilder.AddProperty(HighpassHandle).Visibility(ShowModSettings(HighpassRouting));
+		ChildBuilder.AddProperty(LowpassRouting);
+		ChildBuilder.AddProperty(LowpassHandle).Visibility(ShowModSettings(LowpassRouting));
 	}
 }
 #undef LOCTEXT_NAMESPACE

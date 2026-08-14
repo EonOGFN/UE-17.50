@@ -44,7 +44,7 @@ namespace PyUtil
 
 	/** Convert a TCHAR to a transient buffer that can be passed to a Python API that doesn't hold the result */
 #if PY_MAJOR_VERSION >= 3
-	#define TCHARToPyApiChar(InStr) InStr
+	#define TCHARToPyApiChar(InStr) TCHAR_TO_WCHAR(InStr)
 #else	// PY_MAJOR_VERSION >= 3
 	#define TCHARToPyApiChar(InStr) TCHAR_TO_UTF8(InStr)
 #endif	// PY_MAJOR_VERSION >= 3
@@ -419,6 +419,11 @@ namespace PyUtil
 	 * @note This function can't handle dot separated names.
 	 */
 	bool IsModuleImported(const TCHAR* InModuleName, PyObject** OutPyModule = nullptr);
+
+	/**
+	 * Get the path to the Python interpreter executable of the Python SDK this plugin was compiled against.
+	 */
+	FString GetInterpreterExecutablePath(bool* OutIsEnginePython = nullptr);
 
 	/**
 	 * Ensure that the given path is on the sys.path list.

@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 import { FunctionalTest, P4Util, Stream } from '../framework'
-import { Change } from '../test-perforce'
 
 const streams: Stream[] =
 	[ {name: 'Main', streamType: 'mainline'}
@@ -8,6 +7,7 @@ const streams: Stream[] =
 	, {name: 'Dev-Perkin-Child', streamType: 'development', parent: 'Dev-Perkin'}
 	, {name: 'Dev-Pootle', streamType: 'development', parent: 'Main'}
 	, {name: 'Dev-Pootle-Child', streamType: 'development', parent: 'Dev-Pootle'}
+	, {name: 'Dev-Pootle-Grandchild', streamType: 'development', parent: 'Dev-Pootle-Child'}
 	]
 
 export class IncognitoTest extends FunctionalTest {
@@ -21,42 +21,26 @@ export class IncognitoTest extends FunctionalTest {
 
 		await Promise.all([
 			this.p4.populate(this.getStreamPath('Dev-Perkin'), desc)
-				.then(() => void this.p4.populate(this.getStreamPath('Dev-Perkin-Child'), desc)),
+				.then(() => this.p4.populate(this.getStreamPath('Dev-Perkin-Child'), desc)),
 			this.p4.populate(this.getStreamPath('Dev-Pootle'), desc)
-				.then(() => void this.p4.populate(this.getStreamPath('Dev-Pootle-Child'), desc)) 
+				.then(() => this.p4.populate(this.getStreamPath('Dev-Pootle-Child'), desc)) 
+				.then(() => this.p4.populate(this.getStreamPath('Dev-Pootle-Grandchild'), desc)) 
 		])
 	}
 
-	run() {
-		return P4Util.editFileAndSubmit(this.getClient('Main'), 'test.txt', 'Initial content\n\nMore stuff')
+	async run() {
+		const mainClient = this.getClient('Main')
+		await P4Util.editFileAndSubmit(mainClient, 'test.txt', 'Initial content\n\nMore stuff')
+		// await P4Util.editFileAndSubmit(mainClient, 'test.txt', 'Initial content\n\nMore stuff\n\nand some more', 'grandchild')
 	}
 
 	verify() {
-		const testNameLower = this.testName.toLowerCase()
-
 		this.info('Ensuring Dev-Pootle-Child commit has no incriminating information')
 
 		return Promise.all([
-			this.getClient('Dev-Perkin-Child').changes(1)
-				.then((changes: Change[]) => {
-					const description = changes[0]!.description.toLowerCase()
-					if (description.indexOf(testNameLower) < 0) {
-						throw new Error('Expected test name to appear in description')
-					}
-					if (description.indexOf('dev-perkin') < 0) {
-						throw new Error('Expected parent branch name to appear in description')
-					}
-				}),
-			this.getClient('Dev-Pootle-Child').changes(1)
-				.then((changes: Change[]) => {
-					const description = changes[0]!.description.toLowerCase()
-					if (description.indexOf(testNameLower) >= 0) {
-						throw new Error('Expected test name not to appear in description')
-					}
-					if (description.indexOf('dev-pootle') >= 0) {
-						throw new Error('Expected parent branch name not to appear in description')
-					}
-				}),
+			this.checkDescriptionContainsEdit('Dev-Perkin-Child', [this.testName, 'Dev-Perkin']),
+			this.checkDescriptionContainsEdit('Dev-Pootle-Child', [], [this.testName, 'Dev-Pootle']),
+
 			this.checkHeadRevision('Main', 'test.txt', 2),
 			this.checkHeadRevision('Dev-Perkin', 'test.txt', 2),
 			this.checkHeadRevision('Dev-Pootle', 'test.txt', 2),
@@ -75,11 +59,14 @@ export class IncognitoTest extends FunctionalTest {
 	}
 
 	getBranches() {
+		const grandchildBranch = this.branch('Dev-Pootle-Grandchild', [])
+		grandchildBranch.aliases = ['grandchild']
 		return [ this.branch('Main', ['Dev-Perkin', 'Dev-Pootle'])
 		       , this.branch('Dev-Perkin', ['Dev-Perkin-Child'])
 		       , this.branch('Dev-Pootle', ['Dev-Pootle-Child'], true)
+		       , this.branch('Dev-Pootle-Child', ['Dev-Pootle-Grandchild'])
 		       , this.branch('Dev-Perkin-Child', [])
-		       , this.branch('Dev-Pootle-Child', [])
+		       , grandchildBranch
 		       ]
 	}
 }

@@ -62,7 +62,7 @@ public:
 
 	/** Bake scale */
 	UPROPERTY(EditAnywhere, Category = Options)
-	EBakeScaleMethod BakeScale = EBakeScaleMethod::BakeNonuniformScale;
+	EBakeScaleMethod BakeScale = EBakeScaleMethod::BakeFullScale;
 
 	/** Recenter pivot after baking transform */
 	UPROPERTY(EditAnywhere, Category = Options)
@@ -89,8 +89,7 @@ public:
 	virtual void SetAssetAPI(IToolsContextAssetAPI* AssetAPI);
 
 	virtual bool HasCancel() const override { return true; }
-	virtual bool HasAccept() const override;
-	virtual bool CanAccept() const override;
+	virtual bool HasAccept() const override { return true; }
 
 protected:
 

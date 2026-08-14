@@ -4,8 +4,20 @@
 #include "HAL/PlatformTime.h"
 #include "Templates/TypeHash.h"
 #include "UObject/PropertyPortFlags.h"
+#include "Misc/CoreDelegates.h"
 
+#if USE_ESTIMATED_UTCNOW
+#include "HAL/IConsoleManager.h"
 
+static TAutoConsoleVariable<int32> CVarEstimatedUtcNowRebaseTimeSeconds(
+	TEXT("time.EstimatedUtcNowRebaseTimeSeconds"),
+	600,
+	TEXT("Number of seconds before rebasing EstimatedUtcNow() "),
+	ECVF_ReadOnly
+);
+
+static volatile int32 RebaseEstimatedUtcNowViaDelegate = false;
+#endif // #if USE_ESTIMATED_UTCNOW
 
 /* FDateTime constants
  *****************************************************************************/
@@ -730,18 +742,39 @@ bool FDateTime::ParseIso8601(const TCHAR* DateTimeString, FDateTime& OutDateTime
 		if (*Next == TCHAR('.'))
 		{
 			Ptr = Next + 1;
-			Millisecond = FCString::Strtoi(Ptr, &Next, 10);
 
-			// should be no more than 3 digits
-			if ((Next <= Ptr) || (Next > Ptr + 3))
+			int64 MillisecondTemp = FCString::Strtoi64(Ptr, &Next, 10);
+			
+
+			//We support up to 18 digits to avoid rounding issue with 19 digits
+			if ((Next <= Ptr) || (Next > Ptr + 18))
 			{
 				return false;
 			}
 
-			for (int32 Digits = UE_PTRDIFF_TO_INT32(Next - Ptr); Digits < 3; ++Digits)
+			int32 Digits = UE_PTRDIFF_TO_INT32(Next - Ptr);
+
+			if(Digits < 3)
 			{
-				Millisecond *= 10;
+				//multiplying to account for the missing digits (would be zeros), ie 2020-08-24T05:56:14.4 should result in 400ms
+				for (; Digits < 3; ++Digits)
+				{
+					MillisecondTemp *= 10;
+				}
 			}
+			else if (Digits > 3)
+			{
+				//converting to milliseconds with rounding up -> 2020-08-24T05:56:14.459826919 will result in 460ms.
+				int64 Divisor = 1;
+				for (; Digits > 3; --Digits)
+				{
+					Divisor *= 10;
+				}
+				
+				MillisecondTemp = (MillisecondTemp + (Divisor >> 1 )) / Divisor;
+			}
+			
+			Millisecond = static_cast<int32>(MillisecondTemp);
 		}
 
 		// see if the timezone offset is included
@@ -800,8 +833,7 @@ bool FDateTime::ParseIso8601(const TCHAR* DateTimeString, FDateTime& OutDateTime
 	return true;
 }
 
-
-FDateTime FDateTime::UtcNow()
+static FDateTime PlatformUtcNow()
 {
 	int32 Year, Month, Day, DayOfWeek;
 	int32 Hour, Minute, Second, Millisecond;
@@ -811,6 +843,108 @@ FDateTime FDateTime::UtcNow()
 	return FDateTime(Year, Month, Day, Hour, Minute, Second, Millisecond);
 }
 
+#if USE_ESTIMATED_UTCNOW
+
+static void RebaseEstimatedUtcNow()
+{
+	FPlatformAtomics::AtomicStore(&RebaseEstimatedUtcNowViaDelegate, true);
+}
+
+static FDateTime EstimatedUtcNow()
+{
+	static volatile int32 bInitialized = false;
+	static volatile int32 InitializationGate = false;
+	static volatile int32 FastPathCounter = 0;
+
+	static FDateTime BaseUtc;
+	static uint64 BaseCycleCounter;
+
+	// track if any threads are potentially on the 'fast path'
+	FPlatformAtomics::InterlockedIncrement(&FastPathCounter);
+
+	if (!FPlatformAtomics::AtomicRead(&bInitialized))
+	{
+		// 'slow' (initialization) path
+		FPlatformAtomics::InterlockedDecrement(&FastPathCounter);
+
+		// ensure only one thread can enter the initialization branch and no threads are on the 'fast path'
+		const int32_t OriginalValue = FPlatformAtomics::InterlockedCompareExchange(&InitializationGate, true, false);
+		const bool bCanInitialize = InitializationGate != OriginalValue && FastPathCounter == 0;
+
+		if (bCanInitialize)
+		{
+			BaseUtc = PlatformUtcNow();
+			BaseCycleCounter = FPlatformTime::Cycles64();
+
+			static FDelegateHandle AppResumeDelegateHandle;
+			static FDelegateHandle AppReactivatedDelegateHandle;
+
+			if (!AppResumeDelegateHandle.IsValid())
+			{
+				AppResumeDelegateHandle = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddStatic(&RebaseEstimatedUtcNow);
+			}
+			if (!AppReactivatedDelegateHandle.IsValid())
+			{
+				AppReactivatedDelegateHandle = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddStatic(&RebaseEstimatedUtcNow);
+			}
+
+			FPlatformAtomics::AtomicStore(&bInitialized, true);
+			FPlatformAtomics::AtomicStore(&RebaseEstimatedUtcNowViaDelegate, false);
+			return BaseUtc;
+		}
+		else
+		{
+			return PlatformUtcNow();
+		}
+	}
+	else
+	{
+		// 'fast' path 
+		uint64_t CyclesElapsed = FPlatformTime::Cycles64() - BaseCycleCounter;
+		FTimespan SecondsElapsedSinceInit = FTimespan::FromSeconds(FPlatformTime::ToSeconds64(CyclesElapsed));
+		FDateTime CurrentUtc = BaseUtc + SecondsElapsedSinceInit;
+
+		// UTC is (almost) free from complicating concerns that interrupt the consistent increasing
+		// of time, such as daylight savings.  However leap seconds can still be inserted at the end
+		// of the last day of the month (https://en.wikipedia.org/wiki/Leap_second)
+		//
+		// Check to see if we are crossing the end-of-month boundary, and reset initialization if so.  
+		// If the UTC provider takes leap seconds then the next time through this function BaseUtc will 
+		// be initialized with the leap second added
+		int32 BaseDay;
+		BaseDay = BaseUtc.GetDay();
+
+		int32 CurrentDay;
+		CurrentDay = CurrentUtc.GetDay();
+
+		static int32 SecondsBeforeRebase = FMath::Max<int32>(0, CVarEstimatedUtcNowRebaseTimeSeconds.GetValueOnAnyThread());
+		static FTimespan SecondsBeforeRebaseTimespan = FTimespan::FromSeconds(SecondsBeforeRebase);
+
+		const bool CheckForLeapSecondRebase = (CurrentDay == 1 && BaseDay != 1);
+		const bool TimeElapsedRebase = SecondsElapsedSinceInit > SecondsBeforeRebaseTimespan;
+		if (CheckForLeapSecondRebase || TimeElapsedRebase || FPlatformAtomics::AtomicRead(&RebaseEstimatedUtcNowViaDelegate))
+		{
+			FPlatformAtomics::AtomicStore(&InitializationGate, false);
+			FPlatformAtomics::AtomicStore(&bInitialized, false);
+
+			FPlatformAtomics::InterlockedDecrement(&FastPathCounter);
+			return PlatformUtcNow();
+		}
+
+		FPlatformAtomics::InterlockedDecrement(&FastPathCounter);
+		return CurrentUtc;
+	}
+}
+#endif // #if USE_ESTIMATED_UTCNOW
+
+FDateTime FDateTime::UtcNow()
+{
+#if USE_ESTIMATED_UTCNOW
+	return EstimatedUtcNow();
+#else
+	return PlatformUtcNow();
+#endif
+}
 
 bool FDateTime::Validate(int32 Year, int32 Month, int32 Day, int32 Hour, int32 Minute, int32 Second, int32 Millisecond)
 {

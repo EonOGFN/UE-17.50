@@ -115,6 +115,7 @@
 #include "Engine/Texture.h"
 #include "Factories/TextureFactory.h"
 #include "Factories/ReimportTextureFactory.h"
+#include "Factories/TextureRenderTarget2DArrayFactoryNew.h"
 #include "Factories/TextureRenderTargetCubeFactoryNew.h"
 #include "Factories/TextureRenderTargetVolumeFactoryNew.h"
 #include "Factories/TextureRenderTargetFactoryNew.h"
@@ -169,6 +170,7 @@
 #include "Engine/VolumeTexture.h"
 #include "Engine/TextureRenderTarget.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/TextureRenderTarget2DArray.h"
 #include "Engine/CanvasRenderTarget2D.h"
 #include "Engine/TextureRenderTargetCube.h"
 #include "Engine/TextureRenderTargetVolume.h"
@@ -198,8 +200,8 @@
 
 #include "DDSLoader.h"
 #include "HDRLoader.h"
-#include "Factories/IESLoader.h"
 #include "Factories/TIFFLoader.h"
+#include "IESConverter.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 
@@ -534,12 +536,6 @@ UMaterialFunctionMaterialLayerFactory::UMaterialFunctionMaterialLayerFactory(con
 	bEditAfterNew = true;
 }
 
-bool UMaterialFunctionMaterialLayerFactory::CanCreateNew() const
-{
-	IMaterialEditorModule& MaterialEditorModule = FModuleManager::LoadModuleChecked<IMaterialEditorModule>( "MaterialEditor" );
-	return MaterialEditorModule.MaterialLayersEnabled();
-}
-
 UObject* UMaterialFunctionMaterialLayerFactory::FactoryCreateNew(UClass* Class,UObject* InParent,FName Name,EObjectFlags Flags,UObject* Context,FFeedbackContext* Warn)
 {
 	UMaterialFunctionMaterialLayer* Function = NewObject<UMaterialFunctionMaterialLayer>(InParent, UMaterialFunctionMaterialLayer::StaticClass(), Name, Flags);
@@ -559,12 +555,6 @@ UMaterialFunctionMaterialLayerBlendFactory::UMaterialFunctionMaterialLayerBlendF
 	SupportedClass = UMaterialFunctionMaterialLayerBlend::StaticClass();
 	bCreateNew = true;
 	bEditAfterNew = true;
-}
-
-bool UMaterialFunctionMaterialLayerBlendFactory::CanCreateNew() const
-{
-	IMaterialEditorModule& MaterialEditorModule = FModuleManager::LoadModuleChecked<IMaterialEditorModule>( "MaterialEditor" );
-	return MaterialEditorModule.MaterialLayersEnabled();
 }
 
 UObject* UMaterialFunctionMaterialLayerBlendFactory::FactoryCreateNew(UClass* Class,UObject* InParent,FName Name,EObjectFlags Flags,UObject* Context,FFeedbackContext* Warn)
@@ -1431,7 +1421,7 @@ UObject* UPackageFactory::FactoryCreateText( UClass* Class, UObject* InParent, F
 					UE_LOG(LogEditorFactories, Warning, TEXT("Package factory can only handle the map package or new packages!"));
 					return nullptr;
 				}
-				TopLevelPackage = CreatePackage(nullptr, *(PackageName.ToString()));
+				TopLevelPackage = CreatePackage( *(PackageName.ToString()));
 				TopLevelPackage->SetFlags(RF_Standalone|RF_Public);
 				MapPackages.Add(TopLevelPackage->GetName(), TopLevelPackage);
 
@@ -1985,16 +1975,15 @@ bool UPhysicalMaterialFactoryNew::ConfigureProperties()
 }
 UObject* UPhysicalMaterialFactoryNew::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
-	if (PhysicalMaterialClass != nullptr)
-	{
-		return NewObject<UPhysicalMaterial>(InParent, PhysicalMaterialClass, Name, Flags | RF_Transactional);
-	}
-	else
-	{
-		// if we have no data asset class, use the passed-in class instead
-		check(Class->IsChildOf(UPhysicalMaterial::StaticClass()));
-		return NewObject<UPhysicalMaterial>(InParent, Class, Name, Flags);
-	}
+	EObjectFlags MaterialFlags = PhysicalMaterialClass.Get() ? Flags | RF_Transactional : Flags;
+	UClass* ClassToUse = PhysicalMaterialClass.Get() ? PhysicalMaterialClass.Get() : Class;
+	
+	check(ClassToUse->IsChildOf(UPhysicalMaterial::StaticClass()));
+
+	UPhysicalMaterial* NewMaterial = NewObject<UPhysicalMaterial>(InParent, ClassToUse, Name, MaterialFlags);
+	// A call to get will ensure any physics-engine specific data is built
+	NewMaterial->GetPhysicsMaterial();
+	return NewMaterial;
 }
 
 /*------------------------------------------------------------------------------
@@ -2236,6 +2225,34 @@ UObject* UCurveLinearColorAtlasFactory::FactoryCreateNew(UClass* Class, UObject*
 	return Object;
 }
 
+/*-----------------------------------------------------------------------------
+	UTextureRenderTarget2DArrayFactoryNew
+-----------------------------------------------------------------------------*/
+UTextureRenderTarget2DArrayFactoryNew::UTextureRenderTarget2DArrayFactoryNew(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+
+	SupportedClass = UTextureRenderTarget2DArray::StaticClass();
+	bCreateNew = true;
+	bEditAfterNew = true;
+	bEditorImport = false;
+
+	Width = 256;
+	Height = 256;
+	Slices = 1;
+	Format = 0;
+}
+
+UObject* UTextureRenderTarget2DArrayFactoryNew::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+{
+	// create the new object
+	UTextureRenderTarget2DArray* Result = NewObject<UTextureRenderTarget2DArray>(InParent, Class, Name, Flags);
+
+	// initialize the resource
+	Result->InitAutoFormat(Width, Height, Slices);
+
+	return (Result);
+}
 
 /*-----------------------------------------------------------------------------
 	UTextureRenderTargetCubeFactoryNew
@@ -4120,31 +4137,28 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 	if(!FCString::Stricmp(Type, TEXT("ies")))
 	{
 		// checks for .IES extension to avoid wasting loading large assets just to reject them during header parsing
-		FIESLoadHelper IESLoadHelper(Buffer, Length);
+		FIESConverter IESConverter(Buffer, Length);
 
-		if(IESLoadHelper.IsValid())
+		if(IESConverter.IsValid())
 		{
-			TArray<uint8> RAWData;
-			float Multiplier = IESLoadHelper.ExtractInRGBA16F(RAWData);
-
 			UTextureLightProfile* Texture = Cast<UTextureLightProfile>( CreateOrOverwriteAsset(UTextureLightProfile::StaticClass(), InParent, Name, Flags) );
 			if ( Texture )
 			{
 				Texture->Source.Init(
-					IESLoadHelper.GetWidth(),
-					IESLoadHelper.GetHeight(),
+					IESConverter.GetWidth(),
+					IESConverter.GetHeight(),
 					/*NumSlices=*/ 1,
 					1,
 					TSF_RGBA16F,
-					RAWData.GetData()
+					IESConverter.GetRawData().GetData()
 					);
 
 				Texture->AddressX = TA_Clamp;
 				Texture->AddressY = TA_Clamp;
 				Texture->CompressionSettings = TC_HDR;
 				MipGenSettings = TMGS_NoMipmaps;
-				Texture->Brightness = IESLoadHelper.GetBrightness();
-				Texture->TextureMultiplier = Multiplier;
+				Texture->Brightness = IESConverter.GetBrightness();
+				Texture->TextureMultiplier = IESConverter.GetMultiplier();
 			}
 
 			return Texture;
@@ -4434,6 +4448,12 @@ UObject* UTextureFactory::FactoryCreateBinary
 		// Update with new settings, which should disable streaming...
 		ExistingTexture2D->UpdateResource();
 	}
+	if(ExistingTexture)
+	{
+		// Wait for InitRHI() to complete before the FTextureReferenceReplacer calls ReleaseRHI() to follow the workflow.
+		// Static texture needs to avoid having pending InitRHI() before enqueuing ReleaseRHI() to safely track access of the PlatformData on the renderthread.
+		ExistingTexture->WaitForPendingInitOrStreaming();
+	}
 	
 	FTextureReferenceReplacer RefReplacer(ExistingTexture);
 
@@ -4663,7 +4683,7 @@ UObject* UTextureFactory::FactoryCreateBinary
 		// Create the package for the material
 		const FString MaterialName = FString::Printf( TEXT("%s_Mat"), *TextureName.ToString() );
 		const FString MaterialPackageName = FPackageName::GetLongPackagePath(InParent->GetName()) + TEXT("/") + MaterialName;
-		UPackage* MaterialPackage = CreatePackage(nullptr, *MaterialPackageName);
+		UPackage* MaterialPackage = CreatePackage( *MaterialPackageName);
 
 		// Create the material
 		UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
@@ -4801,16 +4821,20 @@ bool UTextureFactory::IsImportResolutionValid(int32 Width, int32 Height, bool bA
 	// Check if the texture is above the supported resolution and prompt the user if they wish to continue if it is
 	if ( Width > MaximumSupportedResolution || Height > MaximumSupportedResolution )
 	{
-		if ( EAppReturnType::Yes != FMessageDialog::Open( EAppMsgType::YesNo, FText::Format(
-				NSLOCTEXT("UnrealEd", "Warning_LargeTextureImport", "Attempting to import {0} x {1} texture, proceed?\nLargest supported texture size: {2} x {3}"),
-				FText::AsNumber(Width), FText::AsNumber(Height), FText::AsNumber(MaximumSupportedResolution), FText::AsNumber(MaximumSupportedResolution)) ) )
+		if ((Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
 		{
+			Warn->Log(ELogVerbosity::Error, *FText::Format(
+				NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLarge", "Texture is too large to import. The current maximun is {0} pixels"),
+				FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+				).ToString());
+
 			bValid = false;
 		}
 
-		if (bValid && (Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
+		if ( bValid && EAppReturnType::Yes != FMessageDialog::Open( EAppMsgType::YesNo, FText::Format(
+				NSLOCTEXT("UnrealEd", "Warning_LargeTextureImport", "Attempting to import {0} x {1} texture, proceed?\nLargest supported texture size: {2} x {3}"),
+				FText::AsNumber(Width), FText::AsNumber(Height), FText::AsNumber(MaximumSupportedResolution), FText::AsNumber(MaximumSupportedResolution)) ) )
 		{
-			Warn->Log(ELogVerbosity::Error, *NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLarge", "Texture is too large to import").ToString());
 			bValid = false;
 		}
 	}
@@ -5443,7 +5467,7 @@ UObject* UFontFileImportFactory::FactoryCreateBinary(UClass* InClass, UObject* I
 		UFontFactory* FontFactory = NewObject<UFontFactory>();
 		FontFactory->bEditAfterNew = false;
 
-		UPackage* FontPackage = CreatePackage(nullptr, *FontPackageName);
+		UPackage* FontPackage = CreatePackage( *FontPackageName);
 		UFont* Font = Cast<UFont>(FontFactory->FactoryCreateNew(UFont::StaticClass(), FontPackage, *FontAssetName, InFlags, InContext, InWarn));
 		if (Font)
 		{
@@ -6008,7 +6032,21 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 
 	UFbxStaticMeshImportData* ImportData = Cast<UFbxStaticMeshImportData>(Mesh->AssetImportData);
 	
-	UFbxImportUI* ReimportUI = NewObject<UFbxImportUI>();
+	UFbxImportUI* ReimportUI;
+	UFbxImportUI* OverrideImportUI = AssetImportTask ? Cast<UFbxImportUI>(AssetImportTask->Options) : nullptr;
+	if (OverrideImportUI)
+	{
+		ReimportUI = OverrideImportUI;
+	}
+	else
+	{
+		if (AssetImportTask && AssetImportTask->Options)
+		{
+			UE_LOG(LogFbx, Display, TEXT("The options set in the Asset Import Task are not of type UFbxImportUI and will be ignored"));
+		}
+		ReimportUI = NewObject<UFbxImportUI>();
+	}
+
 	ReimportUI->MeshTypeToImport = FBXIT_StaticMesh;
 	ReimportUI->StaticMeshImportData->bCombineMeshes = true;
 
@@ -6136,8 +6174,8 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 			}
 
 			// preserve settings in navcollision subobject
-			UNavCollisionBase* NavCollision = Mesh->NavCollision ? 
-				(UNavCollisionBase*)StaticDuplicateObject(Mesh->NavCollision, GetTransientPackage()) :
+			UNavCollisionBase* NavCollision = Mesh->GetNavCollision() ? 
+				(UNavCollisionBase*)StaticDuplicateObject(Mesh->GetNavCollision(), GetTransientPackage()) :
 				nullptr;
 
 			bool bAddedNavCollisionDupToRoot = false;
@@ -6175,7 +6213,7 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 						//if the duplicated temporary UObject was add to root, we must remove it from the root
 						NavCollision->RemoveFromRoot();
 					}
-					Mesh->NavCollision = NavCollision;
+					Mesh->SetNavCollision(NavCollision);
 					NavCollision->Rename(NULL, Mesh, REN_DontCreateRedirectors | REN_DoNotDirty);
 				}
 
@@ -6328,7 +6366,21 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 	UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(SkeletalMesh->AssetImportData);
 	
 	// Prepare the import options
-	UFbxImportUI* ReimportUI = NewObject<UFbxImportUI>();
+	UFbxImportUI* ReimportUI;
+	UFbxImportUI* OverrideImportUI = AssetImportTask ? Cast<UFbxImportUI>(AssetImportTask->Options) : nullptr;
+	if (OverrideImportUI)
+	{
+		ReimportUI = OverrideImportUI;
+	}
+	else
+	{
+		if (AssetImportTask && AssetImportTask->Options)
+		{
+			UE_LOG(LogFbx, Display, TEXT("The options set in the Asset Import Task are not of type UFbxImportUI and will be ignored"));
+		}
+		ReimportUI = NewObject<UFbxImportUI>();
+	}
+
 	ReimportUI->MeshTypeToImport = FBXIT_SkeletalMesh;
 	ReimportUI->Skeleton = SkeletalMesh->Skeleton;
 	ReimportUI->bCreatePhysicsAsset = false;
@@ -6756,13 +6808,6 @@ EReimportResult::Type UReimportFbxAnimSequenceFactory::Reimport( UObject* Obj )
 	{
 		return EReimportResult::Failed;
 	}
-	// If there is no file path provided, can't reimport from source
-// 	if ( !Filename.Len() )
-// 	{
-// 		// Since this is a new system most skeletal meshes don't have paths, so logging has been commented out
-// 		//UE_LOG(LogEditorFactories, Warning, TEXT("-- cannot reimport: skeletal mesh resource does not have path stored."));
-// 		return false;
-// 	}
 
 	UE_LOG(LogEditorFactories, Log, TEXT("Performing atomic reimport of [%s]"), *Filename);
 
@@ -6797,8 +6842,15 @@ EReimportResult::Type UReimportFbxAnimSequenceFactory::Reimport( UObject* Obj )
 		//Set the selected skeleton in the anim sequence
 		AnimSequence->SetSkeleton(Skeleton);
 	}
+
+	UFbxImportUI* OverrideImportUI = AssetImportTask ? Cast<UFbxImportUI>(AssetImportTask->Options) : nullptr;
+	if (!OverrideImportUI && AssetImportTask && AssetImportTask->Options)
+	{
+		UE_LOG(LogFbx, Display, TEXT("The options set in the Asset Import Task are not of type UFbxImportUI and will be ignored"));
+	}
+
 	bool bOutImportAll = false;
-	if ( UEditorEngine::ReimportFbxAnimation(Skeleton, AnimSequence, ImportData, *Filename, bOutImportAll, bShowOption && !IsAutomatedImport()) )
+	if ( UEditorEngine::ReimportFbxAnimation(Skeleton, AnimSequence, ImportData, *Filename, bOutImportAll, bShowOption && !IsAutomatedImport(), OverrideImportUI) )
 	{
 		if (bOutImportAll)
 		{

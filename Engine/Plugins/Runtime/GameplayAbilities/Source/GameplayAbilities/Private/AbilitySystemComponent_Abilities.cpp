@@ -257,6 +257,7 @@ FGameplayAbilitySpecHandle UAbilitySystemComponent::GiveAbility(const FGameplayA
 		return Spec.Handle;
 	}
 	
+	ABILITYLIST_SCOPE_LOCK();
 	FGameplayAbilitySpec& OwnedSpec = ActivatableAbilities.Items[ActivatableAbilities.Items.Add(Spec)];
 	
 	if (OwnedSpec.Ability->GetInstancingPolicy() == EGameplayAbilityInstancingPolicy::InstancedPerActor)
@@ -885,8 +886,11 @@ void UAbilitySystemComponent::CancelAllAbilities(UGameplayAbility* Ignore)
 void UAbilitySystemComponent::DestroyActiveState()
 {
 	// If we haven't already begun being destroyed
-	if ((GetFlags() & RF_BeginDestroyed) == 0)
+	if (!bDestroyActiveStateInitiated && ((GetFlags() & RF_BeginDestroyed) == 0))
 	{
+		// Avoid re-entrancy (ie if during CancelAbilities() an EndAbility callback destroys the Actor owning this ability system)
+		bDestroyActiveStateInitiated = true;
+
 		// Cancel all abilities before we are destroyed.
 		FGameplayAbilityActorInfo* ActorInfo = AbilityActorInfo.Get();
 		
@@ -1516,14 +1520,29 @@ void UAbilitySystemComponent::InternalServerTryActivateAbility(FGameplayAbilityS
 		return;
 	}
 
+	const UGameplayAbility* AbilityToActivate = Spec->Ability;
+
+	if (!ensure(AbilityToActivate))
+	{
+		ABILITY_LOG(Error, TEXT("InternalServerTryActiveAbility. Rejecting ClientActivation of unconfigured spec ability!"));
+		ClientActivateAbilityFailed(Handle, PredictionKey.Current);
+		return;
+	}
+
+	// Ignore a client trying to activate an ability requiring server execution
+	if (AbilityToActivate->GetNetSecurityPolicy() == EGameplayAbilityNetSecurityPolicy::ServerOnlyExecution ||
+		AbilityToActivate->GetNetSecurityPolicy() == EGameplayAbilityNetSecurityPolicy::ServerOnly)
+	{
+		ABILITY_LOG(Display, TEXT("InternalServerTryActiveAbility. Rejecting ClientActivation of %s due to security policy violation."), *GetNameSafe(AbilityToActivate));
+		ClientActivateAbilityFailed(Handle, PredictionKey.Current);
+		return;
+	}
+
 	// Consume any pending target info, to clear out cancels from old executions
 	ConsumeAllReplicatedData(Handle, PredictionKey);
 
 	FScopedPredictionWindow ScopedPredictionWindow(this, PredictionKey);
 
-	const UGameplayAbility* AbilityToActivate = Spec->Ability;
-
-	ensure(AbilityToActivate);
 	ensure(AbilityActorInfo.IsValid());
 
 	SCOPE_CYCLE_COUNTER(STAT_AbilitySystemComp_ServerTryActivate);
@@ -1568,7 +1587,7 @@ void UAbilitySystemComponent::ReplicateEndOrCancelAbility(FGameplayAbilitySpecHa
 				}
 			}
 		}
-		else
+		else if(Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnlyTermination && Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnly)
 		{
 			// This passes up the current prediction key if we have one
 			if (bWasCanceled)
@@ -1643,11 +1662,18 @@ void UAbilitySystemComponent::ForceCancelAbilityDueToReplication(UGameplayAbilit
 
 void UAbilitySystemComponent::ServerEndAbility_Implementation(FGameplayAbilitySpecHandle AbilityToEnd, FGameplayAbilityActivationInfo ActivationInfo, FPredictionKey PredictionKey)
 {
-	SCOPE_CYCLE_COUNTER(STAT_AbilitySystemComp_ServerEndAbility);
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(AbilityToEnd);
 
-	FScopedPredictionWindow ScopedPrediction(this, PredictionKey);
-	
-	RemoteEndOrCancelAbility(AbilityToEnd, ActivationInfo, false);
+	if (Spec && Spec->Ability &&
+		Spec->Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnlyTermination &&
+		Spec->Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnly)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_AbilitySystemComp_ServerEndAbility);
+
+		FScopedPredictionWindow ScopedPrediction(this, PredictionKey);
+
+		RemoteEndOrCancelAbility(AbilityToEnd, ActivationInfo, false);
+	}
 }
 
 bool UAbilitySystemComponent::ServerEndAbility_Validate(FGameplayAbilitySpecHandle AbilityToEnd, FGameplayAbilityActivationInfo ActivationInfo, FPredictionKey PredictionKey)
@@ -1662,7 +1688,14 @@ void UAbilitySystemComponent::ClientEndAbility_Implementation(FGameplayAbilitySp
 
 void UAbilitySystemComponent::ServerCancelAbility_Implementation(FGameplayAbilitySpecHandle AbilityToCancel, FGameplayAbilityActivationInfo ActivationInfo)
 {
-	RemoteEndOrCancelAbility(AbilityToCancel, ActivationInfo, true);
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(AbilityToCancel);
+
+	if (Spec && Spec->Ability &&
+		Spec->Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnlyTermination &&
+		Spec->Ability->GetNetSecurityPolicy() != EGameplayAbilityNetSecurityPolicy::ServerOnly)
+	{
+		RemoteEndOrCancelAbility(AbilityToCancel, ActivationInfo, true);
+	}
 }
 
 bool UAbilitySystemComponent::ServerCancelAbility_Validate(FGameplayAbilitySpecHandle AbilityToCancel, FGameplayAbilityActivationInfo ActivationInfo)
@@ -2357,14 +2390,14 @@ void UAbilitySystemComponent::ClearDebugInstantEffects()
 
 // ---------------------------------------------------------------------------
 
-float UAbilitySystemComponent::PlayMontage(UGameplayAbility* InAnimatingAbility, FGameplayAbilityActivationInfo ActivationInfo, UAnimMontage* NewAnimMontage, float InPlayRate, FName StartSectionName)
+float UAbilitySystemComponent::PlayMontage(UGameplayAbility* InAnimatingAbility, FGameplayAbilityActivationInfo ActivationInfo, UAnimMontage* NewAnimMontage, float InPlayRate, FName StartSectionName, float StartTimeSeconds)
 {
 	float Duration = -1.f;
 
 	UAnimInstance* AnimInstance = AbilityActorInfo.IsValid() ? AbilityActorInfo->GetAnimInstance() : nullptr;
 	if (AnimInstance && NewAnimMontage)
 	{
-		Duration = AnimInstance->Montage_Play(NewAnimMontage, InPlayRate);
+		Duration = AnimInstance->Montage_Play(NewAnimMontage, InPlayRate, EMontagePlayReturnType::MontageLength, StartTimeSeconds);
 		if (Duration > 0.f)
 		{
 			if (LocalAnimMontageInfo.AnimatingAbility && LocalAnimMontageInfo.AnimatingAbility != InAnimatingAbility)

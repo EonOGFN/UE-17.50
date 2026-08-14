@@ -109,14 +109,7 @@ OPENCOLORIO_API void FOpenColorIOTransformResource::GetShaderMapId(EShaderPlatfo
 		OutId.ShaderCodeHash = ShaderCodeHash;
 		OutId.SetShaderDependencies(ShaderTypes, InPlatform);
 #if WITH_EDITOR
-		if (TargetPlatform)
-		{
-			OutId.LayoutParams.InitializeForPlatform(TargetPlatform->IniPlatformName(), TargetPlatform->HasEditorOnlyData());
-		}
-		else
-		{
-			OutId.LayoutParams.InitializeForCurrent();
-		}
+		OutId.LayoutParams.InitializeForPlatform(TargetPlatform);
 #else
 		if (TargetPlatform != nullptr)
 		{
@@ -192,6 +185,9 @@ void FOpenColorIOTransformResource::SerializeShaderMap(FArchive& Ar)
 				// Toss the loaded shader data if this is a server only instance (@todo - don't cook it in the first place) or if it's for a different RHI than the current one
 				if (bSuccessfullyLoaded && FApp::CanEverRender())
 				{
+#if WITH_EDITOR
+					GameThreadShaderMap->AssociateWithAsset(AssetPath);
+#endif
 					GameThreadShaderMap = RenderingThreadShaderMap = LoadedShaderMap;
 				}
 			}
@@ -199,11 +195,14 @@ void FOpenColorIOTransformResource::SerializeShaderMap(FArchive& Ar)
 	}
 }
 
-void FOpenColorIOTransformResource::SetupResource(ERHIFeatureLevel::Type InFeatureLevel, const FString& InShaderCodeHash, const FString& InShadercode, const FString& InFriendlyName)
+void FOpenColorIOTransformResource::SetupResource(ERHIFeatureLevel::Type InFeatureLevel, const FString& InShaderCodeHash, const FString& InShadercode, const FString& InFriendlyName, const FString& InAssetPath)
 {
 	ShaderCodeHash = InShaderCodeHash;
 	ShaderCode = InShadercode;
 	FriendlyName = InFriendlyName;
+#if WITH_EDITOR
+	AssetPath = InAssetPath;
+#endif // WITH_EDITOR
 
 	SetFeatureLevel(InFeatureLevel);
 }
@@ -284,6 +283,14 @@ bool FOpenColorIOTransformResource::CacheShaders(const FOpenColorIOShaderMapId& 
 	bAssumeShaderMapIsComplete = (bContainsInlineShaders || FPlatformProperties::RequiresCookedData());
 #endif
 
+#if WITH_EDITOR
+	// maintain asset association for newly loaded shader maps
+	if (GameThreadShaderMap)
+	{
+		GameThreadShaderMap->AssociateWithAsset(AssetPath);
+	}
+#endif // WITH_EDITOR
+
 	if (GameThreadShaderMap && GameThreadShaderMap->TryToAddToExistingCompilationTask(this))
 	{
 #if DEBUG_INFINITESHADERCOMPILE
@@ -356,25 +363,6 @@ void FOpenColorIOTransformResource::FinishCompilation()
 #endif
 }
 
-OPENCOLORIO_API  TShaderRef<FOpenColorIOPixelShader> FOpenColorIOTransformResource::GetShader() const
-{
-	check(!GIsThreadedRendering || !IsInGameThread());
-	if (!GIsEditor || RenderingThreadShaderMap)
-	{
-		return RenderingThreadShaderMap->GetShader<FOpenColorIOPixelShader>();
-	}
-	return TShaderRef<FOpenColorIOPixelShader>();
-};
-
-OPENCOLORIO_API  TShaderRef<FOpenColorIOPixelShader> FOpenColorIOTransformResource::GetShaderGameThread() const
-{
-	if (GameThreadShaderMap)
-	{
-		return GameThreadShaderMap->GetShader<FOpenColorIOPixelShader>();
-	}
-
-	return TShaderRef<FOpenColorIOPixelShader>();
-};
 
 void FOpenColorIOTransformResource::GetShaderMapIDsWithUnfinishedCompilation(TArray<int32>& OutShaderMapIds)
 {
@@ -407,9 +395,12 @@ bool FOpenColorIOTransformResource::BeginCompileShaderMap(const FOpenColorIOShad
 	SCOPE_SECONDS_COUNTER(OpenColorIOCompileTime);
 
 	TRefCountPtr<FOpenColorIOShaderMap> NewShaderMap = new FOpenColorIOShaderMap();
+#if WITH_EDITOR
+	NewShaderMap->AssociateWithAsset(AssetPath);
+#endif
 
 	// Create a shader compiler environment for the material that will be shared by all jobs from this material
-	TRefCountPtr<FShaderCompilerEnvironment> MaterialEnvironment = new FShaderCompilerEnvironment();
+	TRefCountPtr<FSharedShaderCompilerEnvironment> MaterialEnvironment = new FSharedShaderCompilerEnvironment();
 
 	// Compile the shaders for the transform.
 	FOpenColorIOCompilationOutput CompilationOutput;

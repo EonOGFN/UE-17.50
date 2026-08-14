@@ -1180,6 +1180,52 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 	
 	Set("TrashCan", new IMAGE_BRUSH( "Old/TrashCan", FVector2D(64, 64)));
 	Set("TrashCan_Small", new IMAGE_BRUSH( "Old/TrashCan_Small", FVector2D(18, 18)));
+
+	// Spline component controls
+	{
+		Set("SplineComponentDetails.SelectFirst", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_Front_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_Front_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_Front_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.AddPrev", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Backwards_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Backwards_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Backwards_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.SelectPrev", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Backwards_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Backwards_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Backwards_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.SelectAll", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Loop_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Loop_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Loop_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.SelectNext", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Play_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Play_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Play_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.AddNext", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Forward_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Forward_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Step_Forward_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+		Set("SplineComponentDetails.SelectLast", FButtonStyle(Button)
+			.SetNormal(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_End_24x_OFF", Icon24x24))
+			.SetHovered(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_End_24x_OFF", Icon24x24, SelectionColor))
+			.SetPressed(IMAGE_BRUSH("/Sequencer/Transport_Bar/Go_To_End_24x", Icon24x24, SelectionColor_Pressed))
+		);
+
+	}
 #endif // WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
 
 	// Embossed Widget Text
@@ -2763,7 +2809,7 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 	Set("EMovieSceneBlendType::Absolute", new IMAGE_BRUSH("Sequencer/EMovieSceneBlendType_Absolute", FVector2D(32, 16)));
 	Set("EMovieSceneBlendType::Relative", new IMAGE_BRUSH("Sequencer/EMovieSceneBlendType_Relative", FVector2D(32, 16)));
 	Set("EMovieSceneBlendType::Additive", new IMAGE_BRUSH("Sequencer/EMovieSceneBlendType_Additive", FVector2D(32, 16)));
-
+	Set("EMovieSceneBlendType::AdditiveFromBase", new IMAGE_BRUSH("Sequencer/EMovieSceneBlendType_AdditiveFromBase", FVector2D(32, 16)));
 
 	// Sequencer & Curve Editor Toolbar Style ( Grabs core default, copies brushes, changes separator and block spacing )
 	Set( "Sequencer.ToolBar.Background", 		new CORE_BOX_BRUSH( "Common/GroupBorder", FMargin(4.0f/16.0f) ) );
@@ -5078,33 +5124,19 @@ void FSlateEditorStyle::FStyle::SetupLevelEditorStyle()
 		Set("LevelEditor.SourceControl.Problem.Small", new IMAGE_BRUSH("Icons/icon_source_control_40x_problem", Icon20x20));
 
 		Set("LevelEditor.PreviewMode.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Disabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.SM5.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.SM5.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.SM5.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.SM5.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM5_Enabled_40x", Icon20x20));
-		Set("LevelEditor.PreviewMode.SM4.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM4_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.SM4.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM4_Enabled_40x", Icon20x20));
-		Set("LevelEditor.PreviewMode.SM4.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM4_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.SM4.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_SM4_Disabled_40x", Icon20x20));
-		Set("LevelEditor.PreviewMode.AndroidES2.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES2_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidES2.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES2_Enabled_40x", Icon20x20));
-		Set("LevelEditor.PreviewMode.AndroidES2.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES2_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidES2.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES2_Disabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.AndroidES31.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES31_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidES31.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES31_Enabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.AndroidES31.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES31_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidES31.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidES31_Disabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.AndroidVulkan.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkan_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidVulkan.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkan_Enabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.AndroidVulkan.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkan_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.AndroidVulkan.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkan_Disabled_40x", Icon20x20));
+		Set("LevelEditor.PreviewMode.AndroidVulkanSM5.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkanSM5_Enabled_40x", Icon40x40));
+		Set("LevelEditor.PreviewMode.AndroidVulkanSM5.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_AndroidVulkanSM5_Disabled_40x", Icon40x40));
 		Set("LevelEditor.PreviewMode.iOS.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOS_Enabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.iOS.Enabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOS_Enabled_40x", Icon20x20));
 		Set("LevelEditor.PreviewMode.iOS.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOS_Disabled_40x", Icon40x40));
-		Set("LevelEditor.PreviewMode.iOS.Disabled.Small", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOS_Disabled_40x", Icon20x20));
+		Set("LevelEditor.PreviewMode.iOSSM5.Enabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOSSM5_Enabled_40x", Icon40x40));
+		Set("LevelEditor.PreviewMode.iOSSM5.Disabled", new IMAGE_BRUSH("Icons/icon_PreviewMode_iOSSM5_Disabled_40x", Icon40x40));
 
 		Set("LevelEditor.ViewOptions", new IMAGE_BRUSH("Icons/icon_view_40x", Icon40x40));
 		Set( "LevelEditor.ViewOptions.Small", new IMAGE_BRUSH( "Icons/icon_view_40x", Icon20x20 ) );
@@ -5974,6 +6006,11 @@ void FSlateEditorStyle::FStyle::SetupPersonaStyle()
 		Set( "BlueprintEditor.AddNewAnimationLayer.Small", new IMAGE_BRUSH( "Icons/icon_Blueprint_AddFunction_40px", Icon20x20) );
 		Set( "BlueprintEditor.AddNewAnimationLayer", new IMAGE_BRUSH( "Icons/icon_Blueprint_AddFunction_40px", Icon40x40) );
 
+		Set( "MyBlueprint.PasteVariable", new IMAGE_BRUSH( "Icons/Edit/icon_Edit_Paste_40x", Icon40x40 ) );
+		Set( "MyBlueprint.PasteLocalVariable", new IMAGE_BRUSH( "Icons/Edit/icon_Edit_Paste_40x", Icon40x40 ) );
+		Set( "MyBlueprint.PasteFunction", new IMAGE_BRUSH( "Icons/Edit/icon_Edit_Paste_40x", Icon40x40 ) );
+		Set( "MyBlueprint.PasteMacro", new IMAGE_BRUSH( "Icons/Edit/icon_Edit_Paste_40x", Icon40x40 ) );
+
 		Set( "Kismet.Status.Unknown.Small", new IMAGE_BRUSH( "Old/Kismet2/CompileStatus_Unknown_Small", Icon16x16 ) );
 		Set( "Kismet.Status.Error.Small", new IMAGE_BRUSH( "Old/Kismet2/CompileStatus_Broken_Small", Icon16x16 ) );
 		Set( "Kismet.Status.Good.Small", new IMAGE_BRUSH( "Old/Kismet2/CompileStatus_Good_Small", Icon16x16 ) );
@@ -6526,7 +6563,7 @@ void FSlateEditorStyle::FStyle::SetupClassIconsAndThumbnails()
 		Set("ClassIcon.ArrowComponent", new IMAGE_BRUSH("Icons/ActorIcons/Arrow_16px", Icon16x16));
 		Set("ClassIcon.AtmosphericFogComponent", new IMAGE_BRUSH("Icons/AssetIcons/AtmosphericFog_16x", Icon16x16));
 		Set("ClassIcon.SkyAtmosphereComponent", new IMAGE_BRUSH("Icons/AssetIcons/SkyAtmosphere_16x", Icon16x16));
-		Set("ClassIcon.VolumetricCloudComponent", new IMAGE_BRUSH("Icons/AssetIcons/SkyAtmosphere_16x", Icon16x16));
+		Set("ClassIcon.VolumetricCloudComponent", new IMAGE_BRUSH("Icons/AssetIcons/VolumetricCloud_16x", Icon16x16));
 		Set("ClassIcon.BoxComponent", new IMAGE_BRUSH("Icons/ActorIcons/Box_16px", Icon16x16));
 		Set("ClassIcon.CapsuleComponent", new IMAGE_BRUSH("Icons/ActorIcons/Capsule_16px", Icon16x16));
 		Set("ClassIcon.InstancedStaticMeshComponent", new IMAGE_BRUSH("Icons/ActorIcons/InstancedStaticMesh_16px", Icon16x16));
@@ -7342,19 +7379,17 @@ void FSlateEditorStyle::FStyle::SetupToolkitStyles()
 	{
 		Set( "DataTableEditor.Tabs.Properties", new IMAGE_BRUSH( "/Icons/icon_tab_SelectionDetails_16x", Icon16x16 ) );
 
-		Set("DataTableEditor.Copy", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Copy_40x", Icon32x32));
-		Set("DataTableEditor.Paste", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Paste_40x", Icon32x32));
-		Set("DataTableEditor.Duplicate", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Duplicate_40x", Icon32x32));
-		Set("DataTableEditor.Save", new IMAGE_BRUSH("Icons/icon_SaveAsset_40x", Icon16x16));
-		Set("DataTableEditor.Browse", new IMAGE_BRUSH("Icons/lens_12x", Icon16x16));
-		Set("DataTableEditor.Add", new IMAGE_BRUSH("Icons/icon_add_40x", Icon32x32));
-		Set("DataTableEditor.Remove", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Delete_40x", Icon32x32));
+		Set("DataTableEditor.Copy", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Copy_40x", Icon40x40));
+		Set("DataTableEditor.Paste", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Paste_40x", Icon40x40));
+		Set("DataTableEditor.Duplicate", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Duplicate_40x", Icon40x40));
+		Set("DataTableEditor.Add", new IMAGE_BRUSH("Icons/icon_add_40x", Icon40x40));
+		Set("DataTableEditor.Remove", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Delete_40x", Icon40x40));
 
-		Set("DataTableEditor.Copy.Small", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Copy_40x", Icon16x16));
-		Set("DataTableEditor.Paste.Small", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Paste_40x", Icon16x16));
-		Set("DataTableEditor.Duplicate.Small", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Duplicate_40x", Icon16x16));
-		Set("DataTableEditor.Add.Small", new IMAGE_BRUSH("Icons/icon_add_40x", Icon16x16));
-		Set("DataTableEditor.Remove.Small", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Delete_40x", Icon16x16));
+		Set("DataTableEditor.Copy.Small", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Copy_40x", Icon20x20));
+		Set("DataTableEditor.Paste.Small", new IMAGE_BRUSH("/Icons/Edit/icon_Edit_Paste_40x", Icon20x20));
+		Set("DataTableEditor.Duplicate.Small", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Duplicate_40x", Icon20x20));
+		Set("DataTableEditor.Add.Small", new IMAGE_BRUSH("Icons/icon_add_40x", Icon20x20));
+		Set("DataTableEditor.Remove.Small", new IMAGE_BRUSH("Icons/Edit/icon_Edit_Delete_40x", Icon20x20));
 
 
 
@@ -7450,10 +7485,6 @@ void FSlateEditorStyle::FStyle::SetupToolkitStyles()
 		Set( "MaterialEditor.CameraHome.Small", new IMAGE_BRUSH( "Icons/icon_MatEd_Home_40x", Icon20x20 ) );
 		Set( "MaterialEditor.FindInMaterial", new IMAGE_BRUSH( "Icons/icon_Blueprint_Find_40px", Icon40x40 ) );
 		Set( "MaterialEditor.FindInMaterial.Small", new IMAGE_BRUSH( "Icons/icon_Blueprint_Find_40px", Icon20x20 ) );
-
-		Set("MaterialEditor.AddSubstanceSpecialToolBar", new IMAGE_BRUSH("Icons/icon_SubstanceFactory_White_40x", Icon40x40));
-		Set("MaterialEditor.AddSubstanceSpecialMenu", new IMAGE_BRUSH("Icons/icon_SubstanceFactory_White_40x", Icon32x32));
-
 
 		Set("MaterialEditor.CellListViewRow", FTableRowStyle(NormalTableRowStyle)
 			.SetEvenRowBackgroundBrush(IMAGE_BRUSH("PropertyView/DetailCategoryMiddle", FVector2D(16, 16), FLinearColor(0.5f, 0.5f, 0.5f)))
@@ -8301,6 +8332,19 @@ void FSlateEditorStyle::FStyle::SetupAutomationStyles()
 				Set(PlatformInfo.GetIconStyleName(PlatformInfo::EPlatformIconSize::XLarge), new IMAGE_BRUSH(*PlatformInfo.GetIconPath(PlatformInfo::EPlatformIconSize::XLarge), Icon128x128));
 			}
 		}
+
+		for (auto It = PlatformInfo::GetPreviewPlatformMenuItems().CreateConstIterator(); It; ++It)
+		{
+			if(!It.Value().ActiveIconPath.IsEmpty())
+			{
+				Set(It.Value().ActiveIconName, new PLATFORM_IMAGE_BRUSH(It.Value().ActiveIconPath, Icon40x40));
+			}
+			if (!It.Value().InactiveIconPath.IsEmpty())
+			{
+				Set(It.Value().InactiveIconName, new PLATFORM_IMAGE_BRUSH(It.Value().InactiveIconPath, Icon40x40));
+			}
+		}
+
 #endif
 
 		Set("Launcher.NoHoverTableRow", FTableRowStyle(NormalTableRowStyle)

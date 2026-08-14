@@ -34,10 +34,8 @@ VTPageTableResult LightmapGetVTSampleInfo(float2 UV, uint LightmapDataIndex, flo
 	UV *= float2(1.0f, 2.0f); // Undo transform used to pack 2 lightmap coeffs in 1 texture for the non-VT default case
 
 	return TextureLoadVirtualPageTable(LightmapResourceCluster.LightmapVirtualTexturePageTable0, LightmapResourceCluster.LightmapVirtualTexturePageTable1,
-		UV, 0.0f,
-		SvPositionXY,
 		VTPageTableUniform_Unpack(GetLightmapData(LightmapDataIndex).LightmapVTPackedPageTableUniform[0], GetLightmapData(LightmapDataIndex).LightmapVTPackedPageTableUniform[1]),
-		LIGHTMAP_VTADDRESSMODE, LIGHTMAP_VTADDRESSMODE);
+		UV, LIGHTMAP_VTADDRESSMODE, LIGHTMAP_VTADDRESSMODE, 0, SvPositionXY);
 }
 
 half4 SampleLightmapVT(VTPageTableResult LightmapVTPageTableResult, uint LayerIndex, uint LightmapDataIndex, Texture2D CacheTexture, SamplerState CacheSampler)
@@ -267,8 +265,11 @@ half GetPrimaryPrecomputedShadowMask(FVertexFactoryInterpolantsVSToPS Interpolan
 
 		// Mark as shadowed for lightmapped objects with no shadowmap
 		// This is necessary because objects inside a light's influence that were determined to be completely shadowed won't be rendered with STATICLIGHTING_TEXTUREMASK==1
+		#if MOBILE_DEFERRED_SHADING
+		return 1;
+		#else
 		return 0;
-
+		#endif
 	#else
 		#if CACHED_POINT_INDIRECT_LIGHTING || CACHED_VOLUME_INDIRECT_LIGHTING
 			// output per-primitive directional light shadowing if requested

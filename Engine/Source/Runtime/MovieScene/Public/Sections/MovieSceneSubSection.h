@@ -148,6 +148,16 @@ public:
 
 	FFrameNumber MapTimeToSectionFrame(FFrameTime InPosition) const;
 
+	EMovieSceneServerClientMask GetNetworkMask() const
+	{
+		return (EMovieSceneServerClientMask)NetworkMask;
+	}
+
+	void SetNetworkMask(EMovieSceneServerClientMask InNetworkMask)
+	{
+		NetworkMask = (uint8)InNetworkMask;
+	}
+
 public:
 
 	//~ UMovieSceneSection interface
@@ -155,6 +165,10 @@ public:
 	virtual UMovieSceneSection* SplitSection( FQualifiedFrameTime SplitTime, bool bDeleteKeys ) override;
 	virtual void TrimSection( FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys) override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override { return TOptional<FFrameTime>(FFrameTime(Parameters.StartFrameOffset)); }
+
+protected:
+
+	void BuildDefaultSubSectionComponents(UMovieSceneEntitySystemLinker* EntityLinker, const UE::MovieScene::FEntityImportParams& Params, UE::MovieScene::FImportedEntity* OutImportedEntity) const;
 
 public:
 
@@ -171,6 +185,9 @@ private:
 
 	UPROPERTY()
 	float PrerollTime_DEPRECATED;
+
+	UPROPERTY(EditAnywhere, Category="Networking", meta=(Bitmask, BitmaskEnum=EMovieSceneServerClientMask))
+	uint8 NetworkMask;
 
 protected:
 

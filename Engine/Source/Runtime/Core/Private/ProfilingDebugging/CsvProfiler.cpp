@@ -1553,8 +1553,11 @@ class FCsvStreamWriter
 	TArray<FCsvStatSeries*> AllSeries;
 	TArray<class FCsvProfilerThreadDataProcessor*> DataProcessors;
 
+	uint32 RenderThreadId;
+	uint32 RHIThreadId;
+
 public:
-	FCsvStreamWriter(const TSharedRef<FArchive>& InOutputFile, bool bInContinuousWrites, int32 InBufferSize, bool bInCompressOutput);
+	FCsvStreamWriter(const TSharedRef<FArchive>& InOutputFile, bool bInContinuousWrites, int32 InBufferSize, bool bInCompressOutput, uint32 RenderThreadId, uint32 RHIThreadId);
 	~FCsvStreamWriter();
 
 	void AddSeries(FCsvStatSeries* Series);
@@ -1639,23 +1642,6 @@ private:
 	static CSV_PROFILER_INLINE uint64 GetStatID(const char* StatName) { return uint64(StatName); }
 	static CSV_PROFILER_INLINE uint64 GetStatID(const FName& StatId) { return StatId.GetComparisonIndex().ToUnstableInt(); }
 
-	static inline FString GenerateThreadName(uint32 ThreadId)
-	{
-		// Determine the thread name
-		if (ThreadId == GGameThreadId)
-		{
-			return TEXT("GameThread");
-		}
-		else if (ThreadId == GRenderThreadId)
-		{
-			return TEXT("RenderThread");
-		}
-		else
-		{
-			return FThreadManager::Get().GetThreadName(ThreadId);
-		}
-	}
-
 	static FCriticalSection TlsCS;
 	static TArray<FWeakPtr> TlsInstances;
 	static uint32 TlsSlot;
@@ -1670,11 +1656,11 @@ public:
 		}
 	}
 
-	static FORCENOINLINE FCsvProfilerThreadData* CreateTLSData()
+	static FORCENOINLINE FCsvProfilerThreadData* CreateTLSData(const FString* InThreadName = nullptr)
 	{
 		FScopeLock Lock(&TlsCS);
 
-		FSharedPtr ProfilerThreadPtr = MakeShareable(new FCsvProfilerThreadData());
+		FSharedPtr ProfilerThreadPtr = MakeShareable(new FCsvProfilerThreadData(InThreadName));
 		FPlatformTLS::SetTlsValue(TlsSlot, ProfilerThreadPtr.Get());
 
 		// Keep a weak reference to this thread data in the global array.
@@ -1687,12 +1673,12 @@ public:
 		return ProfilerThreadPtr.Get();
 	}
 
-	static CSV_PROFILER_INLINE FCsvProfilerThreadData& Get()
+	static CSV_PROFILER_INLINE FCsvProfilerThreadData& Get(const FString* InThreadName = nullptr)
 	{
 		FCsvProfilerThreadData* ProfilerThread = (FCsvProfilerThreadData*)FPlatformTLS::GetTlsValue(TlsSlot);
 		if (UNLIKELY(!ProfilerThread))
 		{
-			ProfilerThread = CreateTLSData();
+			ProfilerThread = CreateTLSData(InThreadName);
 		}
 		return *ProfilerThread;
 	}
@@ -1713,9 +1699,9 @@ public:
 		}
 	}
 
-	FCsvProfilerThreadData()
+	FCsvProfilerThreadData(const FString* InThreadName = nullptr)
 		: ThreadId(FPlatformTLS::GetCurrentThreadId())
-		, ThreadName(GenerateThreadName(ThreadId))
+		, ThreadName((InThreadName==nullptr) ? FThreadManager::GetThreadName(ThreadId) : *InThreadName)
 		, DataProcessor(nullptr)
 	{
 	}
@@ -1915,11 +1901,16 @@ class FCsvProfilerThreadDataProcessor
 
 	uint64 LastProcessedTimestamp;
 
+	uint32 RenderThreadId;
+	uint32 RHIThreadId;
+
 public:
-	FCsvProfilerThreadDataProcessor(FCsvProfilerThreadData::FSharedPtr InThreadData, FCsvStreamWriter* InWriter)
+	FCsvProfilerThreadDataProcessor(FCsvProfilerThreadData::FSharedPtr InThreadData, FCsvStreamWriter* InWriter, uint32 InRenderThreadId, uint32 InRHIThreadId)
 		: ThreadData(InThreadData)
 		, Writer(InWriter)
 		, LastProcessedTimestamp(0)
+		, RenderThreadId(InRenderThreadId)
+		, RHIThreadId(InRHIThreadId)
 	{
 		check(ThreadData->DataProcessor == nullptr);
 		ThreadData->DataProcessor = this;
@@ -1977,12 +1968,14 @@ private:
 	}
 };
 
-FCsvStreamWriter::FCsvStreamWriter(const TSharedRef<FArchive>& InOutputFile, bool bInContinuousWrites, int32 InBufferSize, bool bInCompressOutput)
+FCsvStreamWriter::FCsvStreamWriter(const TSharedRef<FArchive>& InOutputFile, bool bInContinuousWrites, int32 InBufferSize, bool bInCompressOutput, uint32 InRenderThreadId, uint32 InRHIThreadId)
 	: Stream(InOutputFile, InBufferSize, bInCompressOutput)
 	, WriteFrameIndex(-1)
 	, ReadFrameIndex(-1)
 	, bContinuousWrites(bInContinuousWrites)
 	, bFirstRow(true)
+	, RenderThreadId(InRenderThreadId)
+	, RHIThreadId(InRHIThreadId)
 {}
 
 FCsvStreamWriter::~FCsvStreamWriter()
@@ -2143,7 +2136,7 @@ void FCsvStreamWriter::Process(FCsvProcessThreadDataStats& OutStats)
 	{
 		if (!Data->DataProcessor)
 		{
-			DataProcessors.Add(new FCsvProfilerThreadDataProcessor(Data, this));
+			DataProcessors.Add(new FCsvProfilerThreadDataProcessor(Data, this, RenderThreadId, RHIThreadId));
 		}
 	}
 
@@ -2275,7 +2268,7 @@ void FCsvProfilerThreadDataProcessor::Process(FCsvProcessThreadDataStats& OutSta
 	// Flush the frame boundaries after the stat data. This way, we ensure the frame boundary data is up to date
 	// (we do not want to encounter markers from a frame which hasn't been registered yet)
 	FPlatformMisc::MemoryBarrier();
-	ECsvTimeline::Type Timeline = (ThreadData->ThreadId == GRenderThreadId || ThreadData->ThreadId == GRHIThreadId) ? ECsvTimeline::Renderthread : ECsvTimeline::Gamethread;
+	ECsvTimeline::Type Timeline = (ThreadData->ThreadId == RenderThreadId || ThreadData->ThreadId == RHIThreadId) ? ECsvTimeline::Renderthread : ECsvTimeline::Gamethread;
 
 	if (ThreadMarkers.Num() > 0)
 	{
@@ -2598,7 +2591,7 @@ void FCsvProfiler::BeginFrame()
 				else
 				{
 					
-					CsvWriter = new FCsvStreamWriter(OutputFile.ToSharedRef(), bContinuousWrites, BufferSize, bCompressOutput);
+					CsvWriter = new FCsvStreamWriter(OutputFile.ToSharedRef(), bContinuousWrites, BufferSize, bCompressOutput, RenderThreadId, RHIThreadId);
 
 					NumFramesToCapture = CurrentCommand.Value;
 					GCsvRepeatFrameCount = NumFramesToCapture;
@@ -2638,17 +2631,13 @@ void FCsvProfiler::BeginFrame()
 					SetMetadata(TEXT("ExtraDevelopmentMemoryMB"), *FString::FromInt(ExtraDevelopmentMemoryMB)); 
 #endif
 
-#if PLATFORM_COMPILER_OPTIMIZATION_PG
-					SetMetadata(TEXT("PGOEnabled"), TEXT("1"));
-#else
-					SetMetadata(TEXT("PGOEnabled"), TEXT("0"));
-#endif
+					SetMetadata(TEXT("PGOEnabled"), FPlatformMisc::IsPGOEnabled() ? TEXT("1") : TEXT("0"));
 
 					GCsvStatCounts = !!CVarCsvStatCounts.GetValueOnGameThread();
 
 					// Initialize tls before setting the capturing flag to true.
 					FCsvProfilerThreadData::InitTls();
-					TRACE_CSV_PROFILER_BEGIN_CAPTURE(*Filename, GRenderThreadId, GRHIThreadId, GDefaultWaitStatName, GCsvStatCounts);
+					TRACE_CSV_PROFILER_BEGIN_CAPTURE(*Filename, RenderThreadId, RHIThreadId, GDefaultWaitStatName, GCsvStatCounts);
 					GCsvProfilerIsCapturing = true;
 				}
 			}
@@ -3092,7 +3081,7 @@ void FCsvProfiler::RecordEvent(int32 CategoryIndex, const FString& EventText)
 	if (GCsvProfilerIsCapturing && GCsvCategoriesEnabled[CategoryIndex])
 	{
 		LLM_SCOPE(ELLMTag::CsvProfiler);
-		UE_LOG(LogCsvProfiler, Display, TEXT("CSVEvent [Frame %d] : \"%s\""), FCsvProfiler::Get()->GetCaptureFrameNumber(), *EventText);
+		UE_LOG(LogCsvProfiler, Display, TEXT("CSVEvent \"%s\" [Frame %d]"), *EventText, FCsvProfiler::Get()->GetCaptureFrameNumber());
 		FCsvProfilerThreadData::Get().AddEvent(EventText, CategoryIndex);
 	}
 }
@@ -3110,6 +3099,11 @@ void FCsvProfiler::SetMetadata(const TCHAR* Key, const TCHAR* Value)
 
 	FScopeLock Lock(&CsvProfiler->MetadataCS);
 	CsvProfiler->MetadataMap.FindOrAdd(KeyLower) = Value;
+}
+
+void FCsvProfiler::SetThreadName(const FString& InThreadName)
+{
+	FCsvProfilerThreadData::Get(&InThreadName);
 }
 
 void FCsvProfiler::RecordEventAtTimestamp(int32 CategoryIndex, const FString& EventText, uint64 Cycles64)

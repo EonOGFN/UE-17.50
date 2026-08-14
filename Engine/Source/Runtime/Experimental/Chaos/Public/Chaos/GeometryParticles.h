@@ -23,6 +23,7 @@
 
 namespace Chaos
 {
+	class FConstraintHandle;
 
 	/** Data that is associated with geometry. If a union is used an entry is created per internal geometry */
 	class CHAOS_API FPerShapeData
@@ -82,6 +83,15 @@ namespace Chaos
 		const TArray<FMaterialHandle>& GetMaterialMaskMapMaterials() const { return Materials.Read().MaterialMaskMapMaterials; }
 
 		const FShapeDirtyFlags GetDirtyFlags() const { return DirtyFlags; }
+
+		void SetMaterial(FMaterialHandle InMaterial)
+		{
+			Materials.Modify(true, DirtyFlags, Proxy, ShapeIdx, [InMaterial](FMaterialData& Data)
+			{
+				Data.Materials.Reset(1);
+				Data.Materials.Add(InMaterial);
+			});
+		}
 
 		void SetMaterials(const TArray<FMaterialHandle>& InMaterials)
 		{
@@ -205,6 +215,11 @@ namespace Chaos
 		int32 GetShapeIndex() const
 		{
 			return ShapeIdx;
+		}
+
+		void ModifyShapeIndex(int32 NewShapeIndex)
+		{
+			ShapeIdx = NewShapeIndex;
 		}
 
 	private:
@@ -346,6 +361,8 @@ namespace Chaos
 			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
+			TArrayCollection::AddArray(&MParticleConstraints);
+
 #if CHAOS_CHECKED
 			TArrayCollection::AddArray(&MDebugName);
 #endif
@@ -376,6 +393,8 @@ namespace Chaos
 			, MUserData(MoveTemp(Other.MUserData))
 			, MSyncState(MoveTemp(Other.MSyncState))
 			, MWeakParticleHandle(MoveTemp(Other.MWeakParticleHandle))
+			, MParticleConstraints(MoveTemp(Other.MParticleConstraints))
+
 #if CHAOS_DETERMINISTIC
 			, MParticleIDs(MoveTemp(Other.MParticleIDs))
 #endif
@@ -395,6 +414,8 @@ namespace Chaos
 			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
+			TArrayCollection::AddArray(&MParticleConstraints);
+
 #if CHAOS_DETERMINISTIC
 			TArrayCollection::AddArray(&MParticleIDs);
 #endif
@@ -429,6 +450,8 @@ namespace Chaos
 			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
+			TArrayCollection::AddArray(&MParticleConstraints);
+
 #if CHAOS_DETERMINISTIC
 			TArrayCollection::AddArray(&MParticleIDs);
 #endif
@@ -446,14 +469,11 @@ namespace Chaos
 		CHAOS_API virtual ~TGeometryParticlesImp()
 		{}
 
-		CHAOS_API const TRotation<T, d>& R(const int32 Index) const { return MR[Index]; }
-		CHAOS_API TRotation<T, d>& R(const int32 Index) { return MR[Index]; }
+		FORCEINLINE const TRotation<T, d>& R(const int32 Index) const { return MR[Index]; }
+		FORCEINLINE TRotation<T, d>& R(const int32 Index) { return MR[Index]; }
 
 		CHAOS_API FUniqueIdx UniqueIdx(const int32 Index) const { return MUniqueIdx[Index]; }
 		CHAOS_API FUniqueIdx& UniqueIdx(const int32 Index) { return MUniqueIdx[Index]; }
-
-		CHAOS_API void*& UserData(const int32 Index) { return MUserData[Index]; }
-		CHAOS_API const void* UserData(const int32 Index) const { return MUserData[Index]; }
 
 		CHAOS_API ESyncState& SyncState(const int32 Index) { return MSyncState[Index].State; }
 		CHAOS_API ESyncState SyncState(const int32 Index) const { return MSyncState[Index].State; }
@@ -572,7 +592,7 @@ namespace Chaos
 		const TArray<TSerializablePtr<FImplicitObject>>& GetAllGeometry() const { return MGeometry; }
 
 		typedef TGeometryParticleHandle<T, d> THandleType;
-		CHAOS_API THandleType* Handle(int32 Index) const { return const_cast<THandleType*>(MGeometryParticleHandle[Index].Get()); }
+		FORCEINLINE THandleType* Handle(int32 Index) const { return const_cast<THandleType*>(MGeometryParticleHandle[Index].Get()); }
 
 		CHAOS_API void SetHandle(int32 Index, TGeometryParticleHandle<T, d>* Handle);
 		
@@ -589,6 +609,24 @@ namespace Chaos
 
 			WeakHandle = FWeakParticleHandle(Handle(Index));
 			return WeakHandle;
+		}
+
+		CHAOS_API TArray<FConstraintHandle*>& ParticleConstraints(const int32 Index)
+		{
+			return MParticleConstraints[Index];
+		}
+
+		CHAOS_API void AddConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
+		{
+			CHAOS_ENSURE(!MParticleConstraints[Index].Contains(InConstraintHandle));
+			MParticleConstraints[Index].Add(InConstraintHandle);
+		}
+
+
+		CHAOS_API void RemoveConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
+		{
+			MParticleConstraints[Index].RemoveSingleSwap(InConstraintHandle);
+			CHAOS_ENSURE(!MParticleConstraints[Index].Contains(InConstraintHandle));
 		}
 private:
 		friend THandleType;
@@ -674,7 +712,7 @@ public:
 			}
 		}
 
-		CHAOS_API EParticleType ParticleType() const { return MParticleType; }
+		FORCEINLINE EParticleType ParticleType() const { return MParticleType; }
 
 		CHAOS_API const FPerShapeData* GetImplicitShape(int32 Index, const FImplicitObject* InObject)
 		{
@@ -723,6 +761,7 @@ public:
 		TArrayCollectionArray<void*> MUserData;
 		TArrayCollectionArray<FSyncState> MSyncState;
 		TArrayCollectionArray<FWeakParticleHandle> MWeakParticleHandle;
+		TArrayCollectionArray<TArray<FConstraintHandle*> > MParticleConstraints;
 
 		void UpdateShapesArray(const int32 Index)
 		{

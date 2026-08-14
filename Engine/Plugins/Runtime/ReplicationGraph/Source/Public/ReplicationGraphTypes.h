@@ -12,6 +12,7 @@
 #include "UObject/UObjectHash.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/NetConnection.h"
+#include "ReplicationGraphTypes.generated.h"
 
 class AActor;
 class AController;
@@ -21,7 +22,7 @@ class UReplicationGraph;
 
 struct FActorDestructionInfo;
 
-DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All );
+REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All );
 
 // Check aliases for within the system. The intention is that these can be flipped to checkSlow once the system is stable.
 
@@ -72,6 +73,7 @@ enum class EActorRepListTypeFlags : uint8
 {
 	Default = 0,
 	FastShared = 1,
+	Max, // Always keep last
 };
 
 // Tests if an actor is valid for replication: not pending kill, etc. Says nothing about wanting to replicate or should replicate, etc.
@@ -208,56 +210,50 @@ struct TActorRepListViewBase
 		return Str;
 	}
 
+	FActorRepListType* begin() const { return RepList->Data; }
+	FActorRepListType* end() const { return RepList->Data + RepList->Num; }
+
 private:
 
 	FORCEINLINE friend FActorRepListType* begin(const TActorRepListViewBase<PointerType>& View) { return View.RepList->Data; }
 	FORCEINLINE friend FActorRepListType* end(const TActorRepListViewBase<PointerType>& View) { return View.RepList->Data + View.RepList->Num; }
 };
 
-/** A view that maintains ownership/(ref counting) to an actor replication list.  */
-struct REPLICATIONGRAPH_API FActorRepListRefView : public TActorRepListViewBase<TRefCountPtr<FActorRepList>>
+/**
+ * Holds a list of replicated actors that can be added/removed to.
+ */
+struct REPLICATIONGRAPH_API FActorRepListRefView
 {
-	/** Ideally, use Reset to set the initial size of the list. But if nothing is set, the first list we request will be of this size */
-	enum { InitialListSize = 4 } ;
-
-	FActorRepListRefView() { }
-	FActorRepListRefView(FActorRepList& InRepList) { RepList = &InRepList; }
-	FORCEINLINE FActorRepListType& operator[](int32 idx) const  { repCheck(RepList); repCheck(RepList->Max > idx); return RepList->Data[idx]; }
-
-	/** Initializes a new list for a given ExpectedMaxSize. Best practice is to call this once to get a good initial size to avoid reallocations/copying. Passing 0 will preserve the current size (if current size is also 0, InitialListSize is used) */
-	void Reset(int32 ExpectedMaxSize=0)
+	FActorRepListRefView()
 	{
-		if (RepList && RepList->RefCount == 1 && RepList->Max >= ExpectedMaxSize)
+	}
+
+	UE_DEPRECATED(4.27, "This constructor is deprecated since the class does not hold FActorRepList's anymore. ")
+	FActorRepListRefView(FActorRepList& InRepList) 
+	{ 
+		RepList.Reserve(InRepList.Num);
+		for (int32 i = 0; i < InRepList.Num; ++i)
 		{
-			// We can keep using this list
-			RepList->Num = 0;
-			CachedNum = 0;
-		}
-		else
-		{
-			// We must request a new list for this size
-			RequestNewList(ExpectedMaxSize > 0 ? ExpectedMaxSize : CachedNum, false);
+			RepList.Add(InRepList.Data[i]);
 		}
 	}
 
-	/** Prepares the list for modifications. If this list is shared by other RefViews, then you will get a new underlying list to reference. ResetContent determines if the content is cleared or not (regardless of refcount/new list) */
+	/** Empties the array but does not deallocate the internal memory. Will be resized if the specified max size is bigger than the current max. */
+	void Reset(int32 ExpectedMaxSize=0)
+	{
+		RepList.Reset(ExpectedMaxSize);
+	}
+
+	/** Preallocate the array so it can hold the specified size */
+	void Reserve(int32 Size)
+	{
+		RepList.Reserve(Size);
+	}
+
+	UE_DEPRECATED(4.27, "PrepareForWrite is not needed before calling operations on the RepList anymore. Use Reserve or Reset if you want to preallocate the array to a specific size")
 	void PrepareForWrite(bool bResetContent=false)
 	{
-		if (RepList == nullptr)
-		{
-			RequestNewList(InitialListSize, false);
-		}
-		else if (RepList->RefCount > 1)
-		{
-			// This list we are viewing is shared by others, so request a new one
-			RequestNewList(CachedNum, !bResetContent);
-		}
-		else if(bResetContent)
-		{
-			// We already have our own list but need to reset back to 0
-			RepList->Num = 0;
-			CachedNum = 0;
-		}
+		// empty
 	}
 
 	bool ConditionalAdd(const FActorRepListType& NewElement)
@@ -272,83 +268,145 @@ struct REPLICATIONGRAPH_API FActorRepListRefView : public TActorRepListViewBase<
 
 	void Add(const FActorRepListType& NewElement)
 	{
-		repCheckf(RepList != nullptr, TEXT("Invalid RepList when calling add new element to a list. Call ::PrepareForWrite or ::Reset before writing!"));
-		repCheckf(RepList->RefCount == 1, TEXT("Attempting to add new element to a list with >1 RefCount (%d). Call ::PrepareForWrite before writing!"), RepList->RefCount);
-		if (CachedNum == CachedMax)
-		{
-			// We can't add more to the list we are referencing, we need to get a new list and copy the contents over. This is transparent to the caller.
-			RequestNewList(CachedMax+1, true);
-		}
-		
-		CachedData[CachedNum++] = NewElement;
-		RepList->Num++;
+		RepList.Add(NewElement);
 	}
 
+	UE_DEPRECATED(4.27, "Remove has been deprecated in favor of RemoveSlow/RemoveFast. RemoveFast is the default recommendation unless you need the list order to be stable or are removing elements inside a RangedFor iteration loop.")
 	bool Remove(const FActorRepListType& ElementToRemove)
 	{
-		int32 idx = IndexOf(ElementToRemove);
-		if (idx >= 0)
-		{
-			RemoveAtImpl(idx);
-			return true;
-		}
-		return false;
+		return RemoveSlow(ElementToRemove);
 	}
 
+	/** Removes the element quickly but changes the list order */
 	bool RemoveFast(const FActorRepListType& ElementToRemove)
 	{
-		int32 idx = IndexOf(ElementToRemove);
-		if (idx >= 0)
-		{
-			RemoveAtSwap(idx);
-			return true;
-		}
-		return false;
+		return RepList.RemoveSingleSwap(ElementToRemove) > 0;
+	}
+
+	/** Removes the element but keeps the order intact. Generally not recommended for large lists. */
+	bool RemoveSlow(const FActorRepListType& ElementToRemove)
+	{
+		return RepList.RemoveSingle(ElementToRemove) > 0;
 	}
 
 	void RemoveAtSwap(int32 idx)
 	{
-		repCheck(RepList && Num() > idx);
-		CachedData[idx] = CachedData[CachedNum-1];
-		CachedNum--;
-		RepList->Num--;
+		RepList.RemoveAtSwap(idx);
 	}
 
-	void CopyContentsFrom(const FActorRepListRefView& Source);
-	void AppendContentsFrom(const FActorRepListRefView& Source);
+	void CopyContentsFrom(const FActorRepListRefView& Source)
+	{
+		RepList = Source.RepList;
+	}
+
+	void AppendContentsFrom(const FActorRepListRefView& Source)
+	{
+		RepList.Append(Source.RepList);
+	}
+
 	bool VerifyContents_Slow() const;
 
-	int32 Num() const { return CachedNum; }
+	/** Add contents to TArray/TSet. this is intended for debugging/ease of use */
+	void AppendToTArray(TArray<FActorRepListType>& OutArray) const
+	{
+		OutArray.Append(RepList);
+	}
+	void AppendToTSet(TSet<FActorRepListType>& OutSet) const
+	{
+		OutSet.Append(RepList);
+	}
+
+	FString BuildDebugString() const;
+
+	/**
+	 * Base view functions.
+	 */
+
+	FActorRepListType& operator[](int32 idx)				{ return RepList[idx]; }
+	const FActorRepListType& operator[](int32 idx) const	{ return RepList[idx]; }
+
+	TArray<FActorRepListType>::RangedForIteratorType begin()			{ return RepList.begin(); }
+	TArray<FActorRepListType>::RangedForConstIteratorType begin() const { return RepList.begin(); }
+	TArray<FActorRepListType>::RangedForIteratorType end()				{ return RepList.end(); }
+	TArray<FActorRepListType>::RangedForConstIteratorType end() const	{ return RepList.end(); }
+
+	UE_DEPRECATED(4.27, "IsValid is deprecated now that you don't need to call PrepareForWrite before doing operations on the list. Use IsEmpty() if you need to skip doing operations on empty lists")
+	bool IsValid() const 
+	{ 
+		return true; 
+	}
+
+	bool IsEmpty() const
+	{
+		return RepList.Num() <= 0;
+	}
+
+	int32 Num() const
+	{ 
+		return RepList.Num(); 
+	}
+
+	/** Resets the container and returns the memory it held */
+	void TearDown()
+	{
+		RepList.Empty();
+	}
+	
+	UE_DEPRECATED(4.27, "ResetToNull was renamed to TearDown")
+	void ResetToNull()
+	{ 
+		TearDown();
+	}
+
+	int32 IndexOf(const FActorRepListType& Value) const
+	{
+		return RepList.IndexOfByKey(Value);
+	}
+
+	bool Contains(const FActorRepListType& Value) const
+	{
+		return RepList.Contains(Value);
+	}
 
 private:
 
-	/** Cached data from our FActorRepList to avoid looking it up each time */
-	FActorRepListType* CachedData = nullptr;
-	int32 CachedNum  = 0;
-	int32 CachedMax = 0;
+	friend struct FActorRepListStatCollector;
 
-	void RequestNewList(int32 NewSize, bool bCopyExistingContent);
+	TArray<FActorRepListType> RepList;
+};
 
-	void RemoveAtImpl(int32 Index)
+/**
+ * Gives temporary read-only access to a FActorRepListRefView by holding a reference to it.
+ */
+struct REPLICATIONGRAPH_API FActorRepListConstView
+{
+	FActorRepListConstView(const FActorRepListRefView& InListReferenced) :
+		ListReferenced(InListReferenced)
+	{}
+
+	FActorRepListType operator[](int32 idx) const
 	{
-		repCheck(RepList && Num() > Index);
-		int32 NumToMove = CachedNum - Index - 1;
-		if (NumToMove)
-		{
-			FMemory::Memmove((void*)(&CachedData[Index]), (void*)(&CachedData[Index + 1]), NumToMove * sizeof(FActorRepListType));
-		}
-
-		CachedNum--;
-		RepList->Num--;
+		return ListReferenced[idx];
 	}
+
+	int32 Num() const
+	{
+		return ListReferenced.Num();
+	}
+
+	TArray<FActorRepListType>::RangedForConstIteratorType begin() const { return ListReferenced.begin(); }
+	TArray<FActorRepListType>::RangedForConstIteratorType end() const { return ListReferenced.end(); }
+
+private:
+	const FActorRepListRefView& ListReferenced;
 };
 
 /** A read only, non owning (ref counting) view to an actor replication list: essentially a raw pointer and the category of the list. These are only created *from* FActorRepListRefView */
-struct REPLICATIONGRAPH_API FActorRepListRawView : public TActorRepListViewBase<FActorRepList*>
+
+struct UE_DEPRECATED(4.27, "Replace this struct with the new FActorRepListConstView struct.")  FActorRepListRawView : public TActorRepListViewBase<FActorRepList*>
 {
 	/** Standard ctor: make raw view from ref view */
-	FActorRepListRawView(const FActorRepListRefView& Source) { RepList = Source.RepList.GetReference(); }
-	FActorRepListRefView ToRefView() const { return FActorRepListRefView(*RepList); }
+	REPLICATIONGRAPH_API FActorRepListRawView(const FActorRepListRefView& Source) { /*deprecated*/ }
 };
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -360,6 +418,7 @@ struct REPLICATIONGRAPH_API FActorRepListRawView : public TActorRepListViewBase<
 #endif
 
 /** To be called by projects to preallocate replication lists. This isn't strictly necessary: lists will be allocated on demand as well. */
+UE_DEPRECATED(4.27, "The RepList allocator is not used anymore so preallocating is not needed.")
 REPLICATIONGRAPH_API void PreAllocateRepList(int32 ListSize, int32 NumLists);
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -369,15 +428,23 @@ REPLICATIONGRAPH_API void PreAllocateRepList(int32 ListSize, int32 NumLists);
 // --------------------------------------------------------------------------------------------------------------------------------------------
 
 /** Per-Class actor data about how the actor replicates */
+USTRUCT()
 struct FClassReplicationInfo
 {
-	FClassReplicationInfo() { }
+	GENERATED_BODY()
+
+	UPROPERTY()
 	float DistancePriorityScale = 1.f;
+	UPROPERTY()
 	float StarvationPriorityScale = 1.f;
+	UPROPERTY()
 	float AccumulatedNetPriorityBias = 0.f;
 	
+	UPROPERTY()
 	uint16 ReplicationPeriodFrame = 1;
+	UPROPERTY()
 	uint16 FastPath_ReplicationPeriodFrame = 1;
+	UPROPERTY()
 	uint16 ActorChannelFrameTimeout = 4;
 
 	TFunction<bool(AActor*)> FastSharedReplicationFunc = nullptr;
@@ -430,7 +497,9 @@ struct FClassReplicationInfo
 
 private:
 
+	UPROPERTY()
 	float CullDistance = 0.0f;
+	UPROPERTY()
 	float CullDistanceSquared = 0.f;
 
 };
@@ -511,16 +580,17 @@ struct FGlobalActorReplicationInfo
 		}
 	}
 
-	const FActorRepListRefView& GetDependentActorList() { return DependentActorList; }
+	typedef TArray<FActorRepListType> FDependantListType;
+	const FGlobalActorReplicationInfo::FDependantListType& GetDependentActorList() { return DependentActorList; }
 
 	friend struct FGlobalActorReplicationInfoMap;
 
 private:
 	/** When this actor replicates, we replicate these actors immediately afterwards (they are not gathered/prioritized/etc) */
-	FActorRepListRefView DependentActorList;
+	FDependantListType DependentActorList;
 
 	/** When this actor is added to the dependent list of a parent, track the parent here */
-	FActorRepListRefView ParentActorList;
+	FDependantListType ParentActorList;
 };
 
 /** Templatd struct for mapping UClasses to some data type. The main things this provides is that if a UClass* was not explicitly added, it will climb the class heirachy and find the best match (and then store this for faster lookup next time) */
@@ -707,28 +777,34 @@ struct FGlobalActorReplicationInfoMap
 	}
 
 	/** Removes actor data from map */
-	int32 Remove(const FActorRepListType& Actor)
+	int32 Remove(const FActorRepListType& RemovedActor)
 	{
-		if (FGlobalActorReplicationInfo* ActorInfo = Find(Actor))
+		// Clean the references to the removed actor from his dependency chain.
+		if (FGlobalActorReplicationInfo* RemovedActorInfo = Find(RemovedActor))
 		{
-			if (ActorInfo->DependentActorList.IsValid())
+			// Remove child dependents
+			for (AActor* ChildActor : RemovedActorInfo->DependentActorList)
 			{
-				for (AActor* ChildActor : ActorInfo->DependentActorList)
+				if (FGlobalActorReplicationInfo* ChildInfo = Find(ChildActor))
 				{
-					RemoveDependentActor(Actor, ChildActor);
+					ChildInfo->ParentActorList.RemoveSingleSwap(RemovedActor);
 				}
 			}
 
-			if (ActorInfo->ParentActorList.IsValid())
+			// Remove parent dependents
+			for (AActor* ParentActor : RemovedActorInfo->ParentActorList)
 			{
-				for (AActor* ParentActor : ActorInfo->ParentActorList)
+				if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
 				{
-					RemoveDependentActor(ParentActor, Actor);
+					ParentInfo->DependentActorList.RemoveSingleSwap(RemovedActor);
 				}
 			}
+
+			RemovedActorInfo->DependentActorList.Reset();
+			RemovedActorInfo->ParentActorList.Reset();
 		}
 
-		return ActorMap.Remove(Actor);
+		return ActorMap.Remove(RemovedActor);
 	}
 
 	/** Returns ClassInfo for a given class. */
@@ -774,14 +850,12 @@ struct FGlobalActorReplicationInfoMap
 		{
 			if (FGlobalActorReplicationInfo* ParentInfo = Find(Parent))
 			{
-				ParentInfo->DependentActorList.PrepareForWrite();
-				ParentInfo->DependentActorList.Remove(Child);
+				ParentInfo->DependentActorList.RemoveSingleSwap(Child);
 			}
 
 			if (FGlobalActorReplicationInfo* ChildInfo = Find(Child))
 			{
-				ChildInfo->ParentActorList.PrepareForWrite();
-				ChildInfo->ParentActorList.Remove(Parent);
+				ChildInfo->ParentActorList.RemoveSingleSwap(Parent);
 			}
 		}
 	}
@@ -794,33 +868,25 @@ struct FGlobalActorReplicationInfoMap
 			return;
 		}
 		
-		if (MainActorInfo->ParentActorList.IsValid())
+		// Remove this actor from all his parents
+		for (FActorRepListType ParentActor : MainActorInfo->ParentActorList)
 		{
-			// Remove this actor from all his parents
-			for (FActorRepListType ParentActor : MainActorInfo->ParentActorList)
+			if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
 			{
-				if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
-				{
-					ParentInfo->DependentActorList.PrepareForWrite();
-					ParentInfo->DependentActorList.Remove(MainActor);
-				}
+				ParentInfo->DependentActorList.RemoveSingleSwap(MainActor);
 			}
-			MainActorInfo->ParentActorList.Reset();
 		}
+		MainActorInfo->ParentActorList.Reset();
 
-		if (MainActorInfo->DependentActorList.IsValid())
+        // Remove all dependant childs from this actor
+		for (FActorRepListType ChildActor : MainActorInfo->DependentActorList)
 		{
-            // Remove all dependant childs from this actor
-			for (FActorRepListType ChildActor : MainActorInfo->DependentActorList)
+			if (FGlobalActorReplicationInfo* ChildInfo = Find(ChildActor))
 			{
-				if (FGlobalActorReplicationInfo* ChildInfo = Find(ChildActor))
-				{
-					ChildInfo->ParentActorList.PrepareForWrite();
-					ChildInfo->ParentActorList.Remove(MainActor);
-				}
+				ChildInfo->ParentActorList.RemoveSingleSwap(MainActor);
 			}
-			MainActorInfo->DependentActorList.Reset();
 		}
+		MainActorInfo->DependentActorList.Reset();
 	}
 
 private:
@@ -1152,24 +1218,38 @@ struct REPLICATIONGRAPH_API FGatheredReplicationActorLists
 		if (CVar_RepGraph_Verify)
 			List.VerifyContents_Slow();
 #endif
-		repCheck(List.IsValid());
 		if (List.Num() > 0)
 		{
-
-			OutReplicationLists.FindOrAdd(Flags).Emplace(FActorRepListRawView(List)); 
+			ReplicationLists[(uint32)Flags].Emplace(FActorRepListConstView(List));
 			CachedNum++;
 		}
 	}
 
-	FORCEINLINE void Reset() { OutReplicationLists.Reset(); CachedNum =0; }
-	FORCEINLINE int32 NumLists() const { return CachedNum; }
+	FORCEINLINE void Reset()
+	{ 
+		for (uint32 i = (uint32)EActorRepListTypeFlags::Default; i < (uint32)EActorRepListTypeFlags::Max; ++i)
+		{
+			ReplicationLists[i].Reset();
+		}
+		CachedNum=0; 
+	}
+	FORCEINLINE int32 NumLists() const 
+	{ 
+		return CachedNum; 
+	}
 	
-	FORCEINLINE TArray< FActorRepListRawView>& GetLists(EActorRepListTypeFlags ListFlags) { return OutReplicationLists.FindOrAdd(ListFlags); }
-	FORCEINLINE bool ContainsLists(EActorRepListTypeFlags Flags) { return OutReplicationLists.Contains(Flags); }
+	FORCEINLINE const TArray<FActorRepListConstView>& GetLists(EActorRepListTypeFlags ListFlags) const
+	{ 
+		return ReplicationLists[(uint32)ListFlags];
+	}
+	FORCEINLINE bool ContainsLists(EActorRepListTypeFlags Flags) const
+	{ 
+		return ReplicationLists[(uint32)Flags].Num() > 0;
+	}
 	
 private:
 
-	TMap<EActorRepListTypeFlags, TArray< FActorRepListRawView> > OutReplicationLists;
+	TStaticArray< TArray<FActorRepListConstView>, (uint32)EActorRepListTypeFlags::Max > ReplicationLists;
 	int32 CachedNum = 0;
 };
 
@@ -1727,3 +1807,50 @@ struct FActorConnectionPair
 
 // Generic/global pair that can be set by debug commands etc for extra logging/debugging functionality
 extern FActorConnectionPair DebugActorConnectionPair;
+
+/**
+ * This struct will passed to all nodes in the repgraph and collect information on every ActorRepList
+ */
+struct REPLICATIONGRAPH_API FActorRepListStatCollector
+{
+public:
+	FActorRepListStatCollector() {}
+
+	/** Collect stats on a single FActorRepList */
+	void VisitRepList(const class UReplicationGraphNode* NodeToVisit, const FActorRepListRefView& RepList);
+
+	/** Collect stats on a collection of FActorRepLists */
+	void VisitStreamingLevelCollection(const class UReplicationGraphNode* NodeToVisit, const struct FStreamingLevelActorListCollection& StreamingLevelList);
+
+	/** Collect stats for FActorRepLists not held by a node */
+	void VisitExplicitStreamingLevelList(FName ListOwnerName, FName StreamLevelName, const FActorRepListRefView& RepList);
+
+	/** Prevents the node from being visited twice in case it's shared multiple times */
+	void FlagNodeVisited(const class UReplicationGraphNode* NodeToVisit);
+
+	/** Print the statistics previously collected */
+	void PrintCollectedData(FOutputDevice& Ar);
+
+private:
+
+	bool WasNodeVisited(const class UReplicationGraphNode* NodeToVisit);
+
+private:
+
+	struct FRepListStats
+	{
+		uint32 NumLists = 0;
+		uint32 NumActors = 0;
+		uint32 MaxListSize = 0;
+		uint32 NumSlack = 0;
+		uint64 NumBytes = 0;
+	};
+
+	TMap<FName, FRepListStats> PerClassStats;
+
+	TMap<FName, FRepListStats> PerStreamingLevelStats;
+
+	/** Keeps track if a node was already collected since the same node can be shared across connections and visited multiple times */
+	TMap<const UObject*, bool> VisitedNodes;
+	
+};

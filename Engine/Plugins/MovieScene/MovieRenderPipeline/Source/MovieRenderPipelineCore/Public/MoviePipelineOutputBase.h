@@ -33,23 +33,7 @@ public:
 	* Called when a frame is ready for output. This will contain all passes the user has requested for the given output frame. 
 	* It also contains metrics about the output frame (such as frame number).
 	*/
-	void OnRecieveImageData(FMoviePipelineMergerOutputFrame* InMergedOutputFrame)
-	{
-		// If we were transiently added or the user has disabled us, don't try to produce any output
-		// because if the user hasn't specified an output we don't want to make it by default.
-		if (!GetIsUserCustomized() || !IsEnabled())
-		{
-			return;
-		}
-
-		OnRecieveImageDataImpl(InMergedOutputFrame);
-	}
-
-	/**
-	* If alpha is supported and desired for this output. This adds about 30% to the accumulation cost so you should only return
-	* true if you really want it (ie: Consider AND'ing it with a UI-exposed variable).
-	*/
-	bool IsAlphaSupported() const { return IsAlphaSupportedImpl(); }
+	void OnReceiveImageData(FMoviePipelineMergerOutputFrame* InMergedOutputFrame) { OnReceiveImageDataImpl(InMergedOutputFrame); }
 
 	/** 
 	* Called once when all frames have been produced for the pipeline. Use this as an indicator to start flushing to disk. 
@@ -86,8 +70,7 @@ public:
 	
 protected:
 	// UMoviePipelineOutputBase Interface
-	virtual void OnRecieveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame) {}
-	virtual bool IsAlphaSupportedImpl() const { return false; }
+	virtual void OnReceiveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame) {}
 	virtual void BeginFinalizeImpl() {}
 	virtual bool HasFinishedProcessingImpl() { return true; }
 	virtual void FinalizeImpl() {}
@@ -102,7 +85,4 @@ protected:
 #if WITH_EDITOR
 	virtual FText GetCategoryText() const override { return NSLOCTEXT("MovieRenderPipeline", "OutputCategoryName_Text", "Output"); }
 #endif
-protected:
-	virtual void ValidateStateImpl() override;
-
 };

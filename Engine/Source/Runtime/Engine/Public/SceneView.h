@@ -28,6 +28,7 @@ class FSceneViewFamily;
 class FVolumetricFogViewResources;
 class FIESLightProfileResource;
 class ITemporalUpscaler;
+struct FExposureBufferData;
 
 enum class ERayTracingRenderMode
 {
@@ -626,12 +627,13 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2D, PrevFieldOfViewWideAngles) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4, ViewRectMin, EShaderPrecisionModifier::Half) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, ViewSizeAndInvSize) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, LightProbeSizeRatioAndInvSizeRatio) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, BufferSizeAndInvSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, BufferBilinearUVMinMax) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, ScreenToViewSpace) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int32, NumSceneColorMSAASamples) \
-	VIEW_UNIFORM_BUFFER_MEMBER_EX(float, PreExposure, EShaderPrecisionModifier::Half) \
-	VIEW_UNIFORM_BUFFER_MEMBER_EX(float, OneOverPreExposure, EShaderPrecisionModifier::Half) \
+	VIEW_UNIFORM_BUFFER_MEMBER(float, PreExposure) \
+	VIEW_UNIFORM_BUFFER_MEMBER(float, OneOverPreExposure) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4, DiffuseOverrideParameter, EShaderPrecisionModifier::Half) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4, SpecularOverrideParameter, EShaderPrecisionModifier::Half) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4, NormalOverrideParameter, EShaderPrecisionModifier::Half) \
@@ -661,6 +663,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4, TranslucencyLightingVolumeInvSize, [TVC_MAX]) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, TemporalAAParams) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, CircleDOFParams) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, ForceDrawAllVelocities) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, DepthOfFieldSensorWidth) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, DepthOfFieldFocalDistance) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, DepthOfFieldScale) \
@@ -756,6 +759,16 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, HairRenderInfo) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, EnableSkyLight) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, HairRenderInfoBits) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, HairComponents) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector, PhysicsFieldClipmapCenter) \
+	VIEW_UNIFORM_BUFFER_MEMBER(float, PhysicsFieldClipmapDistance) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapResolution) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapExponent) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapCount) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldTargetCount) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldVectorTargets, [16]) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldScalarTargets, [16]) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldIntegerTargets, [16]) \
 
 #define VIEW_UNIFORM_BUFFER_MEMBER(type, identifier) \
 	SHADER_PARAMETER(type, identifier)
@@ -837,9 +850,17 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SAMPLER(SamplerState, DistantSkyLightLutTextureSampler)
 	SHADER_PARAMETER_TEXTURE(Texture3D, CameraAerialPerspectiveVolume)
 	SHADER_PARAMETER_SAMPLER(SamplerState, CameraAerialPerspectiveVolumeSampler)
+	SHADER_PARAMETER_TEXTURE(Texture3D, HairScatteringLUTTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, HairScatteringLUTSampler)
+
+	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, WaterIndirection)
+	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, WaterData)
 
 	SHADER_PARAMETER_UAV(RWBuffer<uint>, VTFeedbackBuffer)
 	SHADER_PARAMETER_UAV(RWTexture2D<uint>, QuadOverdraw)
+
+	SHADER_PARAMETER_TEXTURE(Texture3D<float4>, PhysicsFieldClipmapTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, PhysicsFieldClipmapSampler)
 
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -936,6 +957,12 @@ public:
 	/** Half of the view's stereo IPD (- for lhs, + for rhs) */
 	float StereoIPD;
 
+	/** Allow cross GPU transfer for this view */
+	bool bAllowCrossGPUTransfer;
+
+	/** Use custom GPUmask */
+	bool bOverrideGPUMask;
+
 	/** The GPU nodes on which to render this view. */
 	FRHIGPUMask GPUMask;
 
@@ -1007,10 +1034,8 @@ public:
 	/** World origin offset value. Non-zero only for a single frame when origin is rebased */
 	FVector OriginOffsetThisFrame;
 
-	/** FOV based multiplier for cull distance on objects */
+	/** Multiplier for cull distance on objects */
 	float LODDistanceFactor;
-	/** Square of the FOV based multiplier for cull distance on objects */
-	float LODDistanceFactorSquared;
 
 	/** Whether we did a camera cut for this view this frame. */
 	bool bCameraCut;
@@ -1062,9 +1087,6 @@ public:
 
 	/** True if mobile multi-view is enabled. */
 	bool bIsMobileMultiViewEnabled;
-
-	/** True if mobile multi-view direct is enabled. */
-	bool bIsMobileMultiViewDirectEnabled;
 
 	/** True if we need to bind the instanced view uniform buffer parameters. */
 	bool bShouldBindInstancedViewUB;
@@ -1141,6 +1163,10 @@ public:
 
 	/** Points to the view state's resources if a view state exists. */
 	FForwardLightingViewResources* ForwardLightingResources;
+
+	/** Water rendering related data */
+	FShaderResourceViewRHIRef WaterIndirectionBuffer;
+	FShaderResourceViewRHIRef WaterDataBuffer;
 
 	/** Feature level for this scene */
 	const ERHIFeatureLevel::Type FeatureLevel;
@@ -1249,11 +1275,6 @@ public:
 	 */
 	FVector GetTemporalLODOrigin(int32 Index, bool bUseLaggedLODTransition = true) const;
 
-	/** Get LOD distance factor: Sqrt(GetLODDistanceFactor()*SphereRadius*SphereRadius / ScreenPercentage) = distance to this LOD transition
-	 * @return distance factor
-	 */
-	float GetLODDistanceFactor() const;
-
 	/** 
 	 * Returns the blend factor between the last two LOD samples
 	 */
@@ -1336,6 +1357,19 @@ public:
 	/** Current ray tracing debug visualization mode */
 	FName CurrentRayTracingDebugVisualizationMode;
 #endif
+	/** Tells if the eye adaptation texture / buffer exists without attempting to allocate it. */
+	bool HasValidEyeAdaptationTexture() const;
+	bool HasValidEyeAdaptationBuffer() const;
+
+	/** Returns the eye adaptation texture (SM5+ only) or null if it doesn't exist. */
+	IPooledRenderTarget* GetEyeAdaptationTexture() const;
+
+	/** Returns the eye adaptation buffer (mobile) or null if it doesn't exist. */
+	const FExposureBufferData* GetEyeAdaptationBuffer() const;
+
+
+protected:
+	FSceneViewStateInterface* EyeAdaptationViewState = nullptr;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1607,6 +1641,9 @@ public:
 
 	/** When enabled, the post processing will output in HDR space */
 	bool bIsHDR;
+
+	/** True if scenecolor and depth should be multiview-allocated */
+	bool bRequireMultiView;
 
 	/** Gamma correction used when rendering this family. Default is 1.0 */
 	float GammaCorrection;

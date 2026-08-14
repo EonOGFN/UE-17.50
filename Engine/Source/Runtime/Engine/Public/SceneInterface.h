@@ -7,6 +7,7 @@
 #include "SceneTypes.h"
 #include "SceneUtils.h"
 #include "Math/SHMath.h"
+#include "RenderGraphDefinitions.h"
 
 class AWorldSettings;
 class FAtmosphericFogSceneInfo;
@@ -154,7 +155,7 @@ public:
 	 * Allocates reflection captures in the scene's reflection cubemap array and updates them by recapturing the scene.
 	 * Existing captures will only be updated.  Must be called from the game thread.
 	 */
-	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing) {}
+	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile) {}
 	virtual void ReleaseReflectionCubemap(UReflectionCaptureComponent* CaptureComponent) {}
 
 	/** 
@@ -163,8 +164,8 @@ public:
 	 */
 	virtual void UpdateSkyCaptureContents(const USkyLightComponent* CaptureComponent, bool bCaptureEmissiveOnly, UTextureCube* SourceCubemap, FTexture* OutProcessedTexture, float& OutAverageBrightness, FSHVectorRGB3& OutIrradianceEnvironmentMap, TArray<FFloat16Color>* OutRadianceMap) {}
 
-	virtual void AllocateAndCaptureFrameSkyEnvMap(FRHICommandListImmediate& RHICmdList, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud) {}
-	virtual void ValidateSkyLightRealTimeCapture(FRHICommandListImmediate& RHICmdList, FSceneRenderer& SceneRenderer, FViewInfo& MainView) {}
+	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud) {}
+	virtual void ValidateSkyLightRealTimeCapture(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneColorTexture) {}
 
 	virtual void AddPlanarReflection(class UPlanarReflectionComponent* Component) {}
 	virtual void RemovePlanarReflection(class UPlanarReflectionComponent* Component) {}
@@ -190,6 +191,9 @@ public:
 
 	/** Removes a runtime virtual texture object from the scene. */
 	virtual void RemoveRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component) {}
+
+	/* Get the bitmasks describing which virtual texture objects will hide the associated primitives. */
+	virtual void GetRuntimeVirtualTextureHidePrimitiveMask(uint8& bHideMaskEditor, uint8& bHideMaskGame) const {}
 
 	/** Invalidates pages in a runtime virtual texture object. */
 	virtual void InvalidateRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component, FBoxSphereBounds const& WorldBounds) {}
@@ -245,27 +249,31 @@ public:
 	 * Adds a new atmospheric fog component to the scene
 	 * 
 	 * @param FogComponent - fog component to add
-	 */	
-	virtual void AddAtmosphericFog(class UAtmosphericFogComponent* FogComponent) = 0;
+	 */
+	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
+	void AddAtmosphericFog(class UAtmosphericFogComponent* FogComponent) { AddAtmosphericFog_Impl(FogComponent); }
 
 	/** 
 	 * Removes a atmospheric fog component from the scene
 	 * 
 	 * @param FogComponent - fog component to remove
-	 */	
-	virtual void RemoveAtmosphericFog(class UAtmosphericFogComponent* FogComponent) = 0;
+	 */
+	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
+	void RemoveAtmosphericFog(class UAtmosphericFogComponent* FogComponent) { RemoveAtmosphericFog_Impl(FogComponent); }
 
 	/** 
 	 * Removes a atmospheric fog resource from the scene...this is just a double check to make sure we don't have stale stuff hanging around; should already be gone.
 	 * 
 	 * @param FogResource - fog resource to remove
-	 */	
-	virtual void RemoveAtmosphericFogResource_RenderThread(FRenderResource* FogResource) = 0;
+	 */
+	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
+	void RemoveAtmosphericFogResource_RenderThread(FRenderResource* FogResource) { RemoveAtmosphericFogResource_RenderThread_Impl(FogResource); }
 
 	/**
 	 * Returns the scene's FAtmosphericFogSceneInfo if it exists
 	 */
-	virtual FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo() = 0;
+	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
+	FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo() { return GetAtmosphericFogSceneInfo_Impl(); }
 
 	/**
 	 * Adds the unique volumetric cloud component to the scene
@@ -297,6 +305,24 @@ public:
 	 * @param VolumetricCloudSceneProxy - the sky atmosphere proxy
 	 */
 	virtual void RemoveVolumetricCloud(FVolumetricCloudSceneProxy* VolumetricCloudSceneProxy) = 0;
+
+	/**
+	 * Set the physics field scene proxy to the scene
+	 *
+	 * @param PhysicsFieldSceneProxy - the physics field scene proxy
+	 */
+	virtual void SetPhysicsField(class FPhysicsFieldSceneProxy* PhysicsFieldSceneProxy) = 0;
+
+	/**
+	 * Reset the physics field scene proxy
+	 */
+	virtual void ResetPhysicsField() = 0;
+
+	/**
+	 * Reset the physics field scene proxy
+	 */
+	virtual void UpdatePhysicsField(FRHICommandListImmediate& RHICmdList, FViewInfo& View) = 0;
+
 	/**
 	 * Returns the scene's unique info if it exists
 	 */
@@ -500,4 +526,11 @@ protected:
 
 	/** This scene's feature level */
 	ERHIFeatureLevel::Type FeatureLevel;
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	virtual void AddAtmosphericFog_Impl(class UAtmosphericFogComponent* FogComponent) = 0;
+	virtual void RemoveAtmosphericFog_Impl(class UAtmosphericFogComponent* FogComponent) = 0;
+	virtual void RemoveAtmosphericFogResource_RenderThread_Impl(FRenderResource* FogResource) = 0;
+	virtual FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo_Impl() = 0;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };

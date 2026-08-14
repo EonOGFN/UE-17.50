@@ -70,6 +70,42 @@ class FTextureFormatUncompressed : public ITextureFormat
 		return FTextureFormatCompressorCaps(); // Default capabilities.
 	}
 
+	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	{
+		if (BuildSettings.TextureFormatName == GTextureFormatNameG8)
+		{
+			return PF_G8;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameG16)
+		{
+			return PF_G16;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameVU8)
+		{
+			return PF_V8U8;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameBGRA8 || BuildSettings.TextureFormatName == GTextureFormatNameRGBA8 ||
+				 BuildSettings.TextureFormatName == GTextureFormatNameXGXR8)
+		{
+			return PF_B8G8R8A8;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameRGBA16F)
+		{
+			return PF_FloatRGBA;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameR16F)
+		{
+			return PF_R16F;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNamePOTERROR)
+		{
+			return PF_B8G8R8A8;
+		}
+
+		UE_LOG(LogTextureFormatUncompressed, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatUncompressed::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
+		return PF_Unknown;
+	}
+
 	virtual bool CompressImage(
 		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
@@ -77,6 +113,8 @@ class FTextureFormatUncompressed : public ITextureFormat
 		FCompressedImage2D& OutCompressedImage
 		) const override
 	{
+		OutCompressedImage.PixelFormat = GetPixelFormatForImage(BuildSettings, InImage, bImageHasAlphaChannel);
+
 		if (BuildSettings.TextureFormatName == GTextureFormatNameG8)
 		{
 			FImage Image;
@@ -85,8 +123,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_G8;
-			OutCompressedImage.RawData = Image.RawData;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
 		}
@@ -98,8 +135,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = BuildSettings.bVolume ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_G16;
-			OutCompressedImage.RawData = Image.RawData;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
 		}
@@ -111,12 +147,11 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_V8U8;
 
 			uint64 NumTexels = (uint64)Image.SizeX * Image.SizeY * Image.NumSlices;
 			OutCompressedImage.RawData.Empty(NumTexels * 2);
 			OutCompressedImage.RawData.AddUninitialized(NumTexels * 2);
-			const FColor* FirstColor = Image.AsBGRA8();
+			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
 			const FColor* LastColor = FirstColor + NumTexels;
 			int8* Dest = (int8*)OutCompressedImage.RawData.GetData();
 
@@ -136,8 +171,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_B8G8R8A8;
-			OutCompressedImage.RawData = Image.RawData;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
 		}
@@ -149,13 +183,12 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_B8G8R8A8;
 
 			// swizzle each texel
 			uint64 NumTexels = (uint64)Image.SizeX * Image.SizeY * Image.NumSlices;
 			OutCompressedImage.RawData.Empty(NumTexels * 4);
 			OutCompressedImage.RawData.AddUninitialized(NumTexels * 4);
-			const FColor* FirstColor = Image.AsBGRA8();
+			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
 			const FColor* LastColor = FirstColor + NumTexels;
 			int8* Dest = (int8*)OutCompressedImage.RawData.GetData();
 
@@ -177,13 +210,12 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_B8G8R8A8;
 
 			// swizzle each texel
 			uint64 NumTexels = (uint64)Image.SizeX * Image.SizeY * Image.NumSlices;
 			OutCompressedImage.RawData.Empty(NumTexels * 4);
 			OutCompressedImage.RawData.AddUninitialized(NumTexels * 4);
-			const FColor* FirstColor = Image.AsBGRA8();
+			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
 			const FColor* LastColor = FirstColor + NumTexels;
 			int8* Dest = (int8*)OutCompressedImage.RawData.GetData();
 
@@ -205,8 +237,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_FloatRGBA;
-			OutCompressedImage.RawData = Image.RawData;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
 		}
@@ -218,8 +249,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = BuildSettings.bVolume ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_R16F;
-			OutCompressedImage.RawData = Image.RawData;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
 		}
@@ -234,7 +264,6 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.SizeX = InImage.SizeX;
 			OutCompressedImage.SizeY = InImage.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? InImage.NumSlices : 1;
-			OutCompressedImage.PixelFormat = PF_B8G8R8A8;
 
 			// allocate output memory
 			check(InImage.NumSlices == 1);
@@ -258,7 +287,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 			
 			return true;
 		}
-		
+
 		UE_LOG(LogTextureFormatUncompressed, Warning,
 			TEXT("Cannot convert uncompressed image to format '%s'."),
 			*BuildSettings.TextureFormatName.ToString()

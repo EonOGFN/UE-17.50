@@ -214,9 +214,9 @@ bool SkeletalMeshHelper::ProcessImportMeshSkeleton(const USkeleton* SkeletonAsse
 *
 * @param ImportData - raw binary import data to process
 */
-void SkeletalMeshHelper::ProcessImportMeshInfluences(FSkeletalMeshImportData& ImportData)
+void SkeletalMeshHelper::ProcessImportMeshInfluences(FSkeletalMeshImportData& ImportData, const FString& SkeletalMeshName)
 {
-	FLODUtilities::ProcessImportMeshInfluences(ImportData.Wedges.Num(), ImportData.Influences);
+	FLODUtilities::ProcessImportMeshInfluences(ImportData.Wedges.Num(), ImportData.Influences, SkeletalMeshName);
 }
 
 bool SkeletalMeshHelperImpl::SkeletalMeshIsUsingMaterialSlotNameWorkflow(UAssetImportData* AssetImportData)
@@ -277,6 +277,7 @@ void SkeletalMeshHelperImpl::SaveSkeletalMeshLODModelSections(USkeletalMesh* Sou
 						OriginalSection.bDisabled = ReduceSection.bDisabled;
 						OriginalSection.bCastShadow = ReduceSection.bCastShadow;
 						OriginalSection.bRecomputeTangent = ReduceSection.bRecomputeTangent;
+						OriginalSection.RecomputeTangentsVertexMaskChannel = ReduceSection.RecomputeTangentsVertexMaskChannel;
 						OriginalSection.GenerateUpToLodIndex = ReduceSection.GenerateUpToLodIndex;
 						break;
 					}
@@ -295,6 +296,7 @@ void SkeletalMeshHelperImpl::SaveSkeletalMeshLODModelSections(USkeletalMesh* Sou
 					OriginalSection.bDisabled = ReduceUserSectionData->bDisabled;
 					OriginalSection.bCastShadow = ReduceUserSectionData->bCastShadow;
 					OriginalSection.bRecomputeTangent = ReduceUserSectionData->bRecomputeTangent;
+					OriginalSection.RecomputeTangentsVertexMaskChannel = ReduceUserSectionData->RecomputeTangentsVertexMaskChannel;
 					OriginalSection.GenerateUpToLodIndex = ReduceUserSectionData->GenerateUpToLodIndex;
 				}
 			}
@@ -310,13 +312,14 @@ void SkeletalMeshHelperImpl::SaveSkeletalMeshLODModelSections(USkeletalMesh* Sou
 		int32 SectionMaterialIndex = CurrentSection.MaterialIndex;
 		bool SectionCastShadow = CurrentSection.bCastShadow;
 		bool SectionRecomputeTangents = CurrentSection.bRecomputeTangent;
+		ESkinVertexColorChannel RecomputeTangentsVertexMaskChannel = CurrentSection.RecomputeTangentsVertexMaskChannel;
 		int32 GenerateUpTo = CurrentSection.GenerateUpToLodIndex;
 		bool bDisabled = CurrentSection.bDisabled;
 		bool bBoneChunkedSection = CurrentSection.ChunkedParentSectionIndex != INDEX_NONE;
 		//Save all the sections, even the chunked sections
 		if (ExistingMeshDataPtr->ExistingImportMaterialOriginalNameData.IsValidIndex(SectionMaterialIndex))
 		{
-			ExistingMeshDataPtr->ExistingImportMeshLodSectionMaterialData[LodIndex].Emplace(ExistingMeshDataPtr->ExistingImportMaterialOriginalNameData[SectionMaterialIndex], SectionCastShadow, SectionRecomputeTangents, GenerateUpTo, bDisabled);
+			ExistingMeshDataPtr->ExistingImportMeshLodSectionMaterialData[LodIndex].Emplace(ExistingMeshDataPtr->ExistingImportMaterialOriginalNameData[SectionMaterialIndex], SectionCastShadow, SectionRecomputeTangents, RecomputeTangentsVertexMaskChannel, GenerateUpTo, bDisabled);
 		}
 	}
 }
@@ -508,6 +511,11 @@ void SkeletalMeshHelperImpl::RestoreDependentLODs(const TSharedPtr<const FExisti
 void SkeletalMeshHelperImpl::RestoreLODInfo(const TSharedPtr<const FExistingSkelMeshData>& MeshData, USkeletalMesh* SkeletalMesh, int32 LodIndex)
 {
 	FSkeletalMeshLODInfo& ImportedLODInfo = SkeletalMesh->GetLODInfoArray()[LodIndex];
+	if (!MeshData->ExistingLODInfo.IsValidIndex(LodIndex))
+	{
+		return;
+	}
+
 	const FSkeletalMeshLODInfo& ExistingLODInfo = MeshData->ExistingLODInfo[LodIndex];
 
 	ImportedLODInfo.ScreenSize = ExistingLODInfo.ScreenSize;
@@ -990,7 +998,7 @@ void SkeletalMeshHelper::RestoreExistingSkelMeshData(TSharedPtr<const FExistingS
 		SkeletalMesh->AddAssetUserData(UserDataObject);
 	}
 
-	if (!bImportSkinningOnly && !MeshData->ExistingLODInfo[SafeReimportLODIndex].bHasBeenSimplified)
+	if (!bImportSkinningOnly && (!MeshData->ExistingLODInfo.IsValidIndex(SafeReimportLODIndex) || !MeshData->ExistingLODInfo[SafeReimportLODIndex].bHasBeenSimplified))
 	{
 		if (SkeletalMeshImportedModel->OriginalReductionSourceMeshData.IsValidIndex(SafeReimportLODIndex))
 		{
@@ -1086,6 +1094,7 @@ void SkeletalMeshHelperImpl::RestoreMaterialNameWorkflowSection(const TSharedPtr
 			//We have a match put back the data
 			NewSection.bCastShadow = MeshData->ExistingImportMeshLodSectionMaterialData[LodIndex][ExistSectionIndex].bCastShadow;
 			NewSection.bRecomputeTangent = MeshData->ExistingImportMeshLodSectionMaterialData[LodIndex][ExistSectionIndex].bRecomputeTangents;
+			NewSection.RecomputeTangentsVertexMaskChannel = MeshData->ExistingImportMeshLodSectionMaterialData[LodIndex][ExistSectionIndex].RecomputeTangentsVertexMaskChannel;
 			NewSection.GenerateUpToLodIndex = MeshData->ExistingImportMeshLodSectionMaterialData[LodIndex][ExistSectionIndex].GenerateUpTo;
 			NewSection.bDisabled = MeshData->ExistingImportMeshLodSectionMaterialData[LodIndex][ExistSectionIndex].bDisabled;
 			bool bBoneChunkedSection = NewSection.ChunkedParentSectionIndex >= 0;
@@ -1097,6 +1106,7 @@ void SkeletalMeshHelperImpl::RestoreMaterialNameWorkflowSection(const TSharedPtr
 				UserSectionData.bDisabled = NewSection.bDisabled;
 				UserSectionData.bCastShadow = NewSection.bCastShadow;
 				UserSectionData.bRecomputeTangent = NewSection.bRecomputeTangent;
+				UserSectionData.RecomputeTangentsVertexMaskChannel = NewSection.RecomputeTangentsVertexMaskChannel;
 				UserSectionData.GenerateUpToLodIndex = NewSection.GenerateUpToLodIndex;
 				//The cloth will be rebind later after the reimport is done
 			}

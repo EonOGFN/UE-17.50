@@ -255,7 +255,7 @@ void USplitMeshCommand::Execute(IMeshEditorModeEditingContract& MeshEditorMode)
 		FString NewMeshName = Mesh->GetName() + "_2";
 		FString NewPackageName = FPackageName::GetLongPackagePath(Mesh->GetOutermost()->GetName()) + TEXT("/") + NewMeshName;
 		NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);
-		UPackage* NewPackage = CreatePackage(nullptr, *NewPackageName);
+		UPackage* NewPackage = CreatePackage(*NewPackageName);
 		UStaticMesh* NewStaticMesh = NewObject<UStaticMesh>(NewPackage, *NewMeshName, RF_Public);
 		NewStaticMesh->AddSourceModel();
 		FMeshDescription* NewMeshDescription = NewStaticMesh->CreateMeshDescription(0);
@@ -323,7 +323,7 @@ void USplitMeshCommand::Execute(IMeshEditorModeEditingContract& MeshEditorMode)
 		NewMeshDescription->Compact(Remappings);
 		for(int32 PolygonIdIndex = 0; PolygonIdIndex <= GroupId.GetValue(); ++PolygonIdIndex)
 		{
-			NewStaticMesh->StaticMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+			NewStaticMesh->GetStaticMaterials().Add(UMaterial::GetDefaultMaterial(MD_Surface));
 		}
 		NewStaticMesh->CommitMeshDescription(0);
 		NewStaticMesh->Build();

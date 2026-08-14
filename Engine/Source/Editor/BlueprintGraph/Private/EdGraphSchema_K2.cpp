@@ -191,6 +191,8 @@ const FName FBlueprintMetadata::MD_UseEnumValuesAsMaskValuesInEditor(TEXT("UseEn
 
 const FName FBlueprintMetadata::MD_AnimBlueprintFunction(TEXT("AnimBlueprintFunction"));
 
+const FName FBlueprintMetadata::MD_AllowAbstractClasses(TEXT("AllowAbstract"));
+
 //////////////////////////////////////////////////////////////////////////
 
 #define LOCTEXT_NAMESPACE "KismetSchema"
@@ -1072,6 +1074,7 @@ void UEdGraphSchema_K2::MarkFunctionEntryAsEditable(const UEdGraph* CurrentGraph
 	{
 		if (UK2Node_EditablePinBase* EditableNode = Cast<UK2Node_EditablePinBase>(Node))
 		{
+			EditableNode->Modify();
 			EditableNode->bIsEditable = bNewEditable;
 		}
 	}
@@ -1323,7 +1326,8 @@ bool UEdGraphSchema_K2::PinHasSplittableStructType(const UEdGraphPin* InGraphPin
 		{
 			if (InGraphPin->Direction == EGPD_Input)
 			{
-				bCanSplit = UK2Node_MakeStruct::CanBeSplit(StructType);
+				UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(InGraphPin->GetOwningNode());
+				bCanSplit = UK2Node_MakeStruct::CanBeSplit(StructType, Blueprint);
 				if (!bCanSplit)
 				{
 					const FString& MetaData = StructType->GetMetaData(FBlueprintMetadata::MD_NativeMakeFunction);
@@ -1586,6 +1590,15 @@ void UEdGraphSchema_K2::GetContextMenuActions(UToolMenu* Menu, UGraphNodeContext
 					if (InGraphNode->IsA(UK2Node_ActorBoundEvent::StaticClass()) && GEditor->GetSelectedActorCount() == 1)
 					{
 						Section.AddMenuEntry(FGraphEditorCommands::Get().AssignReferencedActor);
+					}
+
+					// Conditionally show the "Create Matching Function" option if it is an unresolved CallFunction node
+					if (const UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(InGraphNode))
+					{
+						if (!FuncNode->GetTargetFunction())
+						{
+							Section.AddMenuEntry(FGraphEditorCommands::Get().CreateMatchingFunction);
+						}
 					}
 				}
 
@@ -3356,6 +3369,12 @@ bool UEdGraphSchema_K2::ConvertPropertyToPinType(const FProperty* Property, /*ou
 		{
 			return false;
 		}
+
+		// Ensure that the value term will be identified as a wrapper type if the source property has that flag set.
+		if(MapProperty->ValueProp->HasAllPropertyFlags(CPF_UObjectWrapper))
+		{
+			TypeOut.PinValueType.bTerminalIsUObjectWrapper = true;
+		}
 	}
 	else if (SetProperty)
 	{
@@ -3368,6 +3387,9 @@ bool UEdGraphSchema_K2::ConvertPropertyToPinType(const FProperty* Property, /*ou
 	TypeOut.ContainerType = FEdGraphPinType::ToPinContainerType(ArrayProperty != nullptr, SetProperty != nullptr, MapProperty != nullptr);
 	TypeOut.bIsReference = Property->HasAllPropertyFlags(CPF_OutParm|CPF_ReferenceParm);
 	TypeOut.bIsConst     = Property->HasAllPropertyFlags(CPF_ConstParm);
+
+	// This flag will be set on the key/inner property for container types, so check the test property.
+	TypeOut.bIsUObjectWrapper = TestProperty->HasAllPropertyFlags(CPF_UObjectWrapper);
 
 	// Check to see if this is the wildcard property for the target container type
 	if(IsWildcardProperty(Property))
@@ -3716,8 +3738,6 @@ void UEdGraphSchema_K2::GetVariableTypeTree(TArray< TSharedPtr<FPinTypeTreeInfo>
 	TypeTree.Add( MakeShareable( new FPinTypeTreeInfo(GetCategoryText(PC_Byte, true), PC_Byte, this, LOCTEXT("ByteType", "8 bit number")) ) );
 	TypeTree.Add( MakeShareable( new FPinTypeTreeInfo(GetCategoryText(PC_Int, true), PC_Int, this, LOCTEXT("IntegerType", "Integer number")) ) );
 	TypeTree.Add( MakeShareable( new FPinTypeTreeInfo(GetCategoryText(PC_Int64, true), PC_Int64, this, LOCTEXT("Integer64Type", "64 bit Integer number")) ) );
-
-	TypeTree.Add(MakeShareable(new FPinTypeTreeInfo(GetCategoryText(PC_FieldPath, true), PC_FieldPath, this, LOCTEXT("FieldPathType", "Reference to a property"))));
 
 	if (!bIndexTypesOnly)
 	{
@@ -4333,11 +4353,15 @@ bool UEdGraphSchema_K2::ArePinTypesCompatible(const FEdGraphPinType& Output, con
 
 void UEdGraphSchema_K2::BreakNodeLinks(UEdGraphNode& TargetNode) const
 {
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(&TargetNode);
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(&TargetNode);
+	ensureMsgf(Blueprint != nullptr, TEXT("Node %s does not belong to a blueprint!"), *GetFullNameSafe(&TargetNode));
 
 	Super::BreakNodeLinks(TargetNode);
 	
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	if (Blueprint != nullptr)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
 }
 
 void UEdGraphSchema_K2::BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotifcation) const

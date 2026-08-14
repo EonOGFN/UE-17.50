@@ -73,6 +73,8 @@ TArray< FUsdPrimViewModelRef >& FUsdPrimViewModel::UpdateChildren()
 
 	if ( NumUsdChildren != NumUnrealChildren )
 	{
+		FScopedUnrealAllocs UnrealAllocs;
+
 		Children.Reset();
 		bNeedsRefresh = true;
 	}
@@ -84,6 +86,8 @@ TArray< FUsdPrimViewModelRef >& FUsdPrimViewModel::UpdateChildren()
 		{
 			if ( !Children.IsValidIndex( ChildIndex ) || Children[ ChildIndex ]->UsdPrim.GetPrimPath().GetString() != UsdToUnreal::ConvertPath( Child.GetPrimPath() ) )
 			{
+				FScopedUnrealAllocs UnrealAllocs;
+
 				Children.Reset();
 				bNeedsRefresh = true;
 				break;
@@ -169,6 +173,17 @@ bool FUsdPrimViewModel::CanExecutePrimAction() const
 #endif // #if USE_USD_SDK
 }
 
+bool FUsdPrimViewModel::HasVisibilityAttribute() const
+{
+#if USE_USD_SDK
+	if ( pxr::UsdGeomImageable UsdGeomImageable = pxr::UsdGeomImageable( UsdPrim ) )
+	{
+		return true;
+	}
+#endif // #if USE_USD_SDK
+	return false;
+}
+
 void FUsdPrimViewModel::ToggleVisibility()
 {
 #if USE_USD_SDK
@@ -176,6 +191,9 @@ void FUsdPrimViewModel::ToggleVisibility()
 
 	if ( pxr::UsdGeomImageable UsdGeomImageable = pxr::UsdGeomImageable( UsdPrim ) )
 	{
+		// MakeInvisible/MakeVisible internally seem to trigger multiple notices, so group them up to prevent some unnecessary updates
+		pxr::SdfChangeBlock SdfChangeBlock;
+
 		if ( RowData->IsVisible() )
 		{
 			UsdGeomImageable.MakeInvisible();
@@ -239,15 +257,23 @@ void FUsdPrimViewModel::AddReference( const TCHAR* AbsoluteFilePath )
 
 	pxr::SdfLayerRefPtr ReferenceLayer = pxr::SdfLayer::FindOrOpen( UsdAbsoluteFilePath );
 
+	// Group updates or else the SetTypeName and AddReference calls below will both trigger separate resyncs of the same prim path
+	pxr::SdfChangeBlock ChangeBlock;
+
 	if ( ReferenceLayer )
 	{
 		pxr::SdfPrimSpecHandle DefaultPrimSpec = ReferenceLayer->GetPrimAtPath( pxr::SdfPath( ReferenceLayer->GetDefaultPrim() ) );
-
 		if ( DefaultPrimSpec )
 		{
-			if ( !pxr::UsdPrim( UsdPrim ).IsA( pxr::UsdSchemaRegistry::GetTypeFromName( DefaultPrimSpec->GetTypeName() ) ) )
+			// Set the same prim type as its reference so that they are compatible
+			pxr::TfType DefaultPrimType = pxr::UsdSchemaRegistry::GetTypeFromName( DefaultPrimSpec->GetTypeName() );
+			if ( DefaultPrimType.IsUnknown() )
 			{
-				pxr::UsdPrim( UsdPrim ).SetTypeName( DefaultPrimSpec->GetTypeName() ); // Set the same prim type as its reference so that they are compatible
+				pxr::UsdPrim( UsdPrim ).ClearTypeName();
+			}
+			else if ( !pxr::UsdPrim( UsdPrim ).IsA( DefaultPrimType ) )
+			{
+				pxr::UsdPrim( UsdPrim ).SetTypeName( DefaultPrimSpec->GetTypeName() );
 			}
 		}
 	}

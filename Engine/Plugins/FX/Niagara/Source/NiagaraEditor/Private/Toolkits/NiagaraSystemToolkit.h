@@ -3,8 +3,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/NotifyHook.h"
-#include "Input/Reply.h"
 #include "UObject/GCObject.h"
 #include "Toolkits/IToolkitHost.h"
 
@@ -31,6 +29,7 @@ class FMenuBuilder;
 class ISequencer;
 class FNiagaraMessageLogViewModel;
 class FNiagaraSystemToolkitParameterPanelViewModel;
+class FNiagaraScriptStatsViewModel;
 
 /** Viewer/editor for a NiagaraSystem
 */
@@ -81,6 +80,20 @@ protected:
 	bool IsToggleBoundsChecked() const;
 	void OnToggleBoundsSetFixedBounds();
 
+	void ClearStatPerformance();
+	void ToggleStatPerformance();
+	bool IsStatPerformanceChecked();
+	void ToggleStatPerformanceGPU();
+	bool IsStatPerformanceGPUChecked();
+	void ToggleStatPerformanceTypeAvg();
+	void ToggleStatPerformanceTypeMax();
+	bool IsStatPerformanceTypeAvg();
+	bool IsStatPerformanceTypeMax();
+	void ToggleStatPerformanceModePercent();
+	void ToggleStatPerformanceModeAbsolute();
+	bool IsStatPerformanceModePercent();
+	bool IsStatPerformanceModeAbsolute();
+
 	void ToggleDrawOption(int32 Element);
 	bool IsDrawOptionEnabled(int32 Element) const;
 
@@ -110,6 +123,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_MessageLog(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_SystemOverview(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_ScratchPad(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_ScriptStats(const FSpawnTabArgs& Args);
 
 	/** Builds the toolbar widget */
 	void ExtendToolbar();	
@@ -140,6 +154,7 @@ private:
 	void OnViewModelRequestFocusTab(FName TabName);
 
 	TSharedRef<SWidget> GenerateBoundsMenuContent(TSharedRef<FUICommandList> InCommandList);
+	TSharedRef<SWidget> GenerateStatConfigMenuContent(TSharedRef<FUICommandList> InCommandList);
 	const FName GetNiagaraSystemMessageLogName(UNiagaraSystem* InSystem) const;
 	void OnSaveThumbnailImage();
 	void OnThumbnailCaptured(UTexture2D* Thumbnail);
@@ -170,6 +185,9 @@ private:
 	TSharedPtr<FNiagaraMessageLogViewModel> NiagaraMessageLogViewModel;
 	TSharedPtr<class SWidget> NiagaraMessageLog;
 
+	/** Display for script stats on selected platforms */
+	TSharedPtr<FNiagaraScriptStatsViewModel> ScriptStats;
+
 	/** The command list for this editor */
 	TSharedPtr<FUICommandList> EditorCommands;
 
@@ -183,6 +201,9 @@ private:
 	bool bChangesDiscarded;
 
 	bool bScratchPadChangesDiscarded;
+
+	static IConsoleVariable* VmStatEnabledVar;
+	static IConsoleVariable* GpuStatEnabledVar;
 
 public:
 	static const FName ViewportTabID;
@@ -200,6 +221,7 @@ public:
 	static const FName MessageLogTabID;
 	static const FName SystemOverviewTabID;
 	static const FName ScratchPadTabID;
+	static const FName ScriptStatsTabID;
 
 private:
 	static bool bShowLibraryOnly;

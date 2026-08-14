@@ -24,7 +24,10 @@ struct FPreAnimatedComponentTransformHandler
 
 	static void InitializeOutput(UObject* Object, TArrayView<const FMovieSceneEntityID> Inputs, FIntermediate3DTransform* Output, FEntityOutputAggregate Aggregate)
 	{
-		ConvertOperationalProperty(CastChecked<USceneComponent>(Object)->GetRelativeTransform(), *Output);
+		if (USceneComponent* SceneComponent = Cast<USceneComponent>(Object))
+		{
+			ConvertOperationalProperty(SceneComponent->GetRelativeTransform(), *Output);
+		}
 	}
 
 	static void UpdateOutput(UObject* Object, TArrayView<const FMovieSceneEntityID> Inputs, FIntermediate3DTransform* Output, FEntityOutputAggregate Aggregate)
@@ -64,7 +67,7 @@ bool UMovieScenePreAnimatedComponentTransformSystem::IsRelevantImpl(UMovieSceneE
 {
 	using namespace UE::MovieScene;
 
-	return InLinker->EntityManager.Contains(FEntityComponentFilter().All({
+	return InLinker->ShouldCaptureGlobalState() ||  InLinker->EntityManager.Contains(FEntityComponentFilter().All({
 			FMovieSceneTracksComponentTypes::Get()->ComponentTransform.PropertyTag,
 			FBuiltInComponentTypes::Get()->Tags.RestoreState,
 			FBuiltInComponentTypes::Get()->BoundObject
@@ -113,7 +116,10 @@ void UMovieScenePreAnimatedComponentTransformSystem::RestorePreAnimatedState(FSy
 
 	for (const TTuple<UObject*, FIntermediate3DTransform>& Pair : TransformsToRestore)
 	{
-		Pair.Get<1>().ApplyTo(CastChecked<USceneComponent>(Pair.Get<0>()));
+		if (USceneComponent* SceneComponent = Cast<USceneComponent>(Pair.Get<0>()))
+		{
+			Pair.Get<1>().ApplyTo(SceneComponent);
+		}
 	}
 	TransformsToRestore.Empty();
 }
@@ -145,46 +151,12 @@ UMovieSceneComponentTransformSystem::UMovieSceneComponentTransformSystem(const F
 	{
 		DefineImplicitPrerequisite(UMovieScenePiecewiseFloatBlenderSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UFloatChannelEvaluatorSystem::StaticClass(), GetClass());
+
+		DefineComponentConsumer(GetClass(), UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->ComponentTransform.PropertyTag);
 	}
 }
 
 void UMovieSceneComponentTransformSystem::OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
 {
 	Super::OnRun(InPrerequisites, Subsequents);
-}
-
-void UMovieSceneComponentTransformSystem::Interrogate(TArray<UE::MovieScene::FIntermediate3DTransform>& OutTransforms) const
-{
-	using namespace UE::MovieScene;
-
-	auto PopulateTransforms = [&OutTransforms](FInterrogationChannel InterrogationChannel,
-		float LocationX, float LocationY, float LocationZ,
-		float RotationX, float RotationY, float RotationZ,
-		float ScaleX, float ScaleY, float ScaleZ)
-	{
-		const uint32 Index = InterrogationChannel.AsIndex();
-
-		OutTransforms[Index] = FIntermediate3DTransform(
-			LocationX, LocationY, LocationZ,
-			RotationX, RotationY, RotationZ,
-			ScaleX, ScaleY, ScaleZ
-		);
-	};
-
-	FBuiltInComponentTypes* Components = FBuiltInComponentTypes::Get();
-	FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
-
-	FEntityTaskBuilder()
-	.Read(Components->Interrogation.OutputChannel)
-	.Read(Components->FloatResult[0])
-	.Read(Components->FloatResult[1])
-	.Read(Components->FloatResult[2])
-	.Read(Components->FloatResult[3])
-	.Read(Components->FloatResult[4])
-	.Read(Components->FloatResult[5])
-	.Read(Components->FloatResult[6])
-	.Read(Components->FloatResult[7])
-	.Read(Components->FloatResult[8])
-	.FilterAny({ TracksComponents->ComponentTransform.PropertyTag })
-	.Iterate_PerEntity(&Linker->EntityManager, PopulateTransforms);
 }

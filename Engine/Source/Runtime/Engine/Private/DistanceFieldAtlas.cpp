@@ -624,6 +624,7 @@ void FDistanceFieldVolumeTextureAtlas::UpdateAllocations(FRHICommandListImmediat
 				Format,
 				1,
 				TexCreate_ShaderResource | TexCreate_UAV,
+				ERHIAccess::SRVMask,
 				CreateInfo);
 			VolumeTextureUAVRHI = RHICreateUnorderedAccessView(VolumeTextureRHI, 0);
 
@@ -644,6 +645,8 @@ void FDistanceFieldVolumeTextureAtlas::UpdateAllocations(FRHICommandListImmediat
 				if (!bRuntimeDownsampling)
 				{
 					*AtlasUpdateDataPtr = RHIBeginUpdateTexture3D(VolumeTextureRHI, 0, UpdateRegion);
+					// This fills in any holes in the update region so we don't upload garbage data to the GPU.
+					FMemory::Memzero(AtlasUpdateDataPtr->Data, AtlasUpdateDataPtr->DataSizeBytes);
 				}
 				else
 				{
@@ -928,14 +931,14 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InDDCKey, UStatic
 		NewTask->bGenerateDistanceFieldAsIfTwoSided = bGenerateDistanceFieldAsIfTwoSided;
 		NewTask->GeneratedVolumeData = new FDistanceFieldVolumeData();
 
-		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->StaticMaterials.Num(); MaterialIndex++)
+		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
 		{
 			// Default material blend mode
 			EBlendMode BlendMode = BLEND_Opaque;
 
-			if (Mesh->StaticMaterials[MaterialIndex].MaterialInterface)
+			if (Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface)
 			{
-				BlendMode = Mesh->StaticMaterials[MaterialIndex].MaterialInterface->GetBlendMode();
+				BlendMode = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->GetBlendMode();
 			}
 
 			NewTask->MaterialBlendModes.Add(BlendMode);
@@ -1204,14 +1207,14 @@ void FDistanceFieldAsyncQueue::Build(FAsyncDistanceFieldTask* Task, FQueuedThrea
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldAsyncQueue::Build)
 
-		const FStaticMeshLODResources& LODModel = Task->GenerateSource->RenderData->LODResources[0];
+		const FStaticMeshLODResources& LODModel = Task->GenerateSource->GetRenderData()->LODResources[0];
 
 		MeshUtilities->GenerateSignedDistanceFieldVolumeData(
 			Task->StaticMesh->GetName(),
 			LODModel,
 			ThreadPool,
 			Task->MaterialBlendModes,
-			Task->GenerateSource->RenderData->Bounds,
+			Task->GenerateSource->GetRenderData()->Bounds,
 			Task->DistanceFieldResolutionScale,
 			Task->bGenerateDistanceFieldAsIfTwoSided,
 			*Task->GeneratedVolumeData);
@@ -1256,21 +1259,21 @@ void FDistanceFieldAsyncQueue::ProcessAsyncTasks()
 		if (Task->StaticMesh)
 		{
 			Task->GeneratedVolumeData->VolumeTexture.Initialize(Task->StaticMesh);
-			FDistanceFieldVolumeData* OldVolumeData = Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData;
+			FDistanceFieldVolumeData* OldVolumeData = Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData;
 
 			// Renderstates are not initialized between UStaticMesh::PreEditChange() and UStaticMesh::PostEditChange()
-			if (Task->StaticMesh->RenderData->IsInitialized())
+			if (Task->StaticMesh->GetRenderData()->IsInitialized())
 			{
 				// Cause all components using this static mesh to get re-registered, which will recreate their proxies and primitive uniform buffers
 				FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(Task->StaticMesh, false);
 
 				// Assign the new volume data
-				Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
+				Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
 			}
 			else
 			{
 				// Assign the new volume data
-				Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
+				Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
 			}
 
 			OldVolumeData->VolumeTexture.Release();
@@ -1282,7 +1285,7 @@ void FDistanceFieldAsyncQueue::ProcessAsyncTasks()
 				TArray<uint8> DerivedData;
 				// Save built distance field volume to DDC
 				FMemoryWriter Ar(DerivedData, /*bIsPersistent=*/ true);
-				Ar << *(Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData);
+				Ar << *(Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData);
 				GetDerivedDataCacheRef().Put(*Task->DDCKey, DerivedData, Task->StaticMesh->GetPathName());
 				COOK_STAT(Timer.AddMiss(DerivedData.Num()));
 			}
@@ -1351,7 +1354,7 @@ void FLandscapeTextureAtlas::InitializeIfNeeded()
 
 		const uint32 SizeX = AddrSpaceAllocator.DimInTexels;
 		const uint32 SizeY = AddrSpaceAllocator.DimInTexels;
-		const uint32 Flags = TexCreate_ShaderResource | TexCreate_UAV;
+		const ETextureCreateFlags Flags = TexCreate_ShaderResource | TexCreate_UAV;
 		const EPixelFormat Format = bHeight ? PF_R8G8 : PF_G8;
 		FRHIResourceCreateInfo CreateInfo(bHeight ? TEXT("HeightFieldAtlas") : TEXT("VisibilityAtlas"));
 
@@ -1533,7 +1536,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 		const uint32 SizeX = SourceTexture->GetSizeX();
 		const uint32 SizeY = SourceTexture->GetSizeY();
 		const uint32 DownSampleLevel = CalculateDownSampleLevel(SizeX, SizeY);
-		const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetCachedNumResidentLODs();
+		const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetNumResidentMips();
 
 		if (NumMissingMips <= DownSampleLevel)
 		{
@@ -1574,7 +1577,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 					continue;
 				}
 
-				const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetCachedNumResidentLODs();
+				const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetNumResidentMips();
 				const uint32 SourceMipBias = NumMissingMips > DownSampleLevel ? 0 : DownSampleLevel - NumMissingMips;
 
 				if (NumMissingMips > DownSampleLevel)
@@ -1620,7 +1623,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 				break;
 			}
 
-			const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetCachedNumResidentLODs();
+			const uint32 NumMissingMips = SourceTexture->GetNumMips() - SourceTexture->GetNumResidentMips();
 			const uint32 SourceMipBias = NumMissingMips > DownSampleLevel ? 0 : DownSampleLevel - NumMissingMips;
 
 			if (NumMissingMips > DownSampleLevel)
@@ -1641,7 +1644,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 	{
 		FRDGBuilder GraphBuilder(RHICmdList);
 
-		RHICmdList.TransitionResource(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EComputeToCompute, AtlasUAVRHI);
+		RHICmdList.Transition(FRHITransitionInfo(AtlasUAVRHI, ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
 
 		if (SubAllocType == SAT_Height)
 		{
@@ -1659,7 +1662,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 				{
 					if (bNeedBarrier)
 					{
-						CmdList.TransitionResource(EResourceTransitionAccess::ERWNoBarrier, EResourceTransitionPipeline::EComputeToCompute, Parameters->RWHeightFieldAtlas);
+						CmdList.Transition(FRHITransitionInfo(Parameters->RWHeightFieldAtlas, ERHIAccess::Unknown, ERHIAccess::ERWNoBarrier));
 					}
 					FComputeShaderUtils::Dispatch(CmdList, ComputeShader, *Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
 				});
@@ -1681,7 +1684,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 				{
 					if (bNeedBarrier)
 					{
-						CmdList.TransitionResource(EResourceTransitionAccess::ERWNoBarrier, EResourceTransitionPipeline::EComputeToCompute, Parameters->RWVisibilityAtlas);
+						CmdList.Transition(FRHITransitionInfo(Parameters->RWVisibilityAtlas, ERHIAccess::Unknown, ERHIAccess::ERWNoBarrier));
 					}
 					FComputeShaderUtils::Dispatch(CmdList, ComputeShader, *Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
 				});
@@ -1689,7 +1692,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdL
 		}
 
 		GraphBuilder.Execute();
-		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToGfx, AtlasUAVRHI);
+		RHICmdList.Transition(FRHITransitionInfo(AtlasUAVRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
 	}
 }
 

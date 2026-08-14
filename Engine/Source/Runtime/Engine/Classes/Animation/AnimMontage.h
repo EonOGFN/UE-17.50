@@ -362,8 +362,8 @@ private:
 	// transient value of previous position before move
 	float PreviousPosition;
 
-	// sync group index
-	int32 SyncGroupIndex;
+	// sync group name
+	FName SyncGroupName;
 
 	/**
 	 * Optional evaluation range to use next update (ignoring the real delta time).
@@ -399,7 +399,9 @@ public:
 	float GetWeight() const { return Blend.GetBlendedValue(); }
 	float GetDesiredWeight() const { return Blend.GetDesiredValue(); }
 	float GetBlendTime() const { return Blend.GetBlendTime(); }
-	int32 GetSyncGroupIndex() const { return SyncGroupIndex;  }
+	UE_DEPRECATED(4.26, "Please use GetSyncGroupName")
+	int32 GetSyncGroupIndex() const { return INDEX_NONE;  }
+	FName GetSyncGroupName() const { return SyncGroupName;  }
 
 	/** Set the weight */
 	void SetWeight(float InValue) { Blend.SetAlpha(InValue); }
@@ -422,6 +424,9 @@ private:
 
 	/** Initialize Blend Setup from Montage */
 	void InitializeBlend(const FAlphaBlend& InAlphaBlend);
+
+	/**  Notify may invalidate current montage instance. Inputs should be memory not belonging to calling FAnimMontageInstance.*/
+	static bool ValidateInstanceAfterNotifyState(const TWeakObjectPtr<UAnimInstance>& InAnimInstance, const UAnimNotifyState* InNotifyStateClass);
 
 public:
 	FAnimMontageInstance();
@@ -514,7 +519,8 @@ private:
 	void OnMontagePositionChanged(FName const & ToSectionName);
 	
 	/** Updates ActiveStateBranchingPoints array and triggers Begin/End notifications based on CurrentTrackPosition */
-	void UpdateActiveStateBranchingPoints(float CurrentTrackPosition);
+	/** Returns false if montage instance was destroyed during branching point update*/
+	bool UpdateActiveStateBranchingPoints(float CurrentTrackPosition);
 
 	/** Trigger associated events when Montage ticking reaches given FBranchingPointMarker */
 	void BranchingPointEventHandler(const FBranchingPointMarker* BranchingPointMarker);

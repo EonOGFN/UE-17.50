@@ -72,6 +72,8 @@ UGameplayAbility::UGameplayAbility(const FObjectInitializer& ObjectInitializer)
 
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerExecution;
 
+	NetSecurityPolicy = EGameplayAbilityNetSecurityPolicy::ClientOrServer;
+
 	ScopeLockCount = 0;
 
 	bMarkPendingKillOnAbilityEnd = false;
@@ -274,7 +276,8 @@ bool UGameplayAbility::DoesAbilitySatisfyTagRequirements(const UAbilitySystemCom
 
 bool UGameplayAbility::ShouldActivateAbility(ENetRole Role) const
 {
-	return Role != ROLE_SimulatedProxy;
+	return Role != ROLE_SimulatedProxy && 		
+		(Role == ROLE_Authority || (NetSecurityPolicy != EGameplayAbilityNetSecurityPolicy::ServerOnly && NetSecurityPolicy != EGameplayAbilityNetSecurityPolicy::ServerOnlyExecution));	// Don't violate security policy if we're not the server
 }
 
 void UGameplayAbility::K2_CancelAbility()
@@ -354,7 +357,7 @@ bool UGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handl
 
 	if (bHasBlueprintCanUse)
 	{
-		if (K2_CanActivateAbility(*ActorInfo, OutTags) == false)
+		if (K2_CanActivateAbility(*ActorInfo, Handle, OutTags) == false)
 		{
 			ABILITY_LOG(Log, TEXT("CanActivateAbility %s failed, blueprint refused"), *GetName());
 			return false;
@@ -378,10 +381,10 @@ bool UGameplayAbility::ShouldAbilityRespondToEvent(const FGameplayAbilityActorIn
 	return true;
 }
 
-bool UGameplayAbility::CommitAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo)
+bool UGameplayAbility::CommitAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, OUT FGameplayTagContainer* OptionalRelevantTags)
 {
 	// Last chance to fail (maybe we no longer have resources to commit since we after we started this ability activation)
-	if (!CommitCheck(Handle, ActorInfo, ActivationInfo))
+	if (!CommitCheck(Handle, ActorInfo, ActivationInfo, OptionalRelevantTags))
 	{
 		return false;
 	}
@@ -397,7 +400,7 @@ bool UGameplayAbility::CommitAbility(const FGameplayAbilitySpecHandle Handle, co
 	return true;
 }
 
-bool UGameplayAbility::CommitAbilityCooldown(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const bool ForceCooldown)
+bool UGameplayAbility::CommitAbilityCooldown(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const bool ForceCooldown, OUT FGameplayTagContainer* OptionalRelevantTags)
 {
 	if (UAbilitySystemGlobals::Get().ShouldIgnoreCooldowns())
 	{
@@ -407,7 +410,7 @@ bool UGameplayAbility::CommitAbilityCooldown(const FGameplayAbilitySpecHandle Ha
 	if (!ForceCooldown)
 	{
 		// Last chance to fail (maybe we no longer have resources to commit since we after we started this ability activation)
-		if (!CheckCooldown(Handle, ActorInfo))
+		if (!CheckCooldown(Handle, ActorInfo, OptionalRelevantTags))
 		{
 			return false;
 		}
@@ -417,7 +420,7 @@ bool UGameplayAbility::CommitAbilityCooldown(const FGameplayAbilitySpecHandle Ha
 	return true;
 }
 
-bool UGameplayAbility::CommitAbilityCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo)
+bool UGameplayAbility::CommitAbilityCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, OUT FGameplayTagContainer* OptionalRelevantTags)
 {
 	if (UAbilitySystemGlobals::Get().ShouldIgnoreCosts())
 	{
@@ -425,7 +428,7 @@ bool UGameplayAbility::CommitAbilityCost(const FGameplayAbilitySpecHandle Handle
 	}
 
 	// Last chance to fail (maybe we no longer have resources to commit since we after we started this ability activation)
-	if (!CheckCost(Handle, ActorInfo))
+	if (!CheckCost(Handle, ActorInfo, OptionalRelevantTags))
 	{
 		return false;
 	}
@@ -434,7 +437,7 @@ bool UGameplayAbility::CommitAbilityCost(const FGameplayAbilitySpecHandle Handle
 	return true;
 }
 
-bool UGameplayAbility::CommitCheck(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo)
+bool UGameplayAbility::CommitCheck(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, OUT FGameplayTagContainer* OptionalRelevantTags)
 {
 	/**
 	 *	Checks if we can (still) commit this ability. There are some subtleties here.
@@ -457,12 +460,12 @@ bool UGameplayAbility::CommitCheck(const FGameplayAbilitySpecHandle Handle, cons
 
 	UAbilitySystemGlobals& AbilitySystemGlobals = UAbilitySystemGlobals::Get();
 
-	if (!AbilitySystemGlobals.ShouldIgnoreCooldowns() && !CheckCooldown(Handle, ActorInfo))
+	if (!AbilitySystemGlobals.ShouldIgnoreCooldowns() && !CheckCooldown(Handle, ActorInfo, OptionalRelevantTags))
 	{
 		return false;
 	}
 
-	if (!AbilitySystemGlobals.ShouldIgnoreCosts() && !CheckCost(Handle, ActorInfo))
+	if (!AbilitySystemGlobals.ShouldIgnoreCosts() && !CheckCost(Handle, ActorInfo, OptionalRelevantTags))
 	{
 		return false;
 	}
@@ -539,7 +542,7 @@ void UGameplayAbility::CancelAbility(const FGameplayAbilitySpecHandle Handle, co
 		}
 
 		// Replicate the the server/client if needed
-		if (bReplicateCancelAbility && ActorInfo)
+		if (bReplicateCancelAbility && ActorInfo && ActorInfo->AbilitySystemComponent.IsValid())
 		{
 			ActorInfo->AbilitySystemComponent->ReplicateEndOrCancelAbility(Handle, ActivationInfo, this, true);
 		}
@@ -561,7 +564,7 @@ bool UGameplayAbility::IsEndAbilityValid(const FGameplayAbilitySpecHandle Handle
 {
 	// Protect against EndAbility being called multiple times
 	// Ending an AbilityState may cause this to be invoked again
-	if (bIsActive == false && GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
+	if ((bIsActive == false || bIsAbilityEnding == true) && GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
 	{
 		UE_LOG(LogAbilitySystem, Verbose, TEXT("IsEndAbilityValid returning false on Ability %s due to EndAbility being called multiple times"), *GetName());
 		return false;
@@ -592,6 +595,11 @@ void UGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle, const
 {
 	if (IsEndAbilityValid(Handle, ActorInfo))
 	{
+		if (GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
+		{
+			bIsAbilityEnding = true;
+		}
+
 		if (ScopeLockCount > 0)
 		{
 			UE_LOG(LogAbilitySystem, Verbose, TEXT("Attempting to end Ability %s but ScopeLockCount was greater than 0, adding end to the WaitingToExecute Array"), *GetName());
@@ -629,6 +637,7 @@ void UGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle, const
 		if (GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
 		{
 			bIsActive = false;
+			bIsAbilityEnding = false;
 		}
 
 		// Tell all our tasks that we are finished and they should cleanup
@@ -714,7 +723,7 @@ void UGameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handle, 
 	}
 }
 
-void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate)
+void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate, const FGameplayEventData* TriggerEventData)
 {
 	UAbilitySystemComponent* Comp = ActorInfo->AbilitySystemComponent.Get();
 
@@ -765,7 +774,7 @@ void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, cons
 
 void UGameplayAbility::CallActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate, const FGameplayEventData* TriggerEventData)
 {
-	PreActivate(Handle, ActorInfo, ActivationInfo, OnGameplayAbilityEndedDelegate);
+	PreActivate(Handle, ActorInfo, ActivationInfo, OnGameplayAbilityEndedDelegate, TriggerEventData);
 	ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 }
 
@@ -1059,11 +1068,12 @@ void UGameplayAbility::ApplyAbilityTagsToGameplayEffectSpec(FGameplayEffectSpec&
 	FGameplayTagContainer& CapturedSourceTags = Spec.CapturedSourceTags.GetSpecTags();
 
 	CapturedSourceTags.AppendTags(AbilityTags);
-	CapturedSourceTags.AppendTags(AbilitySpec->DynamicAbilityTags);
 
 	// Allow the source object of the ability to propagate tags along as well
 	if (AbilitySpec)
 	{
+		CapturedSourceTags.AppendTags(AbilitySpec->DynamicAbilityTags);
+
 		const IGameplayTagAssetInterface* SourceObjAsTagInterface = Cast<IGameplayTagAssetInterface>(AbilitySpec->SourceObject);
 		if (SourceObjAsTagInterface)
 		{
@@ -1468,6 +1478,11 @@ int32 UGameplayAbility::GetAbilityLevel(FGameplayAbilitySpecHandle Handle, const
 	return 1;
 }
 
+int32 UGameplayAbility::GetAbilityLevel_BP(FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo& ActorInfo) const
+{
+	return GetAbilityLevel(Handle, &ActorInfo);
+}
+
 FGameplayAbilitySpec* UGameplayAbility::GetCurrentAbilitySpec() const
 {
 	check(IsInstantiated()); // You should not call this on non instanced abilities.
@@ -1524,6 +1539,11 @@ UObject* UGameplayAbility::GetSourceObject(FGameplayAbilitySpecHandle Handle, co
 		}
 	}
 	return nullptr;
+}
+
+UObject* UGameplayAbility::GetSourceObject_BP(FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo& ActorInfo) const
+{
+	return GetSourceObject(Handle, &ActorInfo);
 }
 
 UObject* UGameplayAbility::GetCurrentSourceObject() const

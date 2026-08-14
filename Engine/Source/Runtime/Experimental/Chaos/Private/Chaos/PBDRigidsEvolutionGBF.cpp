@@ -51,9 +51,7 @@ FAutoConsoleVariableRef CVarDisableThreshold(TEXT("p.DisableThreshold2"), Disabl
 int CollisionDisableCulledContacts = 0;
 FAutoConsoleVariableRef CVarDisableCulledContacts(TEXT("p.CollisionDisableCulledContacts"), CollisionDisableCulledContacts, TEXT("Allow the PBDRigidsEvolutionGBF collision constraints to throw out contacts mid solve if they are culled."));
 
-float BoundsThickness = 0;
-float BoundsThicknessVelocityMultiplier = 2.0f;
-FAutoConsoleVariableRef CVarBoundsThickness(TEXT("p.CollisionBoundsThickness"), BoundsThickness, TEXT("Collision inflation for speculative contact generation.[def:0.0]"));
+float BoundsThicknessVelocityMultiplier = 2.0f;	// @todo(chaos): more to FChaosSolverConfiguration
 FAutoConsoleVariableRef CVarBoundsThicknessVelocityMultiplier(TEXT("p.CollisionBoundsVelocityInflation"), BoundsThicknessVelocityMultiplier, TEXT("Collision velocity inflation for speculatibe contact generation.[def:2.0]"));
 
 float HackCCD_EnableThreshold = -1.f;
@@ -61,6 +59,9 @@ FAutoConsoleVariableRef CVarHackCCDVelThreshold(TEXT("p.Chaos.CCD.EnableThreshol
 
 float HackCCD_DepthThreshold = 0.05f;
 FAutoConsoleVariableRef CVarHackCCDDepthThreshold(TEXT("p.Chaos.CCD.DepthThreshold"), HackCCD_DepthThreshold, TEXT("When returning to TOI, leave this much contact depth (as a fraction of MinBounds)"));
+
+float SmoothedPositionLerpRate = 0.1f;
+FAutoConsoleVariableRef CVarSmoothedPositionLerpRate(TEXT("p.Chaos.SmoothedPositionLerpRate"), SmoothedPositionLerpRate, TEXT("The interpolation rate for the smoothed position calculation. Used for sleeping."));
 
 
 DECLARE_CYCLE_STAT(TEXT("TPBDRigidsEvolutionGBF::AdvanceOneTimeStep"), STAT_Evolution_AdvanceOneTimeStep, STATGROUP_Chaos);
@@ -281,6 +282,11 @@ void TPBDRigidsEvolutionGBF<Traits>::AdvanceOneTimeStepImpl(const FReal Dt,const
 
 	Particles.ClearTransientDirty();
 
+	//for now we never allow solver to schedule more than two tasks back to back
+	//this means we only need to keep indices alive for one aditional frame
+	//TODO: make this more robust/general
+	Base::ReleasePendingIndices();
+
 #if !UE_BUILD_SHIPPING
 	if (SerializeEvolution)
 	{
@@ -320,12 +326,12 @@ void TPBDRigidsEvolutionGBF<Traits>::AdvanceOneTimeStepImpl(const FReal Dt,const
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_CCDHack);
-		CCDHack(Dt, Particles.GetActiveParticlesView(), InternalAcceleration.Get());
+		CCDHack(Dt, Particles.GetActiveParticlesView(), InternalAcceleration);
 	}
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_DetectCollisions);
-		CollisionDetector.GetBroadPhase().SetSpatialAcceleration(InternalAcceleration.Get());
+		CollisionDetector.GetBroadPhase().SetSpatialAcceleration(InternalAcceleration);
 
 		CollisionStats::FStatData StatData(bPendingHierarchyDump);
 
@@ -345,10 +351,10 @@ void TPBDRigidsEvolutionGBF<Traits>::AdvanceOneTimeStepImpl(const FReal Dt,const
 		PrepareIteration(Dt);
 	}
 
-	if (CollisionModifierCallback)
+	if(CollisionModifiers)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_CollisionModifierCallback);
-		CollisionConstraints.ApplyCollisionModifier(CollisionModifierCallback);
+		CollisionConstraints.ApplyCollisionModifier(*CollisionModifiers);
 	}
 
 	{
@@ -516,12 +522,12 @@ void TPBDRigidsEvolutionGBF<Traits>::AdvanceOneTimeStepImpl(const FReal Dt,const
 }
 
 template <typename Traits>
-TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& InParticles,THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials,int32 InNumIterations,int32 InNumPushoutIterations,bool InIsSingleThreaded)
-	: Base(InParticles, SolverPhysicsMaterials, InNumIterations, InNumPushoutIterations, InIsSingleThreaded)
+TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& InParticles,THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InCollisionModifiers, bool InIsSingleThreaded)
+	: Base(InParticles, SolverPhysicsMaterials, DefaultNumIterations, DefaultNumPushOutIterations, InIsSingleThreaded)
 	, Clustering(*this, Particles.GetClusteredParticles())
-	, CollisionConstraints(InParticles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, DefaultNumPairIterations, DefaultNumPushOutPairIterations)
+	, CollisionConstraints(InParticles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, DefaultNumCollisionPairIterations, DefaultNumCollisionPushOutPairIterations, DefaultCollisionCullDistance)
 	, CollisionRule(CollisionConstraints)
-	, BroadPhase(InParticles, BoundsThickness, BoundsThicknessVelocityMultiplier)
+	, BroadPhase(InParticles, DefaultCollisionCullDistance, BoundsThicknessVelocityMultiplier, DefaultCollisionCullDistance)
 	, NarrowPhase()
 	, CollisionDetector(BroadPhase, NarrowPhase, CollisionConstraints)
 	, PostIntegrateCallback(nullptr)
@@ -529,6 +535,7 @@ TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& 
 	, PostApplyCallback(nullptr)
 	, PostApplyPushOutCallback(nullptr)
 	, CurrentStepResimCacheImp(nullptr)
+	, CollisionModifiers(InCollisionModifiers)
 {
 	CollisionConstraints.SetCanDisableContacts(!!CollisionDisableCulledContacts);
 
@@ -545,6 +552,15 @@ TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& 
 	{
 		ParticlesInput.ParallelFor([&](auto& Particle, int32 Index)
 		{
+			if (Dt > SMALL_NUMBER)
+			{
+				const FReal SmoothRate = FMath::Clamp(SmoothedPositionLerpRate, 0.0f, 1.0f);
+				const FVec3 VImp = FVec3::CalculateVelocity(Particle.X(), Particle.P(), Dt);
+				const FVec3 WImp = FRotation3::CalculateAngularVelocity(Particle.R(), Particle.Q(), Dt);
+				Particle.VSmooth() = FMath::Lerp(Particle.VSmooth(), VImp, SmoothRate);
+				Particle.WSmooth() = FMath::Lerp(Particle.WSmooth(), WImp, SmoothRate);
+			}
+
 			Particle.X() = Particle.P();
 			Particle.R() = Particle.Q();
 		});
@@ -561,6 +577,8 @@ TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& 
 	NarrowPhase.GetContext().bFilteringEnabled = true;
 	NarrowPhase.GetContext().bDeferUpdate = true;
 	NarrowPhase.GetContext().bAllowManifolds = false;
+	NarrowPhase.GetContext().bUseIncrementalManifold = false;
+	NarrowPhase.GetContext().bUseOneShotManifolds = false;
 }
 
 template <typename Traits>

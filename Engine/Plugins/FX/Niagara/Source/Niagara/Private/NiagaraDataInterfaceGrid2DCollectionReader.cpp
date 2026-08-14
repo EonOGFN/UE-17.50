@@ -4,7 +4,7 @@
 #include "ShaderParameterUtils.h"
 #include "ClearQuad.h"
 #include "TextureResource.h"
-#include "Engine/Texture2D.h"
+#include "Engine/Texture2DArray.h"
 #include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
@@ -12,11 +12,8 @@
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceGrid2DCollectionReader"
 
-const FString UNiagaraDataInterfaceGrid2DCollectionReader::NumTilesName(TEXT("NumTiles_"));
-
 const FString UNiagaraDataInterfaceGrid2DCollectionReader::GridName(TEXT("Grid_"));
 const FString UNiagaraDataInterfaceGrid2DCollectionReader::SamplerName(TEXT("Sampler_"));
-
 
 // Global VM function names, also used by the shaders code generation methods.
 const FName UNiagaraDataInterfaceGrid2DCollectionReader::GetValueFunctionName("GetGridValue");
@@ -32,15 +29,11 @@ struct FNiagaraDataInterfaceParametersCS_Grid2DCollectionReader : public FNiagar
 public:
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{			
-		NumCellsParam.Bind(ParameterMap, *(NumCellsName + ParameterInfo.DataInterfaceHLSLSymbol));
-		NumTilesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollectionReader::NumTilesName + ParameterInfo.DataInterfaceHLSLSymbol));
-
-		CellSizeParam.Bind(ParameterMap, *(CellSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-
-		WorldBBoxSizeParam.Bind(ParameterMap, *(WorldBBoxSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-
+		NumCellsParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::NumCellsName + ParameterInfo.DataInterfaceHLSLSymbol));
+		UnitToUVParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::UnitToUVName + ParameterInfo.DataInterfaceHLSLSymbol));
+		CellSizeParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::CellSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
+		WorldBBoxSizeParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
 		GridParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollectionReader::GridName + ParameterInfo.DataInterfaceHLSLSymbol));		
-
 		SamplerParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollectionReader::SamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
 	}
 
@@ -58,7 +51,7 @@ public:
 
 		FGrid2DCollectionRWInstanceData_RenderThread* Grid2DProxyData = nullptr;
 
-		if (ReaderProxyData && ReaderProxyData->GPUContext && ReaderProxyData->ProxyToUse)
+		if (ReaderProxyData && ReaderProxyData->ProxyToUse)
 		{
 			Grid2DProxyData = ReaderProxyData->ProxyToUse->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
 		}
@@ -66,10 +59,10 @@ public:
 		// no proxy data so fill with dummy values
 		if (Grid2DProxyData == nullptr)
 		{			
-			SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, FIntPoint(0, 0));			
-			SetShaderValue(RHICmdList, ComputeShaderRHI, NumTilesParam, FIntPoint(0, 0));
-			SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, FVector2D(0.f, 0.f));
-			SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector2D(0.f, 0.f));
+			SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, FIntPoint(0, 0));
+			SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector2D::ZeroVector);
+			SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, FVector2D::ZeroVector);
+			SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector2D::ZeroVector);
 
 			FRHISamplerState* SamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 			SetSamplerParameter(RHICmdList, ComputeShaderRHI, SamplerParam, SamplerState);
@@ -82,18 +75,10 @@ public:
 
 		check(Grid2DProxyData);
 
-		int NumCellsTmp[2];
-		NumCellsTmp[0] = Grid2DProxyData->NumCells.X;
-		NumCellsTmp[1] = Grid2DProxyData->NumCells.Y;
-		SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, NumCellsTmp);	
-
-		int NumTilesTmp[2];
-		NumTilesTmp[0] = Grid2DProxyData->NumTiles.X;
-		NumTilesTmp[1] = Grid2DProxyData->NumTiles.Y;
-		SetShaderValue(RHICmdList, ComputeShaderRHI, NumTilesParam, NumTilesTmp);		
-
+		SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, Grid2DProxyData->NumCells);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector2D(1.0f) / FVector2D(Grid2DProxyData->NumCells));
 		SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, Grid2DProxyData->CellSize);
-				
+			
 		SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, Grid2DProxyData->WorldBBoxSize);
 
 		FRHISamplerState *SamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
@@ -104,8 +89,9 @@ public:
 			FRHIShaderResourceView* InputGridBuffer;
 			if (Grid2DProxyData->CurrentData != nullptr)
 			{
-				RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToCompute, Grid2DProxyData->CurrentData->GridBuffer.UAV);
-				InputGridBuffer = Grid2DProxyData->CurrentData->GridBuffer.SRV;
+				// FIXME: this shouldn't be necessary, since the Grid2D DI leaves the buffer in the SRVMask state. Confirm and remove the commented out line.
+				//RHICmdList.Transition(FRHITransitionInfo(Grid2DProxyData->CurrentData->GridUAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+				InputGridBuffer = Grid2DProxyData->CurrentData->GridSRV;
 			}
 			else
 			{
@@ -121,14 +107,12 @@ public:
 	}
 
 private:
-
 	LAYOUT_FIELD(FShaderParameter, NumCellsParam);
-	LAYOUT_FIELD(FShaderParameter, NumTilesParam);
+	LAYOUT_FIELD(FShaderParameter, UnitToUVParam);
 	LAYOUT_FIELD(FShaderParameter, CellSizeParam);
 	LAYOUT_FIELD(FShaderParameter, WorldBBoxSizeParam);
 
 	LAYOUT_FIELD(FShaderResourceParameter, GridParam);
-	
 	
 	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
 };
@@ -200,12 +184,11 @@ void UNiagaraDataInterfaceGrid2DCollectionReader::GetFunctions(TArray<FNiagaraFu
 void UNiagaraDataInterfaceGrid2DCollectionReader::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
 {
 	Super::GetVMExternalFunction(BindingInfo, InstanceData, OutFunc);
-
 	
-	if (BindingInfo.Name == WorldBBoxSizeFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
-	else if (BindingInfo.Name == CellSizeFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
-	else if (BindingInfo.Name == GetValueFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
-	else if (BindingInfo.Name == SampleGridFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
+	//if (BindingInfo.Name == WorldBBoxSizeFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
+	//else if (BindingInfo.Name == CellSizeFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
+	//else if (BindingInfo.Name == GetValueFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
+	//else if (BindingInfo.Name == SampleGridFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
 }
 
 bool UNiagaraDataInterfaceGrid2DCollectionReader::Equals(const UNiagaraDataInterface* Other) const
@@ -224,15 +207,13 @@ void UNiagaraDataInterfaceGrid2DCollectionReader::GetParameterDefinitionHLSL(con
 	Super::GetParameterDefinitionHLSL(ParamInfo, OutHLSL);
 
 	static const TCHAR *FormatDeclarations = TEXT(R"(				
-		Texture2D<float> {GridName};
-		int2 {NumTiles};
+		Texture2DArray<float> {GridName};
 		SamplerState {SamplerName};
 	
 	)");
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {				
 		{ TEXT("GridName"),    GridName + ParamInfo.DataInterfaceHLSLSymbol },
 		{ TEXT("SamplerName"),    SamplerName + ParamInfo.DataInterfaceHLSLSymbol },		
-		{ TEXT("NumTiles"),    NumTilesName + ParamInfo.DataInterfaceHLSLSymbol },
 	};
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
 }
@@ -249,17 +230,14 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::GetFunctionHLSL(const FNiagara
 		static const TCHAR *FormatBounds = TEXT(R"(
 			void {FunctionName}(int In_IndexX, int In_IndexY, int In_AttributeIndex, out float Out_Val)
 			{
-				int TileIndexX = In_AttributeIndex % {NumTiles}.x;
-				int TileIndexY = In_AttributeIndex / {NumTiles}.x;
-
-				Out_Val = {Grid}.Load(int3(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, 0));
+				Out_Val = {Grid}.Load(int3(In_IndexX, In_IndexY, In_AttributeIndex));
 			}
 		)");
 		TMap<FString, FStringFormatArg> ArgsBounds = {
 			{TEXT("FunctionName"), FunctionInfo.InstanceName},
 			{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
-			{TEXT("NumCellsName"), NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-			{TEXT("NumTiles"),    NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
+			{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
+			{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
 		};
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
 		return true;
@@ -269,34 +247,15 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::GetFunctionHLSL(const FNiagara
 		static const TCHAR *FormatBounds = TEXT(R"(
 			void {FunctionName}(float In_UnitX, float In_UnitY, int In_AttributeIndex, out float Out_Val)
 			{
-				int TileIndexX = In_AttributeIndex % {NumTiles}.x;
-				int TileIndexY = In_AttributeIndex / {NumTiles}.x;
-				float2 UV =
-				{
-					In_UnitX / {NumTiles}.x + 1.0*TileIndexX/{NumTiles}.x,
-					In_UnitY / {NumTiles}.y + 1.0*TileIndexY/{NumTiles}.y
-				};
-				float2 TileMin =
-				{
-					(TileIndexX * {NumCellsName}.x + 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-					(TileIndexY * {NumCellsName}.y + 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-				};
-				float2 TileMax =
-				{
-					((TileIndexX + 1) * {NumCellsName}.x - 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-					((TileIndexY + 1) * {NumCellsName}.y - 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-				};
-				UV = clamp(UV, TileMin, TileMax);
-				
-				Out_Val = {Grid}.SampleLevel({SamplerName}, UV, 0);
+				Out_Val = {Grid}.SampleLevel({SamplerName}, float3(In_UnitX, In_UnitY, In_AttributeIndex), 0);
 			}
 		)");
 		TMap<FString, FStringFormatArg> ArgsBounds = {
 			{TEXT("FunctionName"), FunctionInfo.InstanceName},
 			{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
 			{TEXT("SamplerName"),    SamplerName + ParamInfo.DataInterfaceHLSLSymbol },
-			{TEXT("NumTiles"),    NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
-			{TEXT("NumCellsName"), NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
+			{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
+			{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
 		};
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
 		return true;
@@ -330,42 +289,54 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::InitPerInstanceData(void* PerI
 	InstanceData->DIName = DIName;
 	for (TSharedPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInstance : SystemInstance->GetEmitters())
 	{
-		if (EmitterName == EmitterInstance->GetCachedEmitter()->GetUniqueEmitterName())
+		UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter();
+		if (Emitter == nullptr)
+		{
+			continue;
+		}
+
+		if (EmitterName == Emitter->GetUniqueEmitterName())
 		{
 			InstanceData->EmitterInstance = EmitterInstance.Get();			
 			break;
 		}
 	}
 
-	// Push Updates to Proxy.
-	FNiagaraDataInterfaceProxyGrid2DCollectionReaderProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyGrid2DCollectionReaderProxy>();
-	ENQUEUE_RENDER_COMMAND(FUpdateData)(
-		[RT_Proxy, InstanceID = SystemInstance->GetId(), RT_InstanceData=*InstanceData](FRHICommandListImmediate& RHICmdList)
+	// Look for proxy we are going to use
+	FNiagaraDataInterfaceProxyGrid2DCollectionProxy* ProxyToUse = nullptr;
+
+	if (InstanceData->EmitterInstance != nullptr)
 	{
-		check(!RT_Proxy->SystemInstancesToProxyData_RT.Contains(InstanceID));
-		FGrid2DCollectionReaderInstanceData_RenderThread* TargetData = &RT_Proxy->SystemInstancesToProxyData_RT.Add(InstanceID);			
-		TargetData->ProxyToUse = nullptr;
-
-		if (RT_InstanceData.EmitterInstance != nullptr)
+		FNiagaraComputeExecutionContext* ExecContext = InstanceData->EmitterInstance->GetGPUContext();
+		if ( (ExecContext != nullptr) && (ExecContext->GPUScript != nullptr) )
 		{
-			TargetData->GPUContext = RT_InstanceData.EmitterInstance->GetGPUContext();
+			const TArray<FNiagaraScriptDataInterfaceCompileInfo>& DataInterfaceInfo = ExecContext->GPUScript->GetVMExecutableData().DataInterfaceInfo;
+			const TArray<UNiagaraDataInterface*>& DataInterfaces = ExecContext->CombinedParamStore.GetDataInterfaces();
 
-			const TArray<FNiagaraScriptDataInterfaceCompileInfo>& DataInterfaceInfo = TargetData->GPUContext->GPUScript->GetVMExecutableData().DataInterfaceInfo;
-			const TArray<UNiagaraDataInterface*>& DataInterfaces = TargetData->GPUContext->CombinedParamStore.GetDataInterfaces();
-
-			FString FullName = FString("Emitter.") + RT_InstanceData.DIName;
+			FString FullName = FString("Emitter.") + InstanceData->DIName;
 			int Index = 0;
 
 			// #todo(dmp): we are looking at the UObjects that define the DIs here 
 			for (UNiagaraDataInterface* Interface : DataInterfaces)
 			{
 				if (DataInterfaceInfo[Index].Name.GetPlainNameString() == FullName)
-				{										
-					TargetData->ProxyToUse = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(Interface->GetProxy());
+				{
+					ProxyToUse = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(Interface->GetProxy());
+					break;
 				}
 				++Index;
 			}
 		}
+	}
+
+	// Push Updates to Proxy.
+	FNiagaraDataInterfaceProxyGrid2DCollectionReaderProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyGrid2DCollectionReaderProxy>();
+	ENQUEUE_RENDER_COMMAND(FUpdateData)(
+		[RT_Proxy, InstanceID = SystemInstance->GetId(), RT_ProxyToUse=ProxyToUse](FRHICommandListImmediate& RHICmdList)
+	{
+		check(!RT_Proxy->SystemInstancesToProxyData_RT.Contains(InstanceID));
+		FGrid2DCollectionReaderInstanceData_RenderThread* TargetData = &RT_Proxy->SystemInstancesToProxyData_RT.Add(InstanceID);			
+		TargetData->ProxyToUse = RT_ProxyToUse;
 	});
 	
 	return true;
@@ -407,6 +378,20 @@ void UNiagaraDataInterfaceGrid2DCollectionReader::GetEmitterDependencies(UNiagar
 			return;
 		}
 	}
+}
+
+FIntVector FNiagaraDataInterfaceProxyGrid2DCollectionReaderProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+{
+	const auto* ReaderProxyData = SystemInstancesToProxyData_RT.Find(SystemInstanceID);
+	if (ReaderProxyData && ReaderProxyData->ProxyToUse)
+	{
+		if ( FGrid2DCollectionRWInstanceData_RenderThread* Grid2DProxyData = ReaderProxyData->ProxyToUse->SystemInstancesToProxyData_RT.Find(SystemInstanceID) )
+		{
+			return FIntVector(Grid2DProxyData->NumCells.X, Grid2DProxyData->NumCells.Y, 1);
+		}
+	}
+
+	return FIntVector::ZeroValue;
 }
 
 #undef LOCTEXT_NAMESPACE

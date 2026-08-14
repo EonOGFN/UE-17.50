@@ -14,6 +14,7 @@ class UMoviePipelineExecutorBase;
 class UMoviePipelineExecutorJob;
 class UMoviePipeline;
 class UMoviePipelineQueue;
+class UMovieRenderDebugWidget;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMoviePipelineExecutorFinishedNative, UMoviePipelineExecutorBase* /*PipelineExecutor*/, bool /*bSuccess*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMoviePipelineExecutorFinished, UMoviePipelineExecutorBase*, PipelineExecutor, bool, bSuccess);
@@ -67,7 +68,8 @@ public:
 	*	@unreal.ufunction(override=True)
 	*	def execute(self):
 	*
-	* @param InPipelineQueue The queue that this should process all jobs for.
+	* @param InPipelineQueue The queue that this should process all jobs for. This can be null
+							 when using certain combination of command line render flags/scripting.
 	*/
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Movie Render Pipeline")
 	void Execute(UMoviePipelineQueue* InPipelineQueue);
@@ -159,6 +161,18 @@ public:
 	float GetStatusProgress() const;
 
 	/**
+	* Abort the currently executing job.
+	*/
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Movie Render Pipeline")
+	void CancelCurrentJob();
+
+	/**
+	* Abort the currently executing job and skip all other jobs.
+	*/
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Movie Render Pipeline")
+	void CancelAllJobs();
+
+	/**
 	* Specify which MoviePipeline class type should be created by this executor when processing jobs.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
@@ -219,6 +233,8 @@ protected:
 		OnExecutorFinishedDelegate.Broadcast(this, bFatal);
 	}
 
+	bool IsAnyJobErrored() const { return bAnyJobHadFatalError; }
+
 	// UMoviePipelineExecutorBase Interface
 	virtual void Execute_Implementation(UMoviePipelineQueue* InPipelineQueue) PURE_VIRTUAL(UMoviePipelineExecutorBase::ExecuteImpl, );
 	virtual bool IsRendering_Implementation() const PURE_VIRTUAL(UMoviePipelineExecutorBase::IsRenderingImpl, return false; );
@@ -227,6 +243,8 @@ protected:
 	virtual void SetStatusProgress_Implementation(const float InProgress) { StatusProgress = InProgress; }
 	virtual FString GetStatusMessage_Implementation() const { return StatusMessage; }
 	virtual float GetStatusProgress_Implementation() const { return StatusProgress; }
+	virtual void CancelCurrentJob_Implementation() PURE_VIRTUAL(UMoviePipelineExecutorBase::CancelCurrentJobImpl, );
+	virtual void CancelAllJobs_Implementation() PURE_VIRTUAL(UMoviePipelineExecutorBase::CancelAllJobsImpl, );
 	// ~UMoviePipelineExecutorBase
 private:
 	/** 
@@ -320,6 +338,10 @@ private:
 	bool ProcessIncomingSocketData();
 
 public:
+	/** Optional widget for feedback during render */
+	UPROPERTY(BlueprintReadWrite, Category = "Movie Render Pipeline")
+	TSubclassOf<UMovieRenderDebugWidget> DebugWidgetClass;
+
 	/**
 	* Arbitrary data that can be associated with the executor. Not used by default implementations, nor read.
 	* This can be used to attach third party metadata such as job ids from remote farms.

@@ -1169,7 +1169,7 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	// ----------------------------------------------------------------------------------------------------------------	
 
 	/** Plays a montage and handles replication and prediction based on passed in ability/activation info */
-	virtual float PlayMontage(UGameplayAbility* AnimatingAbility, FGameplayAbilityActivationInfo ActivationInfo, UAnimMontage* Montage, float InPlayRate, FName StartSectionName = NAME_None);
+	virtual float PlayMontage(UGameplayAbility* AnimatingAbility, FGameplayAbilityActivationInfo ActivationInfo, UAnimMontage* Montage, float InPlayRate, FName StartSectionName = NAME_None, float StartTimeSeconds = 0.0f);
 
 	/** Plays a montage without updating replication/prediction structures. Used by simulated proxies when replication tells them to play a montage. */
 	virtual float PlayMontageSimulated(UAnimMontage* Montage, float InPlayRate, FName StartSectionName = NAME_None);
@@ -1605,6 +1605,7 @@ protected:
 	friend struct FActiveGameplayEffectAction_Add;
 	friend struct FGameplayEffectSpec;
 	friend class AAbilitySystemDebugHUD;
+	friend class UAbilitySystemGlobals;
 
 private:
 	FDelegateHandle MonitoredTagChangedDelegateHandle;
@@ -1613,6 +1614,7 @@ private:
 	/** Caches the flags that indicate whether this component has network authority. */
 	void CacheIsNetSimulated();
 
+	uint8 bDestroyActiveStateInitiated : 1;
 public:
 
 	/** PredictionKeys, see more info in GameplayPrediction.h. This has to come *last* in all replicated properties on the AbilitySystemComponent to ensure OnRep/callback order. */

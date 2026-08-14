@@ -54,11 +54,24 @@ FAutoConsoleVariableRef CVarLandscapeMeshLODBias(
 	ECVF_Scalability
 );
 
+#if !UE_BUILD_SHIPPING
+static void OnLODDistributionScaleChanged(IConsoleVariable* CVar)
+{
+	for (auto* LandscapeComponent : TObjectRange<ULandscapeComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
+	{
+		LandscapeComponent->MarkRenderStateDirty();
+	}
+}
+#endif
+
 float GLandscapeLOD0DistributionScale = 1.f;
 FAutoConsoleVariableRef CVarLandscapeLOD0DistributionScale(
 	TEXT("r.LandscapeLOD0DistributionScale"),
 	GLandscapeLOD0DistributionScale,
 	TEXT("Multiplier for the landscape LOD0DistributionSetting property"),
+#if !UE_BUILD_SHIPPING
+	FConsoleVariableDelegate::CreateStatic(&OnLODDistributionScaleChanged),
+#endif
 	ECVF_Scalability
 );
 
@@ -67,6 +80,9 @@ FAutoConsoleVariableRef CVarLandscapeLODDistributionScale(
 	TEXT("r.LandscapeLODDistributionScale"),
 	GLandscapeLODDistributionScale,
 	TEXT("Multiplier for the landscape LODDistributionSetting property"),
+#if !UE_BUILD_SHIPPING
+	FConsoleVariableDelegate::CreateStatic(&OnLODDistributionScaleChanged),
+#endif
 	ECVF_Scalability
 );
 
@@ -89,14 +105,6 @@ extern TAutoConsoleVariable<int32> CVarLandscapeShowDirty;
 #endif
 
 #if !UE_BUILD_SHIPPING
-static void OnLODDistributionScaleChanged(IConsoleVariable* CVar)
-{
-	for (auto* LandscapeComponent : TObjectRange<ULandscapeComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
-	{
-		LandscapeComponent->MarkRenderStateDirty();
-	}
-}
-
 int32 GVarDumpLandscapeLODsCurrentFrame = 0;
 bool GVarDumpLandscapeLODs = false;
 
@@ -846,7 +854,7 @@ void FLandscapeRenderSystem::PrepareView(const FSceneView* View)
 #endif
 	
 	const bool bExecuteInParallel = FApp::ShouldUseThreadingForPerformance()
-		&& GRenderingThread; // Rendering thread is required to safely use rendering resources in parallel.
+		&& GIsThreadedRendering; // Rendering thread is required to safely use rendering resources in parallel.
 
 	if (bExecuteInParallel)
 	{
@@ -975,10 +983,9 @@ void FLandscapeRenderSystem::FetchHeightmapLODBiases()
 		FLandscapeComponentSceneProxy* SceneProxy = SceneProxies[EntityIndex];
 		if (SceneProxy)
 		{
-			if (SceneProxy->HeightmapTexture)
+			if (SceneProxy->HeightmapTexture && SceneProxy->HeightmapTexture->Resource != nullptr)
 			{
-				float SectionLODBias = ((FTexture2DResource*)SceneProxy->HeightmapTexture->Resource)->GetCurrentFirstMip();
-				SectionLODBiases[EntityIndex] = SectionLODBias;
+				SectionLODBiases[EntityIndex] = SceneProxy->HeightmapTexture->GetNumMips() - SceneProxy->HeightmapTexture->GetNumResidentMips();
 
 				// TODO: support mipmap LOD bias of XY offset map
 				//XYOffsetmapTexture ? ((FTexture2DResource*)XYOffsetmapTexture->Resource)->GetCurrentFirstMip() : 0.0f);
@@ -1090,7 +1097,7 @@ void FLandscapeRenderSystem::BeginFrame()
 	}
 
 	const bool bExecuteInParallel = FApp::ShouldUseThreadingForPerformance()
-		&& GRenderingThread; // Rendering thread is required to safely use rendering resources in parallel.
+		&& GIsThreadedRendering; // Rendering thread is required to safely use rendering resources in parallel.
 
 	if (bExecuteInParallel)
 	{
@@ -1129,8 +1136,8 @@ FLandscapeRenderSystem::FComputeSectionPerViewParametersTask::FComputeSectionPer
 	, ViewLODDistanceFactor(InView->LODDistanceFactor)
 	, ViewEngineShowFlagCollisionPawn(InView->Family->EngineShowFlags.CollisionPawn)
 	, ViewEngineShowFlagCollisionVisibility(InView->Family->EngineShowFlags.CollisionVisibility)
-	, ViewOrigin(InView->ViewMatrices.GetViewOrigin())
-	, ViewProjectionMatrix(InView->ViewMatrices.GetProjectionMatrix())
+	, ViewOrigin(GetLODView(*InView).ViewMatrices.GetViewOrigin())
+	, ViewProjectionMatrix(GetLODView(*InView).ViewMatrices.GetProjectionMatrix())
 {
 }
 
@@ -1232,18 +1239,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	, LightMapResolution(InComponent->GetStaticLightMapResolution())
 #endif
 {
-#if !UE_BUILD_SHIPPING
-	{
-		static bool bStaticInit = false;
-		if (!bStaticInit)
-		{
-			bStaticInit = true;
-			CVarLandscapeLODDistributionScale->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnLODDistributionScaleChanged));
-			CVarLandscapeLOD0DistributionScale->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnLODDistributionScaleChanged));
-		}
-	}
-#endif
-
 	const auto FeatureLevel = GetScene().GetFeatureLevel();
 
 	if (FeatureLevel >= ERHIFeatureLevel::SM5)
@@ -1310,7 +1305,7 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	LastLOD = MaxLOD;	// we always need to go to MaxLOD regardless of LODBias as we could need the lowest LODs due to streaming.
 
 	// Make sure out LastLOD is > of MinStreamedLOD otherwise we would not be using the right LOD->MIP, the only drawback is a possible minor memory usage for overallocating static mesh element batch
-	const int32 MinStreamedLOD = (HeightmapTexture != nullptr && HeightmapTexture->Resource != nullptr) ? FMath::Min<int32>(((FTexture2DResource*)HeightmapTexture->Resource)->GetCurrentFirstMip(), FMath::CeilLogTwo(SubsectionSizeVerts) - 1) : 0;
+	const int32 MinStreamedLOD = HeightmapTexture ? FMath::Min<int32>(HeightmapTexture->GetNumMips() - HeightmapTexture->GetNumResidentMips(), FMath::CeilLogTwo(SubsectionSizeVerts) - 1) : 0;
 	LastLOD = FMath::Max(MinStreamedLOD, LastLOD);
 
 	// Clamp to MaxLODLevel
@@ -1421,7 +1416,9 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 			if (FeatureLevel >= ERHIFeatureLevel::SM5)
 			{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				HasTessellationEnabled = LandscapeMaterial->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 
 			MaterialHasTessellationEnabled.Add(HasTessellationEnabled);
@@ -1837,11 +1834,11 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 		(IsSelected() && !GLandscapeEditModeActive) ||
 		(GLandscapeViewMode != ELandscapeViewMode::Normal) ||
 		(CVarLandscapeShowDirty.GetValueOnAnyThread() && GLandscapeDirtyMaterial) ||
-		(GetViewLodOverride(*View) >= 0) ||
+		(GetViewLodOverride(*View) >= 0)
 #else
-		IsSelected() ||
+		IsSelected()
 #endif
-		!IsStaticPathAvailable())
+		)
 	{
 		Result.bDynamicRelevance = true;
 	}
@@ -2393,7 +2390,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 			case ELandscapeViewMode::LOD:
 			{
 
-				const bool bMaterialModifiesMeshPosition = Mesh.MaterialRenderProxy->GetMaterial(View->GetFeatureLevel())->MaterialModifiesMeshPosition_RenderThread();
+				const bool bMaterialModifiesMeshPosition = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(View->GetFeatureLevel()).MaterialModifiesMeshPosition_RenderThread();
 
 				auto& TemplateMesh = bIsWireframe ? Mesh : MeshTools;
 				for (int32 i = 0; i < TemplateMesh.Elements.Num(); i++)
@@ -2523,11 +2520,11 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 						bIsWireframe ||
 #if WITH_EDITOR
 						(IsSelected() && !GLandscapeEditModeActive) ||
-						(GetViewLodOverride(*View) >= 0) ||
+						ViewFamily.LandscapeLODOverride >= 0
 #else
-						IsSelected() ||
+						IsSelected()
 #endif
-						!IsStaticPathAvailable())
+						)
 					{
 						Mesh.bCanApplyViewModeOverrides = true;
 						Mesh.bUseWireframeSelectionColoring = IsSelected();
@@ -3607,6 +3604,9 @@ FLandscapeMaterialTextureStreamingInfo& ULandscapeMaterialInstanceConstant::Acqu
 
 void ULandscapeMaterialInstanceConstant::UpdateCachedTextureStreaming()
 {
+	// Remove outdated elements that no longer match the material's expressions.
+	TextureStreamingInfo.Empty();
+
 	const UMaterial* Material = GetMaterial();
 	if (Material)
 	{
@@ -3797,6 +3797,8 @@ public:
 			FName(TEXT("TBasePassPSFSimpleNoLightmapLightingPolicySkylight")),
 			FName(TEXT("TBasePassVSFSimpleNoLightmapLightingPolicy")),
 			FName(TEXT("TBasePassVSFSimpleNoLightmapLightingPolicyAtmosphericFog")),
+			FName(TEXT("FAnisotropyVS")),
+			FName(TEXT("FAnisotropyPS")),
 			FName(TEXT("TDepthOnlyVS<false>")),
 			FName(TEXT("TDepthOnlyVS<true>")),
 			FName(TEXT("FDepthOnlyPS<true>")),
@@ -4037,6 +4039,7 @@ public:
 				FName(TEXT("TMaterialCHSFPrecomputedVolumetricLightmapLightingPolicy")),
 				FName(TEXT("TMaterialCHSFNoLightMapPolicy")),
 				FName(TEXT("FRayTracingDynamicGeometryConverterCS")),
+				FName(TEXT("FTrivialMaterialCHS"))
 #endif // RHI_RAYTRACING
 		};
 		return ExcludedShaderTypes;
@@ -4248,10 +4251,10 @@ void ULandscapeComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCont
 	}
 #endif
 
-	if (IsStreamingRenderAsset(LODStreamingProxy))
+	if (LODStreamingProxy && LODStreamingProxy->IsStreamable())
 	{
 		const float MeshTexelFactor = ForcedLOD >= 0 ?
-			-FMath::Max(LODStreamingProxy->GetNumMipsForStreaming() - ForcedLOD, 1) :
+			-FMath::Max<int32>(LODStreamingProxy->GetStreamableResourceState().MaxNumLODs - ForcedLOD, 1) :
 			(IsRegistered() ? Bounds.SphereRadius * 2.f : 0.f);
 		new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(LODStreamingProxy, Bounds, MeshTexelFactor, PackedRelativeBox_Identity, true);
 	}
@@ -4619,9 +4622,9 @@ void FLandscapeMeshProxySceneProxy::DestroyRenderThreadResources()
 FPrimitiveSceneProxy* ULandscapeMeshProxyComponent::CreateSceneProxy()
 {
 	if (GetStaticMesh() == NULL
-		|| GetStaticMesh()->RenderData == NULL
-		|| GetStaticMesh()->RenderData->LODResources.Num() == 0
-		|| GetStaticMesh()->RenderData->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
+		|| GetStaticMesh()->GetRenderData() == NULL
+		|| GetStaticMesh()->GetRenderData()->LODResources.Num() == 0
+		|| GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
 		return NULL;
 	}

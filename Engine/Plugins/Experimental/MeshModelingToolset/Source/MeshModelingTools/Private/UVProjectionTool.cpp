@@ -127,6 +127,10 @@ void UUVProjectionTool::Setup()
 		Preview->InvalidateResult();
 	}
 	UpdateVisualization();
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("UVProjectionToolDescription", "Generate UVs for a Mesh by projecting onto simple geometric shapes."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -183,7 +187,7 @@ void UUVProjectionTool::UpdateNumPreviews()
 			TransformProxy->OnTransformChanged.AddUObject(this, &UUVProjectionTool::TransformChanged);
 
 			UTransformGizmo* TransformGizmo = TransformGizmos.Add_GetRef(GizmoManager->Create3AxisTransformGizmo(this));
-			TransformGizmo->SetActiveTarget(TransformProxy);
+			TransformGizmo->SetActiveTarget(TransformProxy, GetToolManager());
 		}
 		check(TransformProxies.Num() == TargetNumPreview);
 		check(TransformGizmos.Num() == TargetNumPreview);
@@ -325,11 +329,6 @@ void UUVProjectionTool::TransformChanged(UTransformProxy* Proxy, FTransform Tran
 }
 
 
-bool UUVProjectionTool::HasAccept() const
-{
-	return true;
-}
-
 bool UUVProjectionTool::CanAccept() const
 {
 	for (UMeshOpPreviewWithBackgroundCompute* Preview : Previews)
@@ -339,7 +338,7 @@ bool UUVProjectionTool::CanAccept() const
 			return false;
 		}
 	}
-	return true;
+	return Super::CanAccept();
 }
 
 

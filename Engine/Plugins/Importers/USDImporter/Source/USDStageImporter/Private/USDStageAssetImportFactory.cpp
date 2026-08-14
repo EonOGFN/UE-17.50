@@ -2,8 +2,9 @@
 
 #include "USDStageAssetImportFactory.h"
 
-#include "USDLog.h"
 #include "USDAssetImportData.h"
+#include "USDErrorUtils.h"
+#include "USDLog.h"
 #include "USDStageImporter.h"
 #include "USDStageImporterModule.h"
 #include "USDStageImportOptions.h"
@@ -35,9 +36,10 @@ UUsdStageAssetImportFactory::UUsdStageAssetImportFactory(const FObjectInitialize
 	bEditorImport = true;
 	bText = false;
 
-	Formats.Add(TEXT("usd;Universal Scene Descriptor files"));
-	Formats.Add(TEXT("usda;Universal Scene Descriptor files"));
-	Formats.Add(TEXT("usdc;Universal Scene Descriptor files"));
+	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
+	{
+		Formats.Add(FString::Printf(TEXT("%s; Universal Scene Descriptor files"), *Extension));
+	}
 }
 
 bool UUsdStageAssetImportFactory::DoesSupportClass(UClass* Class)
@@ -54,9 +56,14 @@ UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject
 {
 	UObject* ImportedObject = nullptr;
 
-	if (ImportContext.Init(InName.ToString(), Filename, Flags, IsAutomatedImport()))
+	const FString InitialPackagePath = InParent ? InParent->GetName() : TEXT( "/Game/" );
+	const bool bIsReimport = false;
+	const bool bAllowActorImport = false;
+	if (ImportContext.Init(InName.ToString(), Filename, InitialPackagePath, Flags, IsAutomatedImport(), bIsReimport, bAllowActorImport))
 	{
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPreImport( this, InClass, InParent, InName, Parms );
+
+		FScopedUsdMessageLog ScopedMessageLog;
 
 		UUsdStageImporter* USDImporter = IUsdStageImporterModule::Get().GetImporter();
 		USDImporter->ImportFromFile(ImportContext);
@@ -64,9 +71,7 @@ UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, ImportContext.SceneActor);
 		GEditor->BroadcastLevelActorListChanged();
 
-		ImportContext.DisplayErrorMessages(ImportContext.bIsAutomated);
-
-		ImportedObject = ImportContext.SceneActor;
+		ImportedObject = ImportContext.ImportedPackage ? Cast<UObject>(ImportContext.ImportedPackage) : Cast<UObject>(ImportContext.SceneActor);
 	}
 	else
 	{
@@ -78,11 +83,14 @@ UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject
 
 bool UUsdStageAssetImportFactory::FactoryCanImport(const FString& Filename)
 {
-	const FString Extension = FPaths::GetExtension(Filename);
+	const FString Extension = FPaths::GetExtension( Filename );
 
-	if (Extension == TEXT("usd") || Extension == TEXT("usda") || Extension == TEXT("usdc"))
+	for ( const FString& SupportedExtension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
 	{
-		return true;
+		if ( SupportedExtension.Equals( Extension, ESearchCase::IgnoreCase ) )
+		{
+			return true;
+		}
 	}
 
 	return false;
@@ -96,7 +104,7 @@ void UUsdStageAssetImportFactory::CleanUp()
 
 bool UUsdStageAssetImportFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
 {
-	if (UUsdAssetImportData* ImportData = UUsdStageImporter::GetAssetImportData(Obj))
+	if (UUsdAssetImportData* ImportData = UsdUtils::GetAssetImportData(Obj))
 	{
 		OutFilenames.Add(ImportData->GetFirstFilename());
 		return true;
@@ -112,7 +120,7 @@ void UUsdStageAssetImportFactory::SetReimportPaths(UObject* Obj, const TArray<FS
 		return;
 	}
 
-	if (UUsdAssetImportData* ImportData = UUsdStageImporter::GetAssetImportData(Obj))
+	if (UUsdAssetImportData* ImportData = UsdUtils::GetAssetImportData(Obj))
 	{
 		ImportData->UpdateFilenameOnly(NewReimportPaths[0]);
 	}
@@ -122,30 +130,40 @@ EReimportResult::Type UUsdStageAssetImportFactory::Reimport(UObject* Obj)
 {
 	if (!Obj)
 	{
-		ImportContext.AddErrorMessage(EMessageSeverity::Error, LOCTEXT("ReimportErrorInvalidAsset", "Failed to reimport asset as it is invalid!"));
+		FUsdLogManager::LogMessage( EMessageSeverity::Error, LOCTEXT( "ReimportErrorInvalidAsset", "Failed to reimport asset as it is invalid!" ) );
 		return EReimportResult::Failed;
 	}
 
-	UUsdAssetImportData* ImportData = UUsdStageImporter::GetAssetImportData(Obj);
+	UUsdAssetImportData* ImportData = UsdUtils::GetAssetImportData(Obj);
 	if (!ImportData)
 	{
-		ImportContext.AddErrorMessage(EMessageSeverity::Error, FText::Format(LOCTEXT("ReimportErrorNoImportData", "Failed to reimport asset '{0}' as it doesn't seem to have import data!"), FText::FromName(Obj->GetFName())));
+		FUsdLogManager::LogMessage( EMessageSeverity::Error, FText::Format( LOCTEXT( "ReimportErrorNoImportData", "Failed to reimport asset '{0}' as it doesn't seem to have import data!" ), FText::FromName( Obj->GetFName() ) ) );
 		return EReimportResult::Failed;
 	}
 
-	if (!ImportContext.Init(Obj->GetName(), ImportData->GetFirstFilename(), Obj->GetFlags(), IsAutomatedImport(), true))
+	if ( UUsdStageImportOptions* ReimportOptions = Cast<UUsdStageImportOptions>( ImportData->ImportOptions ) )
 	{
-		ImportContext.AddErrorMessage(EMessageSeverity::Error, FText::Format(LOCTEXT("ReimportErrorNoContext", "Failed to initialize reimport context for asset '{0}'!"), FText::FromName(Obj->GetFName())));
+		// Duplicate this as we may update these options on the Init call below, and if we just imported a scene and
+		// all assets are in memory (sharing the same import options object), that update would otherwise affect all the UUsdAssetImportData objects,
+		// which is not what we would expect
+		ImportContext.ImportOptions = DuplicateObject( ReimportOptions, ImportData );
+	}
+
+	const bool bIsReimport = true;
+	const bool bAllowActorImport = false;
+	if (!ImportContext.Init(Obj->GetName(), ImportData->GetFirstFilename(), Obj->GetName(), Obj->GetFlags(), IsAutomatedImport(), bIsReimport, bAllowActorImport))
+	{
+		FUsdLogManager::LogMessage( EMessageSeverity::Error, FText::Format( LOCTEXT( "ReimportErrorNoContext", "Failed to initialize reimport context for asset '{0}'!" ), FText::FromName( Obj->GetFName() ) ) );
 		return EReimportResult::Failed;
 	}
 
 	ImportContext.PackagePath = Obj->GetOutermost()->GetPathName();
 
+	FScopedUsdMessageLog ScopedMessageLog;
+
 	UUsdStageImporter* USDImporter = IUsdStageImporterModule::Get().GetImporter();
 	UObject* ReimportedAsset = nullptr;
 	bool bSuccess = USDImporter->ReimportSingleAsset(ImportContext, Obj, ImportData, ReimportedAsset);
-
-	ImportContext.DisplayErrorMessages(ImportContext.bIsAutomated);
 
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Obj);
 
@@ -155,11 +173,6 @@ EReimportResult::Type UUsdStageAssetImportFactory::Reimport(UObject* Obj)
 int32 UUsdStageAssetImportFactory::GetPriority() const
 {
 	return ImportPriority;
-}
-
-void UUsdStageAssetImportFactory::ParseFromJson(TSharedRef<class FJsonObject> ImportSettingsJson)
-{
-	FJsonObjectConverter::JsonObjectToUStruct(ImportSettingsJson, ImportOptions->GetClass(), ImportOptions, 0, CPF_InstancedReference);
 }
 
 #undef LOCTEXT_NAMESPACE

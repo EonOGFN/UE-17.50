@@ -106,7 +106,7 @@ struct TDefaultNumericTypeInterface : INumericTypeInterface<NumericType>
 			bool FallbackResult = FastDecimalFormat::StringToNumber(*InString, InString.Len(), FastDecimalFormat::GetCultureAgnosticFormattingRules(), ParsingOption, FallbackValue, &FallbackParsedLen);
 			if (FallbackResult && FallbackParsedLen == InString.Len())
 			{
-				return FallbackResult;
+				return FallbackValue;
 			}
 		}
 
@@ -116,8 +116,7 @@ struct TDefaultNumericTypeInterface : INumericTypeInterface<NumericType>
 		TValueOrError<double, FExpressionError> Result = Parser.Evaluate(*InString, InExistingValue);
 		if (Result.IsValid())
 		{
-			double ClampedValue = FMath::Clamp<double>(Result.GetValue(), TNumericLimits<NumericType>::Lowest(), TNumericLimits<NumericType>::Max());
-			return NumericType(ClampedValue);
+			return FMath::Clamp((NumericType)Result.GetValue(), TNumericLimits<NumericType>::Lowest(), TNumericLimits<NumericType>::Max());
 		}
 
 		return TOptional<NumericType>();

@@ -4,6 +4,9 @@
 #include "UObject/Object.h"
 #include "Engine/EngineCustomTimeStep.h"
 #include "MovieRenderPipelineDataTypes.h"
+#if WITH_EDITOR
+#include "MovieSceneExportMetadata.h"
+#endif
 #include "MovieSceneTimeController.h"
 #include "Async/Future.h"
 #include "MoviePipeline.generated.h"
@@ -29,8 +32,8 @@ class UTexture;
 
 
 
-DECLARE_MULTICAST_DELEGATE_OneParam(FMoviePipelineFinishedNative, UMoviePipeline*);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMoviePipelineFinished, UMoviePipeline*, MoviePipeline);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FMoviePipelineFinishedNative, UMoviePipeline*, bool);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FMoviePipelineFinished, UMoviePipeline*, MoviePipeline, bool, bFatalError);
 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FMoviePipelineErrored, UMoviePipeline* /*Pipeline*/, bool /*bIsFatal*/, FText /*ErrorText*/);
 
@@ -57,20 +60,24 @@ public:
 	* completed work is written to disk. This is a non-blocking operation, use Shutdown() instead if you need to
 	* block until it is fully shut down.
 	*
+	* @param bError - Whether this is a request for early shut down due to an error
+	* 
 	* This function is thread safe.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void RequestShutdown();
+	void RequestShutdown(bool bIsError=false);
 	
 	/** 
 	* Abandons any future work on this Movie Pipeline and runs through the shutdown flow to ensure already
 	* completed work is written to disk. This is a blocking-operation and will not return until all outstanding
 	* work has been completed.
 	*
+	* @param bError - Whether this is an early shut down due to an error
+	*
 	* This function should only be called from the game thread.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void Shutdown();
+	void Shutdown(bool bError=false);
 
 	/**
 	* Has RequestShutdown() been called?
@@ -91,14 +98,6 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Movie Render Pipeline")
 	FMoviePipelineFinished OnMoviePipelineFinishedDelegate;
-
-	/**
-	* Called when there was an error during the rendering of this movie pipeline (such as missing sequence, i/o failure, etc.)
-	*/
-	FMoviePipelineErrored& OnMoviePipelineErrored()
-	{
-		return OnMoviePipelineErroredDelegate;
-	}
 
 	/**
 	* Get the Master Configuration used to render this shot. This contains the global settings for the shot, as well as per-shot
@@ -123,8 +122,15 @@ public:
 	UMoviePipelineExecutorJob* GetCurrentJob() const { return CurrentJob; }
 	EMovieRenderPipelineState GetPipelineState() const { return PipelineState; }
 
+#if WITH_EDITOR
+	const FMovieSceneExportMetadata& GetOutputMetadata() const { return OutputMetadata; }
+#endif
+
 	FDateTime GetInitializationTime() const { return InitializationTime; }
 public:
+#if WITH_EDITOR
+	void AddFrameToOutputMetadata(const FString& ClipName, const FString& ImageSequenceFileName, const FMoviePipelineFrameOutputState& FrameOutputState, const FString& Extension, const bool bHasAlpha);
+#endif
 	void AddOutputFuture(TFuture<bool>&& OutputFuture);
 
 	void ProcessOutstandingFinishedFrames();
@@ -132,23 +138,41 @@ public:
 	const MoviePipeline::FAudioState& GetAudioState() const { return AudioState; }
 public:
 	template<typename SettingType>
-	SettingType* FindOrAddSetting(const UMoviePipelineExecutorShot* InShot) const
+	SettingType* FindOrAddSettingForShot(const UMoviePipelineExecutorShot* InShot) const
 	{
-		return (SettingType*)FindOrAddSetting(SettingType::StaticClass(), InShot);
+		return (SettingType*)FindOrAddSettingForShot(SettingType::StaticClass(), InShot);
 	}
 
-	UMoviePipelineSetting* FindOrAddSetting(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const;
-	
+	UMoviePipelineSetting* FindOrAddSettingForShot(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const;
+
+	template<typename SettingType>
+	TArray<SettingType*> FindSettingsForShot(const UMoviePipelineExecutorShot* InShot) const
+	{
+		TArray<SettingType*> Result;
+		TArray<UMoviePipelineSetting*> FoundSettings = FindSettingsForShot(SettingType::StaticClass(), InShot);
+		Result.Reserve(FoundSettings.Num());
+		for (UMoviePipelineSetting* Setting : FoundSettings)
+		{
+			Result.Add(CastChecked<SettingType>(Setting));
+		}
+		return Result;
+	}
+
+	TArray<UMoviePipelineSetting*> FindSettingsForShot(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const;
+
 	/**
 	* Resolves the provided InFormatString by converting {format_strings} into settings provided by the master config.
 	* @param	InFormatString		A format string (in the form of "{format_key1}_{format_key2}") to resolve.
-	* @param	InOutputState		The output state for frame information.
 	* @param	InFormatOverrides	A series of Key/Value pairs to override particular format keys. Useful for things that
 	*								change based on the caller such as filename extensions.
-	* @return OutFinalPath			The final filepath based on a combination of the format string, the format overrides, and the current output state.
-	* @return OutFinalFormatArgs	The format arguments that were actually used to fill the format string (including file metadata)
+	* @return	OutFinalPath			The final filepath based on a combination of the format string, the format overrides, and the current output state.
+	* @return	OutFinalFormatArgs	The format arguments that were actually used to fill the format string (including file metadata)
+	*
+	* @param	InOutputState		(optional) The output state for frame information.
+	* @param	InFrameNumberOffset	(optional) Frame offset of the frame we want the filename for, if not the current frame
+	*								as specified in InOutputState
 	*/
-	void ResolveFilenameFormatArguments(const FString& InFormatString, const FMoviePipelineFrameOutputState& InOutputState, const FStringFormatNamedArguments& InFormatOverrides, FString& OutFinalPath, FMoviePipelineFormatArgs& OutFinalFormatArgs) const;
+	void ResolveFilenameFormatArguments(const FString& InFormatString, const FStringFormatNamedArguments& InFormatOverrides, FString& OutFinalPath, FMoviePipelineFormatArgs& OutFinalFormatArgs, const FMoviePipelineFrameOutputState* InOutputState=nullptr, const int32 InFrameNumberOffset=0) const;
 
 protected:
 	/**
@@ -158,8 +182,8 @@ protected:
 	virtual void OnMoviePipelineFinishedImpl()
 	{
 		// Broadcast to both Native and Python/BP
-		OnMoviePipelineFinishedDelegateNative.Broadcast(this);
-		OnMoviePipelineFinishedDelegate.Broadcast(this);
+		OnMoviePipelineFinishedDelegateNative.Broadcast(this, bFatalError);
+		OnMoviePipelineFinishedDelegate.Broadcast(this, bFatalError);
 	}
 private:
 
@@ -246,6 +270,8 @@ private:
 	*/
 	void SetProgressWidgetVisible(bool bVisible);
 
+	/** Returns list of render passes for a given shot */
+	TArray<UMoviePipelineRenderPass*> GetAllRenderPasses(const UMoviePipelineExecutorShot* InShot);
 
 
 private:
@@ -363,6 +389,9 @@ private:
 	/** True if RequestShutdown() was called. At the start of the next frame we will stop producing frames (if needed) and start shutting down. */
 	FThreadSafeBool bShutdownRequested;
 
+	/** True if an error or other event occured which halted frame production prematurely. */
+	FThreadSafeBool bFatalError;
+
 	/** True if we're in a TransitionToState call. Used to prevent reentrancy. */
 	bool bIsTransitioningState;
 
@@ -371,9 +400,6 @@ private:
 
 	/** Called when we have completely finished. This object will call Shutdown before this and stop ticking. */
 	FMoviePipelineFinishedNative OnMoviePipelineFinishedDelegateNative;
-
-	/** Called when there is a warning/error that the user should pay attention to.*/
-	FMoviePipelineErrored OnMoviePipelineErroredDelegate;
 
 	/**
 	 * We have to apply camera motion vectors manually. So we keep the current and previous frame's camera view and rotation.
@@ -389,10 +415,19 @@ public:
 	/** A debug image sequence writer in the event they want to dump every sample generated on its own. */
 	IImageWriteQueue* ImageWriteQueue;
 
+	/** Optional widget for feedback during render */
+	UPROPERTY(Transient)
+	TSubclassOf<UMovieRenderDebugWidget> DebugWidgetClass;
+
 private:
 	/** Keep track of which job we're working on. This holds our Configuration + which shots we're supposed to render from it. */
 	UPROPERTY(Transient)
 	UMoviePipelineExecutorJob* CurrentJob;
+
+#if WITH_EDITOR
+	/** Keep track of clips we've exported, for building FCPXML and other project files */
+	FMovieSceneExportMetadata OutputMetadata;
+#endif
 
 	TArray<TFuture<bool>> OutputFutures;
 	FMovieSceneChanges SequenceChanges;
@@ -411,7 +446,7 @@ public:
 	virtual ECustomTimeStepSynchronizationState GetSynchronizationState() const override { return ECustomTimeStepSynchronizationState::Synchronized; }
 	// ~UEngineCustomTimeStep Interface
 
-	void SetCachedFrameTiming(const MoviePipeline::FFrameTimeStepCache& InTimeCache) { TimeCache = InTimeCache; }
+	void SetCachedFrameTiming(const MoviePipeline::FFrameTimeStepCache& InTimeCache);
 
 private:
 	/** We don't do any thinking on our own, instead we just spit out the numbers stored in our time cache. */

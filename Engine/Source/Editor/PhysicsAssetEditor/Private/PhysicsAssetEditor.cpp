@@ -173,8 +173,7 @@ void FPhysicsAssetEditor::InitPhysicsAssetEditor(const EToolkitMode::Type Mode, 
 
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
-	const TSharedRef<FTabManager::FLayout> DummyLayout = FTabManager::NewLayout("NullLayout")->AddArea(FTabManager::NewPrimaryArea());
-	FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, PhysicsAssetEditorAppIdentifier, DummyLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, ObjectToEdit);
+	FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, PhysicsAssetEditorAppIdentifier, FTabManager::FLayout::NullLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, ObjectToEdit);
 
 	AddApplicationMode(
 		PhysicsAssetEditorModes::PhysicsAssetEditorMode,
@@ -2579,7 +2578,7 @@ void FPhysicsAssetEditor::OnAssetSelectedFromStaticMeshAssetPicker( const FAsset
 	{
 		UStaticMesh* SM = Cast<UStaticMesh>(AssetData.GetAsset());
 
-		if (SM && SM->BodySetup && SM->BodySetup->AggGeom.GetElementCount() > 0)
+		if (SM && SM->GetBodySetup() && SM->GetBodySetup()->AggGeom.GetElementCount() > 0)
 		{
 			SharedData->PhysicsAsset->Modify();
 
@@ -2587,7 +2586,7 @@ void FPhysicsAssetEditor::OnAssetSelectedFromStaticMeshAssetPicker( const FAsset
 			{
 				UBodySetup* BaseSetup = SharedData->PhysicsAsset->SkeletalBodySetups[SharedData->SelectedBodies[SelectedBodyIndex].Index];
 				BaseSetup->Modify();
-				BaseSetup->AddCollisionFrom(SM->BodySetup);
+				BaseSetup->AddCollisionFrom(SM->GetBodySetup());
 				BaseSetup->InvalidatePhysicsData();
 				BaseSetup->CreatePhysicsMeshes();
 			}

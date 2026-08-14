@@ -1252,11 +1252,14 @@ bool UClothingAssetFactory::ImportToLodInternal(
 		}
 	}
 
-	// Add a max distance parameter mask to begin with
+	// Add a max distance parameter mask to the physics mesh
+	FPointWeightMap& PhysMeshMaxDistances = PhysMesh.AddWeightMap(EWeightMapTargetCommon::MaxDistance);
+	PhysMeshMaxDistances.Initialize(PhysMesh.Vertices.Num());
+
+	// Add a max distance parameter mask to the LOD
 	DestLod.PointWeightMaps.AddDefaulted();
-	FPointWeightMap& Mask = DestLod.PointWeightMaps.Last();
-	const FPointWeightMap& MaxDistances = PhysMesh.GetWeightMap(EWeightMapTargetCommon::MaxDistance);
-	Mask.Initialize(MaxDistances, EWeightMapTargetCommon::MaxDistance);
+	FPointWeightMap& LodMaxDistances = DestLod.PointWeightMaps.Last();
+	LodMaxDistances.Initialize(PhysMeshMaxDistances, EWeightMapTargetCommon::MaxDistance);
 
 	PhysMesh.MaxBoneWeights = SourceSection.MaxBoneInfluences;
 
@@ -1310,8 +1313,7 @@ bool UClothingAssetFactory::ImportToLodInternal(
 	int32 LODVertexBudget;
 	if (GConfig->GetInt(TEXT("ClothSettings"), TEXT("LODVertexBudget"), LODVertexBudget, GEditorIni) && LODVertexBudget > 0 && NumUniqueVerts > LODVertexBudget)
 	{
-		LogAndToastWarning(FText::Format(LOCTEXT("LODVertexBudgetWarning", 
-			"This cloth LOD has {0} more vertices than what is budgeted on this project (current={1}, budget={2})"), 
+		LogAndToastWarning(FText::Format(LOCTEXT("LODVertexBudgetWarning", "This cloth LOD has {0} more vertices than what is budgeted on this project (current={1}, budget={2})"), 
 			NumUniqueVerts - LODVertexBudget, 
 			NumUniqueVerts,
 			LODVertexBudget));

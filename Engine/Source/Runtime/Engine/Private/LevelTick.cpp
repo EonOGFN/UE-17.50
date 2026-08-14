@@ -824,6 +824,16 @@ private:
 	{
 		return Component->MarkedForEndOfFrameUpdateArrayIndex;
 	}
+
+	FORCEINLINE static void SetMarkedForPreEndOfFrameSync(UActorComponent* Component)
+	{
+		Component->bMarkedForPreEndOfFrameSync = true;
+	}
+
+	FORCEINLINE static void ClearMarkedForPreEndOfFrameSync(UActorComponent* Component)
+	{
+		Component->bMarkedForPreEndOfFrameSync = false;
+	}
 };
 
 #if WITH_EDITOR
@@ -871,6 +881,12 @@ void UWorld::ClearActorComponentEndOfFrameUpdate(UActorComponent* Component)
 		ComponentsThatNeedEndOfFrameUpdate_OnGameThread[ArrayIndex] = nullptr;
 	}
 	FMarkComponentEndOfFrameUpdateState::Set(Component, INDEX_NONE, EComponentMarkedForEndOfFrameUpdateState::Unmarked);
+
+	if (Component->GetMarkedForPreEndOfFrameSync())
+	{
+		ComponentsThatNeedPreEndOfFrameSync.Remove(Component);
+		FMarkComponentEndOfFrameUpdateState::ClearMarkedForPreEndOfFrameSync(Component);
+	}
 }
 
 void UWorld::MarkActorComponentForNeededEndOfFrameUpdate(UActorComponent* Component, bool bForceGameThread)
@@ -899,7 +915,7 @@ void UWorld::MarkActorComponentForNeededEndOfFrameUpdate(UActorComponent* Compon
 			bForceGameThread = !bAllowConcurrentUpdates 
 								// When there is no rendering thread force all updates on game thread,
 								// to avoid modifying scene structures from multiple task threads
-								|| !GRenderingThread; 
+								|| !GIsThreadedRendering;
 		}
 
 		if (bForceGameThread)
@@ -911,6 +927,13 @@ void UWorld::MarkActorComponentForNeededEndOfFrameUpdate(UActorComponent* Compon
 		{
 			FMarkComponentEndOfFrameUpdateState::Set(Component, ComponentsThatNeedEndOfFrameUpdate.Num(), EComponentMarkedForEndOfFrameUpdateState::Marked);
 			ComponentsThatNeedEndOfFrameUpdate.Add(Component);
+		}
+
+		// If the component might have outstanding tasks when we get to EOF updates, we will need to call the sync function
+		if (Component->RequiresPreEndOfFrameSync())
+		{
+			FMarkComponentEndOfFrameUpdateState::SetMarkedForPreEndOfFrameSync(Component);
+			ComponentsThatNeedPreEndOfFrameSync.Add(Component);
 		}
 	}
 }
@@ -940,13 +963,18 @@ FSendAllEndOfFrameUpdates* BeginSendEndOfFrameUpdatesDrawEvent(FGPUSkinCache* GP
 
 #if WANTS_DRAW_MESH_EVENTS
 	ENQUEUE_RENDER_COMMAND(BeginDrawEventCommand)(
-		[SendAllEndOfFrameUpdates](FRHICommandList& RHICmdList)
+		[SendAllEndOfFrameUpdates](FRHICommandListImmediate& RHICmdList)
 		{
 			BEGIN_DRAW_EVENTF(
 				RHICmdList, 
 				SendAllEndOfFrameUpdates, 
 				SendAllEndOfFrameUpdates->DrawEvent,
 				TEXT("SendAllEndOfFrameUpdates"));
+
+			if (SendAllEndOfFrameUpdates->GPUSkinCache)
+			{
+				SendAllEndOfFrameUpdates->GPUSkinCache->BeginBatchDispatch(RHICmdList);
+			}
 		});
 #endif
 
@@ -956,10 +984,14 @@ FSendAllEndOfFrameUpdates* BeginSendEndOfFrameUpdatesDrawEvent(FGPUSkinCache* GP
 void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates* SendAllEndOfFrameUpdates)
 {
 	ENQUEUE_RENDER_COMMAND(EndDrawEventCommand)(
-		[SendAllEndOfFrameUpdates](FRHICommandList& RHICmdList)
+		[SendAllEndOfFrameUpdates](FRHICommandListImmediate& RHICmdList)
 	{
 		if (SendAllEndOfFrameUpdates->GPUSkinCache)
 		{
+			// Once all the individual components have received their DoDeferredRenderUpdates_Concurrent()
+			// allow the GPU Skin Cache system to update.
+			SendAllEndOfFrameUpdates->GPUSkinCache->EndBatchDispatch(RHICmdList);
+
 			// Flush any remaining pending resource barriers.
 			SendAllEndOfFrameUpdates->GPUSkinCache->TransitionAllToReadable(RHICmdList);
 
@@ -985,6 +1017,22 @@ void UWorld::SendAllEndOfFrameUpdates()
 	{
 		return;
 	}
+
+	// Wait for tasks that are generating data for the render proxies, but are not awaited in any TickFunctions 
+	// E.g., see cloth USkeletalMeshComponent::UpdateClothStateAndSimulate
+	for (UActorComponent* Component : ComponentsThatNeedPreEndOfFrameSync)
+	{
+		if (Component)
+		{
+			check(Component->IsPendingKill() || Component->GetMarkedForPreEndOfFrameSync());
+			if (!Component->IsPendingKill())
+			{
+				Component->OnPreEndOfFrameSync();
+			}
+			FMarkComponentEndOfFrameUpdateState::ClearMarkedForPreEndOfFrameSync(Component);
+		}
+	}
+	ComponentsThatNeedPreEndOfFrameSync.Reset();
 
 	//If we call SendAllEndOfFrameUpdates during a tick, we must ensure that all marked objects have completed any async work etc before doing the updates.
 	if (bInTick)
@@ -1035,6 +1083,7 @@ void UWorld::SendAllEndOfFrameUpdates()
 				FMarkComponentEndOfFrameUpdateState::Set(NextComponent, INDEX_NONE, EComponentMarkedForEndOfFrameUpdateState::Unmarked);
 			}
 		};
+
 	auto GTWork = 
 		[this]()
 		{

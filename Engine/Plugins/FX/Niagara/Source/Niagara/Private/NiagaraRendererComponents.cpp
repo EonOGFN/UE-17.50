@@ -2,14 +2,9 @@
 
 #include "NiagaraRendererComponents.h"
 #include "NiagaraConstants.h"
-#include "ParticleResources.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraStats.h"
-#include "NiagaraVertexFactory.h"
-#include "Engine/Engine.h"
 #include "NiagaraComponentRendererProperties.h"
-#include "NiagaraRendererComponents.h"
-#include "Components/PointLightComponent.h"
 
 DECLARE_CYCLE_STAT(TEXT("Component renderer bind data"), STAT_NiagaraComponentRendererBind, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Component renderer update data"), STAT_NiagaraComponentRendererUpdate, STATGROUP_Niagara);
@@ -36,9 +31,7 @@ void SetValueWithAccessor(FNiagaraVariable& DataVariable, FNiagaraDataSet& Data,
 
 void SetVariableByType(FNiagaraVariable& DataVariable, FNiagaraDataSet& Data, int ParticleIndex)
 {
-	const FNiagaraVariableLayoutInfo* VarLayout = Data.GetVariableLayout(DataVariable);
 	const FNiagaraTypeDefinition& VarType = DataVariable.GetType();
-	uint8* Src = nullptr;
 	if (VarType == FNiagaraTypeDefinition::GetFloatDef()) { SetValueWithAccessor<float>(DataVariable, Data, ParticleIndex); }
 	else if (VarType == FNiagaraTypeDefinition::GetIntDef()) { SetValueWithAccessor<int32>(DataVariable, Data, ParticleIndex); }
 	else if (VarType == FNiagaraTypeDefinition::GetBoolDef()) { SetValueWithAccessor<FNiagaraBool>(DataVariable, Data, ParticleIndex); }
@@ -46,6 +39,7 @@ void SetVariableByType(FNiagaraVariable& DataVariable, FNiagaraDataSet& Data, in
 	else if (VarType == FNiagaraTypeDefinition::GetVec3Def()) { SetValueWithAccessor<FVector>(DataVariable, Data, ParticleIndex); }
 	else if (VarType == FNiagaraTypeDefinition::GetVec4Def()) {	SetValueWithAccessor<FVector4>(DataVariable, Data, ParticleIndex); }
 	else if (VarType == FNiagaraTypeDefinition::GetColorDef()) { SetValueWithAccessor<FLinearColor>(DataVariable, Data, ParticleIndex); }
+	else if (VarType == FNiagaraTypeDefinition::GetQuatDef()) { SetValueWithAccessor<FQuat>(DataVariable, Data, ParticleIndex); }
 }
 
 void ConvertVariableToType(const FNiagaraVariable& SourceVariable, FNiagaraVariable& TargetVariable)
@@ -130,77 +124,6 @@ void InvokeSetterFunction(UObject* InRuntimeObject, UFunction* Setter, const uin
 	InRuntimeObject->ProcessEvent(Setter, Params);
 }
 
-void FNiagaraRendererComponents::Initialize(const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
-{
-	const UNiagaraComponentRendererProperties* Properties = CastChecked<const UNiagaraComponentRendererProperties>(InProperties);
-	if (!Properties)
-	{
-		return;
-	}
-
-	// Search for a setter functions if not already done before
-	for (const FNiagaraComponentPropertyBinding& PropertyBinding : Properties->PropertyBindings)
-	{
-		if (!SetterFunctionMapping.Contains(PropertyBinding.PropertyName))
-		{
-			UFunction* SetterFunction = nullptr;
-
-			// we first check if the property has some metadata that explicitly mentions the setter to use
-			if (!PropertyBinding.MetadataSetterName.IsNone())
-			{
-				SetterFunction = Properties->TemplateComponent->FindFunction(PropertyBinding.MetadataSetterName);
-			}
-
-			if (!SetterFunction)
-			{
-				// the setter was not specified, so we try to find one that fits the name
-				FString PropertyName = PropertyBinding.PropertyName.ToString();
-				if (PropertyBinding.PropertyType == FNiagaraTypeDefinition::GetBoolDef())
-				{
-					PropertyName.RemoveFromStart("b", ESearchCase::CaseSensitive);
-				}
-				for (const FString& Prefix : FNiagaraRendererComponents::SetterPrefixes)
-				{
-					FName SetterFunctionName = FName(Prefix + PropertyName);
-					SetterFunction = Properties->TemplateComponent->FindFunction(SetterFunctionName);
-					if (SetterFunction)
-					{
-						break;
-					}
-				}
-			}
-
-			FNiagaraPropertySetter Setter;
-			Setter.Function = SetterFunction;
-
-			// Okay, so there is a special case where the *property* of an object has one type, but the *setter* has another type
-			// that either doesn't need to be converted (e.g. the color property on a light component) or doesn't fit the converted value.
-			// If we detect such a case we adapt the binding to either ignore the conversion or we discard the setter completely.
-			if (SetterFunction)
-			{
-				for (FProperty* Property = SetterFunction->PropertyLink; Property; Property = Property->PropertyLinkNext)
-				{
-					if (Property->IsInContainer(SetterFunction->ParmsSize) && Property->HasAnyPropertyFlags(CPF_Parm) && !Property->HasAnyPropertyFlags(CPF_ReturnParm))
-					{
-						FNiagaraTypeDefinition FieldType = UNiagaraComponentRendererProperties::ToNiagaraType(Property);
-						if (FieldType != PropertyBinding.PropertyType && FieldType == PropertyBinding.AttributeBinding.GetType())
-						{
-							// we can use the original Niagara value with the setter instead of converting it
-							Setter.bIgnoreConversion = true;
-						} else if (FieldType != PropertyBinding.PropertyType)
-						{
-							// setter is completely unusable
-							Setter.Function = nullptr;
-						}
-						break;
-					}
-				}
-			}
-			SetterFunctionMapping.Add(PropertyBinding.PropertyName, Setter);
-		}
-	}
-}
-
 /** Update render data buffer from attributes */
 FNiagaraDynamicDataBase* FNiagaraRendererComponents::GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const
 {
@@ -217,32 +140,50 @@ FNiagaraDynamicDataBase* FNiagaraRendererComponents::GenerateDynamicData(const F
 	FNiagaraDataSet& Data = Emitter->GetData();
 	FNiagaraDataBuffer& ParticleData = Data.GetCurrentDataChecked();
 	FNiagaraDataSetReaderInt32<FNiagaraBool> EnabledAccessor = FNiagaraDataSetAccessor<FNiagaraBool>::CreateReader(Data, Properties->EnabledBinding.GetDataSetBindableVariable().GetName());
-	FNiagaraDataSetReaderInt32<int32> IDAccessor = FNiagaraDataSetAccessor<int32>::CreateReader(Data, FName("UniqueID"));
+	FNiagaraDataSetReaderInt32<int32> UniqueIDAccessor = FNiagaraDataSetAccessor<int32>::CreateReader(Data, FName("UniqueID"));
+	TSet<int32> ParticlesWithComponents = Properties->bOnlyCreateComponentsOnParticleSpawn ? SystemInstance->GetParticlesWithActiveComponents(Properties->TemplateComponent) : TSet<int32>();
 
-	int32 TaskLimitLeft = Properties->ComponentCountLimit;
 	int32 SmallestID = INT_MAX;
-	for (uint32 ParticleIndex = 0; ParticleIndex < ParticleData.GetNumInstances(); ParticleIndex++)
+	if (Properties->bAssignComponentsOnParticleID)
 	{
-		int32 ParticleID = -1;
-		if (Properties->bAssignComponentsOnParticleID)
+		for (uint32 ParticleIndex = 0; ParticleIndex < ParticleData.GetNumInstances(); ParticleIndex++)
 		{
-			ParticleID = IDAccessor.GetSafe(ParticleIndex, -1);
+			// we need to read this for all particles instead of just the first few because in the case of parallel vm execution,
+			// the particles can shuffle around, which can result in a wrong SmallestID and a lot of flickering
+			// and component shuffling
+			int32 ParticleID = UniqueIDAccessor.GetSafe(ParticleIndex, -1);
 			SmallestID = FMath::Min<int32>(ParticleID, SmallestID);
 		}
-		if (TaskLimitLeft <= 0)
-		{
-			break;
-		}
-		if (!EnabledAccessor.GetSafe(ParticleIndex, true))
+	}
+
+	int32 TaskLimitLeft = Properties->ComponentCountLimit;
+	for (uint32 ParticleIndex = 0; ParticleIndex < ParticleData.GetNumInstances(); ParticleIndex++)
+	{
+		if (TaskLimitLeft <= 0 || !EnabledAccessor.GetSafe(ParticleIndex, true))
 		{
 			continue;
 		}
+		
+		int32 ParticleID = Properties->bAssignComponentsOnParticleID ? UniqueIDAccessor.GetSafe(ParticleIndex, -1) : -1;
+		if (Properties->bAssignComponentsOnParticleID && Properties->bOnlyCreateComponentsOnParticleSpawn)
+		{
+			bool bIsNewlySpawnedParticle = ParticleIndex >= ParticleData.GetNumInstances() - ParticleData.GetNumSpawnedInstances();
+			if (!bIsNewlySpawnedParticle && !ParticlesWithComponents.Contains(ParticleID))
+			{
+				continue;
+			}
+		}
 
 		TArray<FNiagaraComponentPropertyBinding> BindingsCopy = Properties->PropertyBindings;
-
 		for (FNiagaraComponentPropertyBinding& PropertyBinding : BindingsCopy)
 		{
-			PropertyBinding.SetterFunction = SetterFunctionMapping[PropertyBinding.PropertyName].Function;
+			const FNiagaraPropertySetter* PropertySetter = Properties->SetterFunctionMapping.Find(PropertyBinding.PropertyName);
+			if (!PropertySetter)
+			{
+				// it's possible that Initialize wasn't called or the bindings changed in the meantime
+				continue;
+			}
+			PropertyBinding.SetterFunction = PropertySetter->Function;
 
 			FNiagaraVariable& DataVariable = PropertyBinding.WritableValue;
 			const FNiagaraVariableBase& FoundVar = PropertyBinding.AttributeBinding.GetDataSetBindableVariable();
@@ -255,7 +196,7 @@ FNiagaraDynamicDataBase* FNiagaraRendererComponents::GenerateDynamicData(const F
 			}
 			
 			SetVariableByType(DataVariable, Data, ParticleIndex);
-			if (PropertyBinding.PropertyType.IsValid() && DataVariable.GetType() != PropertyBinding.PropertyType && !SetterFunctionMapping[PropertyBinding.PropertyName].bIgnoreConversion)
+			if (PropertyBinding.PropertyType.IsValid() && DataVariable.GetType() != PropertyBinding.PropertyType && !PropertySetter->bIgnoreConversion)
 			{
 				FNiagaraVariable TargetVariable(PropertyBinding.PropertyType, DataVariable.GetName());
 				ConvertVariableToType(DataVariable, TargetVariable);

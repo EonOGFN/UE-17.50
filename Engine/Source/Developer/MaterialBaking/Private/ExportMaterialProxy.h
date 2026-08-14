@@ -125,6 +125,16 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 		return Compiler->VertexColor();
 	}
 
+	virtual int32 PreSkinVertexOffset() override
+	{
+		return Compiler->PreSkinVertexOffset();
+	}
+
+	virtual int32 PostSkinVertexOffset() override
+	{
+		return Compiler->PostSkinVertexOffset();
+	}
+
 	virtual int32 PreSkinnedPosition() override
 	{
 		return Compiler->PreSkinnedPosition();
@@ -311,17 +321,18 @@ public:
 
 	////////////////
 	// FMaterialRenderProxy interface.
-	virtual const FMaterial& GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const override
+	virtual const FMaterial* GetMaterialNoFallback(ERHIFeatureLevel::Type InFeatureLevel) const override
 	{
-		if(GetRenderingThreadShaderMap())
+		if (GetRenderingThreadShaderMap())
 		{
-			return *this;
+			return this;
 		}
-		else
-		{
-			OutFallbackMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-			return OutFallbackMaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, OutFallbackMaterialRenderProxy);
-		}
+		return nullptr;
+	}
+
+	virtual const FMaterialRenderProxy* GetFallback(ERHIFeatureLevel::Type InFeatureLevel) const override
+	{
+		return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 	}
 
 	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override

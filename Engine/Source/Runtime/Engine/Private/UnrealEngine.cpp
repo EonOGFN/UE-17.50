@@ -81,6 +81,7 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Widgets/SBoxPanel.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/StaticMesh.h"
+#include "DistanceFieldAtlas.h"
 #include "SystemSettings.h"
 #include "ContentStreaming.h"
 #include "DrawDebugHelpers.h"
@@ -382,6 +383,18 @@ static FAutoConsoleVariableRef GSupressWarningsInOnScreenDisplayCVar(
 	TEXT("Engine.SupressWarningsInOnScreenDisplay"),
 	GSupressWarningsInOnScreenDisplay,
 	TEXT("0: Show both errors and warnings on screen, 1: Show only errors on screen (in either case only when DurationOfErrorsAndWarningsOnHUD is greater than zero)"),
+	ECVF_Default
+);
+
+// Should we TrimMemory in the middle of LoadMap - this can reduce memory spike during startup at the expense of load time 
+// if some objects need to be reloaded due to a GC happening partway through
+int32 GDelayTrimMemoryDuringMapLoadMode = 0;
+static FAutoConsoleVariableRef GDelayTrimMemoryDuringMapLoadModeCVar(
+	TEXT("Engine.DelayTrimMemoryDuringMapLoadMode"),
+	GDelayTrimMemoryDuringMapLoadMode,
+	TEXT("0: TrimMemory during LoadMap as normal\n")
+	TEXT("1: Delay TrimMemory until the end of LoadMap (initial boot up)\n")
+	TEXT("2: Delay TrimMemory in _every_ LoadMap call"),
 	ECVF_Default
 );
 
@@ -938,7 +951,7 @@ namespace
 		FSoftObjectPath::AddPIEPackageName(PIEPackageFName);
 
 		uint32 LoadFlags = LOAD_None;
-		UPackage* NewPackage = CreatePackage(NULL, *PIEPackageName);
+		UPackage* NewPackage = CreatePackage( *PIEPackageName);
 		if (NewPackage != nullptr && WorldContext.WorldType == EWorldType::PIE)
 		{
 			NewPackage->SetPackageFlags(PKG_PlayInEditor);
@@ -1265,6 +1278,21 @@ static FAutoConsoleVariableRef CVarLowMemoryThresholdMB(
 	ECVF_Default
 );
 
+static float GLowMemoryIncrementalGCTimePerFrame = 0.002f; // 2ms
+static FAutoConsoleVariableRef CVarLowMemoryIncrementalGCTimePerFrame(
+	TEXT("gc.LowMemory.IncrementalGCTimePerFrame"),
+	GLowMemoryIncrementalGCTimePerFrame,
+	TEXT("How much time is allowed for incremental GC each frame in seconds if memory is low"),
+	ECVF_Default
+);
+
+static float GIncrementalGCTimePerFrame = 0.002f; // 2ms
+static FAutoConsoleVariableRef CVarIncrementalGCTimePerFrame(
+	TEXT("gc.IncrementalGCTimePerFrame"),
+	GIncrementalGCTimePerFrame,
+	TEXT("How much time is allowed for incremental GC each frame in seconds"),
+	ECVF_Default
+);
 
 void UEngine::PreGarbageCollect()
 {
@@ -1403,7 +1431,19 @@ void UEngine::ConditionalCollectGarbage()
 					else
 					{
 						SCOPE_CYCLE_COUNTER(STAT_GCSweepTime);
-						IncrementalPurgeGarbage(true);
+						float IncGCTime = GIncrementalGCTimePerFrame;
+						if (GLowMemoryMemoryThresholdMB > 0.0)
+						{
+							float MBFree = float(FPlatformMemory::GetStats().AvailablePhysical / 1024 / 1024);
+#if !UE_BUILD_SHIPPING
+							MBFree -= float(FPlatformMemory::GetExtraDevelopmentMemorySize() / 1024 / 1024);
+#endif
+							if (MBFree <= GLowMemoryMemoryThresholdMB && GLowMemoryIncrementalGCTimePerFrame > GIncrementalGCTimePerFrame)
+							{
+								IncGCTime = GLowMemoryIncrementalGCTimePerFrame;
+							}
+						}
+						IncrementalPurgeGarbage(true, IncGCTime);
 					}
 				}
 			}
@@ -2130,6 +2170,18 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 			WaitTime = FMath::Max( 1.f / MaxTickRate - DeltaRealTime, 0.f );
 		}
 
+		bool bMaxTickRateHandled = false;
+		TArray<IMaxTickRateHandlerModule*> MaxTickRateHandlerModules = IModularFeatures::Get().GetModularFeatureImplementations<IMaxTickRateHandlerModule>(IMaxTickRateHandlerModule::GetModularFeatureName());
+
+		for (IMaxTickRateHandlerModule* MaxTickRateHandler : MaxTickRateHandlerModules)
+		{
+			if (MaxTickRateHandler->HandleMaxTickRate(MaxTickRate))
+			{
+				bMaxTickRateHandled = true;
+				break;
+			}
+		}
+
 		// Enforce maximum framerate and smooth framerate by waiting.
 		double ActualWaitTime = 0.f;
 		if( WaitTime > 0 )
@@ -2142,18 +2194,6 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 
 			SCOPE_CYCLE_COUNTER(STAT_GameTickWaitTime);
 			SCOPE_CYCLE_COUNTER(STAT_GameIdleTime);
-
-			bool bMaxTickRateHandled = false;
-			TArray<IMaxTickRateHandlerModule*> MaxTickRateHandlerModules = IModularFeatures::Get().GetModularFeatureImplementations<IMaxTickRateHandlerModule>(IMaxTickRateHandlerModule::GetModularFeatureName());
-
-			for (IMaxTickRateHandlerModule* MaxTickRateHandler : MaxTickRateHandlerModules)
-			{
-				if (MaxTickRateHandler->HandleMaxTickRate(MaxTickRate))
-				{
-					bMaxTickRateHandled = true;
-					break;
-				}
-			}
 
 			if (!bMaxTickRateHandled)
 			{
@@ -2229,7 +2269,7 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 			UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - ignoring"));
 #else
 			// AMD dual-core systems are a known issue that require AMD CPU drivers to be installed. Installer will take care of this for shipping.
-			UE_LOG(LogEngine, Fatal, TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html"));
+			UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html"));
 #endif
 			FApp::SetDeltaTime(0.01);
 		}
@@ -2357,10 +2397,14 @@ void UEngine::UpdateTimecode()
 {
 	FApp::InvalidateCurrentFrameTime();
 
-	const UTimecodeProvider* Provider = GetTimecodeProvider();
-	if (Provider && Provider->GetSynchronizationState() == ETimecodeProviderSynchronizationState::Synchronized)
+	if (UTimecodeProvider* Provider = GetTimecodeProvider())
 	{
-		FApp::SetCurrentFrameTime(Provider->GetDelayedQualifiedFrameTime());
+		Provider->FetchAndUpdate();
+
+		if (Provider->GetSynchronizationState() == ETimecodeProviderSynchronizationState::Synchronized)
+		{
+			FApp::SetCurrentFrameTime(Provider->GetDelayedQualifiedFrameTime());
+		}
 	}
 }
 
@@ -3002,11 +3046,10 @@ FAudioDeviceHandle UEngine::GetActiveAudioDevice()
 void UEngine::InitializeAudioDeviceManager()
 {
 	FAudioDeviceManager::Initialize();
-
 	AudioDeviceManager = FAudioDeviceManager::Get();
-
 	if (AudioDeviceManager)
 	{
+		AudioDeviceManager->CreateMainAudioDevice();
 		MainAudioDeviceHandle = AudioDeviceManager->GetMainAudioDeviceHandle();
 	}
 }
@@ -3079,8 +3122,9 @@ public:
 	{
 		if (StereoPassType != eSSP_FULL)
 		{
-			float EyeOffset = 3.20000005f;
-			const float PassOffset = (StereoPassType == eSSP_LEFT_EYE) ? EyeOffset : -EyeOffset;
+			// 32mm, 1/2 average interpupillary distance
+			float EyeOffset = .0320000005f * WorldToMeters;
+			const float PassOffset = (StereoPassType == eSSP_LEFT_EYE) ? -EyeOffset : EyeOffset;
 			ViewLocation += ViewRotation.Quaternion().RotateVector(FVector(0,PassOffset,0));
 		}
 	}
@@ -3223,7 +3267,7 @@ bool UEngine::InitializeHMDDevice()
 			}
 
 			// If we found a valid XRSystem, use it to get a stereo rendering device, if available
-			if (XRSystem.IsValid())
+			if (XRSystem.IsValid() && !FParse::Param(FCommandLine::Get(), TEXT("noxrstereo")))
 			{
 				StereoRenderingDevice = XRSystem->GetStereoRenderingDevice();
 				const bool bShouldStartInVR = StereoRenderingDevice.IsValid() && (FParse::Param(FCommandLine::Get(), TEXT("vr")) || GetDefault<UGeneralProjectSettings>()->bStartInVR);
@@ -3529,6 +3573,7 @@ struct FSortedStaticMesh
 	int32			ResKBInc;
 	int32			ResKBIncMobile;
 	int32			ResKBResident;
+	int32			DistanceFieldKB;
 	int32			LodCount;
 	int32			ResidentLodCount;
 	int32			MobileMinLOD;
@@ -3544,13 +3589,14 @@ struct FSortedStaticMesh
 	FString			Name;
 
 	/** Constructor, initializing every member variable with passed in values. */
-	FSortedStaticMesh(UStaticMesh* InMesh, int32 InNumKB, int32 InMaxKB, int32 InResKBExc, int32 InResKBInc, int32 InResKBIncMobile, int32 InResKBResident, int32 InLodCount, int32 InResidentLodCount, int32 InMobileMinLOD, int32 InVertexCountLod0, int32 InVertexCountLod1, int32 InVertexCountLod2, int32 InVertexCountTotal, int32 InVertexCountTotalMobile, int32 InVertexCountCollision, int32 InShapeCountCollision, int32 InUsageCount, FString InName)
+	FSortedStaticMesh(UStaticMesh* InMesh, int32 InNumKB, int32 InMaxKB, int32 InResKBExc, int32 InResKBInc, int32 InResKBIncMobile, int32 InResKBResident, int32 InDistanceFieldKB, int32 InLodCount, int32 InResidentLodCount, int32 InMobileMinLOD, int32 InVertexCountLod0, int32 InVertexCountLod1, int32 InVertexCountLod2, int32 InVertexCountTotal, int32 InVertexCountTotalMobile, int32 InVertexCountCollision, int32 InShapeCountCollision, int32 InUsageCount, FString InName)
 		: NumKB(InNumKB)
 		, MaxKB(InMaxKB)
 		, ResKBExc(InResKBExc)
 		, ResKBInc(InResKBInc)
 		, ResKBIncMobile(InResKBIncMobile)
 		, ResKBResident(InResKBResident)
+		, DistanceFieldKB(InDistanceFieldKB)
 		, LodCount(InLodCount)
 		, ResidentLodCount(InResidentLodCount)
 		, MobileMinLOD(InMobileMinLOD)
@@ -5413,11 +5459,18 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 		FResourceSizeEx ResourceSizeInc = FResourceSizeEx(EResourceSizeMode::EstimatedTotal);
 		Mesh->GetResourceSizeEx(ResourceSizeInc);
 
+		FResourceSizeEx DistanceFieldSizeExc = FResourceSizeEx(EResourceSizeMode::Exclusive);
+		if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources[0].DistanceFieldData)
+		{
+			Mesh->GetRenderData()->LODResources[0].DistanceFieldData->GetResourceSizeEx(DistanceFieldSizeExc);
+		}
+
 		int32		NumKB = (Count.GetNum() + 512) / 1024;
 		int32		MaxKB = (Count.GetMax() + 512) / 1024;
 		int32		ResKBExc = (ResourceSizeExc.GetTotalMemoryBytes() + 512) / 1024;
 		int32		ResKBInc = (ResourceSizeInc.GetTotalMemoryBytes() + 512) / 1024;
 		int32		ResKBIncMobile = 0; //Update mobilesort once implemented
+		int32		DistanceFieldKB = (DistanceFieldSizeExc.GetTotalMemoryBytes() + 512) / 1024;
 		int32		LodCount = Mesh->GetNumLODs();
 		int32		VertexCountLod0 = LodCount > 0 ? Mesh->GetNumVertices(0) : 0;
 		int32		VertexCountLod1 = LodCount > 1 ? Mesh->GetNumVertices(1) : 0;
@@ -5432,9 +5485,9 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 #endif
 
 		int32		CollisionShapeCount = 0;
-		if (Mesh->BodySetup)
+		if (Mesh->GetBodySetup())
 		{
-			CollisionShapeCount = Mesh->BodySetup->AggGeom.GetElementCount();
+			CollisionShapeCount = Mesh->GetBodySetup()->AggGeom.GetElementCount();
 		}
 
 		int32		VertexCountTotal = 0;
@@ -5443,9 +5496,9 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 		int32 ResidentResKBExc = 0;
 		int32 NumMissingLODs = 0;
 		FResourceSizeEx EvictedResourceSize(EResourceSizeMode::Exclusive);
-		if (Mesh->RenderData)
+		if (Mesh->GetRenderData())
 		{
-			NumMissingLODs = Mesh->RenderData->CurrentFirstLODIdx;
+			NumMissingLODs = Mesh->GetRenderData()->CurrentFirstLODIdx;
 			ResidentLodCount = LodCount - NumMissingLODs;
 		}
 		for(int32 i = 0; i < LodCount; i++)
@@ -5454,22 +5507,22 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 			VertexCountTotalMobile += i >= MobileMinLOD ? Mesh->GetNumVertices(i) : 0;
 			if (i < NumMissingLODs)
 			{
-				Mesh->RenderData->LODResources[i].GetResourceSizeEx(EvictedResourceSize);
+				Mesh->GetRenderData()->LODResources[i].GetResourceSizeEx(EvictedResourceSize);
 			}
 		}
 		ResidentResKBExc = (ResourceSizeExc.GetTotalMemoryBytes() - EvictedResourceSize.GetTotalMemoryBytes() + 512) / 1024;
 
 		int32		VertexCountCollision = 0;
-		if(Mesh->BodySetup)
+		if(Mesh->GetBodySetup())
 		{
 #if PHYSICS_INTERFACE_PHYSX
 			// Count PhysX trimesh mem usage
-			for (physx::PxTriangleMesh* TriMesh : Mesh->BodySetup->TriMeshes)
+			for (physx::PxTriangleMesh* TriMesh : Mesh->GetBodySetup()->TriMeshes)
 			{
 				VertexCountCollision += TriMesh->getNbVertices();
 			}
 #elif WITH_CHAOS
-			for (auto& TriMesh : Mesh->BodySetup->ChaosTriMeshes)
+			for (auto& TriMesh : Mesh->GetBodySetup()->ChaosTriMeshes)
 			{
 				VertexCountCollision += TriMesh->Particles().Size();
 			}
@@ -5486,6 +5539,7 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 			ResKBInc,
 			ResKBIncMobile,
 			ResidentResKBExc,
+			DistanceFieldKB,
 			LodCount,
 			ResidentLodCount,
 			MobileMinLOD,
@@ -5510,10 +5564,11 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 	int64 TotalResKBInc = 0;
 	int64 TotalResKBResident = 0;
 	int64 TotalResKBIncMobile = 0;
+	int64 TotalDistanceFieldKB = 0;
 	int32 TotalVertexCount = 0;
 	int32 TotalVertexCountMobile = 0;
 
-	FString HeaderString(TEXT(",       NumKB,       MaxKB,    ResKBExc,    ResKBInc,    ResKBResident,    LODCount,    ResidentLODCount,   VertsLOD0,   VertsLOD1,   VertsLOD2, Verts Total,  Verts Coll, Coll Shapes,     NumUsed"));
+	FString HeaderString(TEXT(",       NumKB,       MaxKB,    ResKBExc,    ResKBInc, ResKBResident, DistFieldKB,  LODCount, ResidentLODCount, VertsLOD0, VertsLOD1,  VertsLOD2, Verts Total,  Verts Coll, Coll Shapes,     NumUsed"));
 	FString MobileHeaderString = bHasMobileColumns ? FString(TEXT(", ResKBIncMob,Verts Mobile,MobileMinLOD")) : FString();
 	
 	Ar.Logf(TEXT("%s%s, Name"), *HeaderString, *MobileHeaderString);	
@@ -5524,12 +5579,13 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 
 		if (bHasMobileColumns)
 		{
-			Ar.Logf(TEXT(", %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %s"),
+			Ar.Logf(TEXT(", %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %s"),
 				SortedMesh.NumKB,
 				SortedMesh.MaxKB,
 				SortedMesh.ResKBExc,
 				SortedMesh.ResKBInc,
 				SortedMesh.ResKBResident,
+				SortedMesh.DistanceFieldKB,
 				SortedMesh.LodCount,
 				SortedMesh.ResidentLodCount,
 				SortedMesh.VertexCountLod0,
@@ -5546,12 +5602,13 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 		}
 		else
 		{
-			Ar.Logf(TEXT(" ,%11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %s"),
+			Ar.Logf(TEXT(", %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %11i, %s"),
 				SortedMesh.NumKB,
 				SortedMesh.MaxKB,
 				SortedMesh.ResKBExc,
 				SortedMesh.ResKBInc,
 				SortedMesh.ResKBResident,
+				SortedMesh.DistanceFieldKB,
 				SortedMesh.LodCount,
 				SortedMesh.ResidentLodCount,
 				SortedMesh.VertexCountLod0,
@@ -5570,11 +5627,12 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 		TotalResKBInc += SortedMesh.ResKBInc;
 		TotalResKBResident += SortedMesh.ResKBResident;
 		TotalResKBIncMobile += SortedMesh.ResKBIncMobile;
+		TotalDistanceFieldKB += SortedMesh.DistanceFieldKB;
 		TotalVertexCount += SortedMesh.VertexCountTotal;
 		TotalVertexCountMobile += SortedMesh.VertexCountTotalMobile;
 	}
 
-	Ar.Logf(TEXT("Total NumKB: %lld KB, Total MaxKB: %lld KB, Total ResKB Exc: %lld KB, Total ResKB Inc %lld KB,  Total ResKB Inc Mobile %lld KB, Total ResKB Resident %lld KB, Total Vertex Count: %i, Total Vertex Count Mobile: %i, Static Mesh Count=%d"), TotalNumKB, TotalMaxKB, TotalResKBExc, TotalResKBInc, TotalResKBIncMobile, TotalResKBResident, TotalVertexCount, TotalVertexCountMobile, SortedMeshes.Num());
+	Ar.Logf(TEXT("Total NumKB: %lld KB, Total MaxKB: %lld KB, Total ResKB Exc: %lld KB, Total ResKB Inc %lld KB,  Total ResKB Inc Mobile %lld KB, Total ResKB Resident %lld KB, Total Distance Field %lld KB, Total Vertex Count: %i, Total Vertex Count Mobile: %i, Static Mesh Count=%d"), TotalNumKB, TotalMaxKB, TotalResKBExc, TotalResKBInc, TotalResKBIncMobile, TotalResKBResident, TotalDistanceFieldKB, TotalVertexCount, TotalVertexCountMobile, SortedMeshes.Num());
 
 	if (bUsedComponents)
 	{
@@ -7689,6 +7747,7 @@ bool UEngine::HandleObjCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 		const bool bAlphaSort = FParse::Param( Cmd, TEXT("ALPHASORT") );
 		const bool bCountSort = FParse::Param( Cmd, TEXT("COUNTSORT") );
 		const bool bCSV = FParse::Param(Cmd, TEXT("CSV"));
+		const bool bShowFullClassName = FParse::Param(Cmd, TEXT("FULLCLASSNAME"));
 
 		if( Objects.Num() )
 		{
@@ -7810,7 +7869,7 @@ bool UEngine::HandleObjCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 				if (bCSV)
 				{
 					Ar.Logf(TEXT(", %s, %i, %f, %f, %f, %f, %f, %f, %f, %f"),
-						*List[i].Class->GetName(),
+						bShowFullClassName ? *List[i].Class->GetFullName() : *List[i].Class->GetName(),
 						(int32)List[i].Count,
 						List[i].Num / 1024.0f,
 						List[i].Max / 1024.0f,
@@ -7825,7 +7884,7 @@ bool UEngine::HandleObjCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 				else
 				{
 					Ar.Logf(TEXT(" %100s %8i %10.2f %10.2f %10.2f %15.2f %15.2f %15.2f %15.2f %15.2f"),
-						*List[i].Class->GetName(),
+						bShowFullClassName ? *List[i].Class->GetFullName() : *List[i].Class->GetName(),
 						(int32)List[i].Count,
 						List[i].Num / 1024.0f,
 						List[i].Max / 1024.0f,
@@ -10157,31 +10216,10 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 
 	SmallTextItem.SetColor(FLinearColor::White);
 
-	extern double GViewModeShaderMissingTime;
-	extern int32 GNumViewModeShaderMissing;
-	if (FApp::GetCurrentTime() - GViewModeShaderMissingTime < 1 && GNumViewModeShaderMissing > 0)
-	{
-		SmallTextItem.SetColor(FLinearColor::Yellow);
-		SmallTextItem.Text = FText::Format(LOCTEXT("ViewModeShadersCompilingFmt", "View Mode Shaders Compiling ({0})"), GNumViewModeShaderMissing);
-		Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
-		MessageY += FontSizeY;
-	}
-
 	if (GShaderCompilingManager && GShaderCompilingManager->IsCompiling())
 	{
 		SmallTextItem.SetColor(FLinearColor::White);
 		SmallTextItem.Text = FText::Format(LOCTEXT("ShadersCompilingFmt", "Shaders Compiling ({0})"), GShaderCompilingManager->GetNumRemainingJobs());
-		Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
-		MessageY += FontSizeY;
-	}
-
-	static const auto CVarAnisotropicBRDF			= IConsoleManager::Get().FindConsoleVariable(TEXT("r.AnisotropicBRDF"));
-	static const auto CVarBasePassOutputVelocity	= IConsoleManager::Get().FindConsoleVariable(TEXT("r.BasePassOutputsVelocity"));
-
-	if (CVarAnisotropicBRDF && CVarBasePassOutputVelocity && CVarAnisotropicBRDF->GetInt() && CVarBasePassOutputVelocity->GetInt())
-	{
-		SmallTextItem.SetColor(FLinearColor::Red);
-		SmallTextItem.Text = LOCTEXT("AnisotropicBRDF_or_BasePassVelocity", "Anisotropic BRDF and 'output velocity during base pass' options are mutually exclusive.\nSee Project Settings (Rendering) or r.AnisotropicBRDF, r.BasePassOutputsVelocity");
 		Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
 		MessageY += FontSizeY;
 	}
@@ -10485,6 +10523,7 @@ void DrawStatsHUD( UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanvas*
 #endif
 
 #if TRACING_PROFILER
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (FTracingProfiler::Get()->IsCapturing())
 		{
 			SmallTextItem.SetColor(FLinearColor(0.0f, 1.0f, 0.0f, 1.0f));
@@ -10495,6 +10534,7 @@ void DrawStatsHUD( UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanvas*
 			MessageY += FontSizeY;
 
 		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 
 #if !(UE_BUILD_TEST)
@@ -11674,22 +11714,8 @@ void DestroyNamedNetDriver_Local(FWorldContext &Context, FName NetDriverName)
 			NetDriver->Shutdown();
 			NetDriver->LowLevelDestroy();
 			Context.ActiveNetDrivers.RemoveAtSwap(Index);
-
-			// Remove this driver from the main level collection
-			const ELevelCollectionType DriverType = NetDriver->GetDuplicateLevelID() == INDEX_NONE ? ELevelCollectionType::DynamicSourceLevels : ELevelCollectionType::DynamicDuplicatedLevels;
-			FLevelCollection* const LevelCollection = Context.World()->FindCollectionByType(DriverType);
-			if (LevelCollection)
-			{
-				if (LevelCollection->GetNetDriver() == NetDriver)
-				{
-					LevelCollection->SetNetDriver(nullptr);
-				}
-
-				if (LevelCollection->GetDemoNetDriver() == NetDriver)
-				{
-					LevelCollection->SetDemoNetDriver(nullptr);
-				}
-			}
+			
+			Context.World()->ClearNetDriver(NetDriver);
 
 			break;
 		}
@@ -12785,7 +12811,10 @@ bool UEngine::LoadMap( FWorldContext& WorldContext, FURL URL, class UPendingNetG
 	}
 
 	// trim memory to clear up allocations from the previous level (also flushes rendering)
-	TrimMemory();
+	if (GDelayTrimMemoryDuringMapLoadMode == 0)
+	{
+		TrimMemory();
+	}
 
 	// Cancels the Forced StreamType for textures using a timer.
 	if (!IStreamingManager::HasShutdown())
@@ -12800,9 +12829,12 @@ bool UEngine::LoadMap( FWorldContext& WorldContext, FURL URL, class UPendingNetG
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	// Dump info
-
-	VerifyLoadMapWorldCleanup();
+	// if we aren't trimming memory above, then the world won't be fully cleaned up at this point, so don't bother checking
+	if (GDelayTrimMemoryDuringMapLoadMode == 0)
+	{
+		// Dump info
+		VerifyLoadMapWorldCleanup();
+	}
 
 #endif
 
@@ -13144,6 +13176,18 @@ bool UEngine::LoadMap( FWorldContext& WorldContext, FURL URL, class UPendingNetG
 	UE_LOG(LogLoad, Log, TEXT("Took %f seconds to LoadMap(%s)"), StopTime - StartTime, *URL.Map);
 	FLoadTimeTracker::Get().DumpRawLoadTimes();
 	WorldContext.OwningGameInstance->LoadComplete(StopTime - StartTime, *URL.Map);
+
+	// perform the delayed TrimMemory if desired
+	if (GDelayTrimMemoryDuringMapLoadMode != 0)
+	{
+		TrimMemory();
+
+		if (GDelayTrimMemoryDuringMapLoadMode == 1)
+		{
+			// all future map loads should be normal
+			GDelayTrimMemoryDuringMapLoadMode = 0;
+		}
+	}
 
 	// Successfully started local level.
 	return true;
@@ -15746,7 +15790,7 @@ static void SetupThreadAffinity(const TArray<FString>& Args)
 	FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(
 		FSimpleDelegateGraphTask::FDelegate::CreateStatic(&SetAffinityOnThread),
 		TStatId(), NULL, ENamedThreads::GetRenderThread());
-	if (GRHIThread_InternalUseOnly)
+	if (IsRHIThreadRunning())
 	{
 		FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(
 			FSimpleDelegateGraphTask::FDelegate::CreateStatic(&SetAffinityOnThread),

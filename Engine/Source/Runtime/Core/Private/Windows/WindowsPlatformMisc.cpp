@@ -871,12 +871,6 @@ void FWindowsPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCH
 		Profiler->StartScopedEvent(Text);
 	}
 #endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 }
 
 void FWindowsPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text)
@@ -890,12 +884,6 @@ void FWindowsPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANS
 		Profiler->StartScopedEvent(ANSI_TO_TCHAR(Text));
 	}
 #endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 }
 
 void FWindowsPlatformMisc::EndNamedEvent()
@@ -907,12 +895,6 @@ void FWindowsPlatformMisc::EndNamedEvent()
 	if (Profiler)
 	{
 		Profiler->EndScopedEvent();
-	}
-#endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputEndEvent();
 	}
 #endif
 }
@@ -1764,7 +1746,7 @@ int32 FWindowsPlatformMisc::NumberOfCores()
 		// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
 
 		int32 LimitCount = 32768;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
+		if (FCommandLine::IsInitialized() && FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
 		{
 			CoreCount = FMath::Min(CoreCount, LimitCount);
 		}
@@ -1789,7 +1771,7 @@ int32 FWindowsPlatformMisc::NumberOfCoresIncludingHyperthreads()
 		// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
 
 		int32 LimitCount = 32768;
-		if (FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
+		if (FCommandLine::IsInitialized() && FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
 		{
 			CoreCount = FMath::Min(CoreCount, LimitCount);
 		}
@@ -2679,14 +2661,13 @@ FString FWindowsPlatformMisc::GetOSVersion()
 
 bool FWindowsPlatformMisc::GetDiskTotalAndFreeSpace( const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes )
 {
-	bool bSuccess = false;
-	// We need to convert the path to make sure it is formatted with windows style Drive e.g. "C:\"
-	const FString ValidatedPath = FPaths::ConvertRelativePathToFull( InPath ).Replace( TEXT( "/" ), TEXT( "\\" ) );
-	if( ValidatedPath.Len() >= 3 && ValidatedPath[1] == ':' && ValidatedPath[2] == '\\' )
-	{
-		bSuccess = !!::GetDiskFreeSpaceEx( *ValidatedPath, nullptr, reinterpret_cast<ULARGE_INTEGER*>(&TotalNumberOfBytes), reinterpret_cast<ULARGE_INTEGER*>(&NumberOfFreeBytes) );
-	}
-	return bSuccess;	
+	const FString ValidatedPath = FPaths::ConvertRelativePathToFull(InPath).Replace(TEXT("/"), TEXT("\\"));
+
+	bool bSuccess = !!::GetDiskFreeSpaceEx( *ValidatedPath,
+											nullptr,
+											reinterpret_cast<ULARGE_INTEGER*>(&TotalNumberOfBytes),
+											reinterpret_cast<ULARGE_INTEGER*>(&NumberOfFreeBytes));
+	return bSuccess;
 }
 
 

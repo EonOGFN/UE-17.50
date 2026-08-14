@@ -58,6 +58,7 @@ struct FEntityImportSequenceParams
 	FEntityImportSequenceParams()
 		: HierarchicalBias(0)
 		, DefaultCompletionMode(EMovieSceneCompletionMode::KeepState)
+		, bHasHierarchicalEasing(false)
 		, bPreRoll(false)
 		, bPostRoll(false)
 	{}
@@ -65,10 +66,10 @@ struct FEntityImportSequenceParams
 	int32 HierarchicalBias;
 
 	FInstanceHandle InstanceHandle;
-	FInterrogationChannel InterrogationChannel;
 
 	EMovieSceneCompletionMode DefaultCompletionMode;
 
+	bool bHasHierarchicalEasing : 1;
 	bool bPreRoll : 1;
 	bool bPostRoll : 1;
 };
@@ -79,6 +80,8 @@ struct FEntityImportParams
 	const FMovieSceneEvaluationFieldSharedEntityMetaData* SharedMetaData;
 
 	uint32 EntityID = 0;
+
+	FInterrogationKey InterrogationKey;
 
 	FEntityImportSequenceParams Sequence;
 

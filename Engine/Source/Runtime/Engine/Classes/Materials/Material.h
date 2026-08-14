@@ -756,6 +756,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Mobile)
 	uint8 bUseLightmapDirectionality : 1;
 
+	/* Use alpha to coverage for masked material on mobile, make sure MSAA is enabled as well. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Mobile, AdvancedDisplay, meta = (EditCondition = "BlendMode != EBlendMode::BLEND_Opaque"))
+	uint8 bUseAlphaToCoverage : 1;
+
 	/* Forward (including mobile) renderer: use preintegrated GF lut for simple IBL, but will use one more sampler. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ForwardShading, meta = (DisplayName = "PreintegratedGF For Simple IBL"))
 	uint32 bForwardRenderUsePreintegratedGFForSimpleIBL : 1;
@@ -776,14 +780,17 @@ public:
 	uint8 bNormalCurvatureToRoughness : 1;
 
 	/** The type of tessellation to apply to this object.  Note D3D11 required for anything except MTM_NoTessellation. */
+	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation)
 	TEnumAsByte<enum EMaterialTessellationMode> D3D11TessellationMode;
 
 	/** Prevents cracks in the surface of the mesh when using tessellation. */
+	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation, meta=(DisplayName = "Crack Free Displacement"))
 	uint8 bEnableCrackFreeDisplacement : 1;
 
 	/** Enables adaptive tessellation, which tries to maintain a uniform number of pixels per triangle. */
+	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation, meta=(DisplayName = "Adaptive Tessellation"))
 	uint8 bEnableAdaptiveTessellation : 1;
 
@@ -852,6 +859,10 @@ public:
 	/** When true, translucent materials are fogged. Defaults to true. */
 	UPROPERTY(EditAnywhere, Category=Translucency, meta=(DisplayName = "Apply Fogging"))
 	uint8 bUseTranslucencyVertexFog : 1;
+
+	/** When true, translucent materials receive cloud contribution as part of the fog evaluation, per vertex or per pixel according to the other selected options. This is a rough approximation but can help in some cases. Defaults to false. Fog is applied on clouds, so Apply Fogging must be true to use this feature. */
+	UPROPERTY(EditAnywhere, Category=Translucency, meta=(DisplayName = "Apply Cloud Fogging"))
+	uint8 bApplyCloudFogging : 1;
 
 	/** Unlit and Opaque materials can be used as sky material on a sky dome mesh. When IsSky is true, these meshes will not receive any contribution from the aerial perspective. Height and Volumetric fog effects will still be applied. */
 	UPROPERTY(EditAnywhere, Category=Material, AdvancedDisplay)
@@ -923,6 +934,7 @@ public:
 	UPROPERTY()
 	FGuid StateId;
 
+	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
 	UPROPERTY(EditAnywhere, Category = Tessellation)
 	float MaxDisplacement;
 
@@ -1096,6 +1108,14 @@ public:
 	ENGINE_API virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	//~ End UObject Interface
 
+	enum class EPostEditChangeEffectOnShaders
+	{
+		Default,
+		DoesNotInvalidate
+	};
+
+	ENGINE_API void PostEditChangePropertyInternal(FPropertyChangedEvent& PropertyChangedEvent, const EPostEditChangeEffectOnShaders EffectOnShaders);
+
 #if WITH_EDITOR
 	/** Cancels any currently outstanding compilation jobs for this material. Useful in the material editor when some edits superceds existing, in flight compilation jobs.*/
 	ENGINE_API virtual void CancelOutstandingCompilation();
@@ -1168,6 +1188,7 @@ private:
 	bool GetFontParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage, bool bOveriddenOnly) const;
 
 	void BackwardsCompatibilityInputConversion();
+	void BackwardsCompatibilityVirtualTextureOutputConversion();
 
 	/** Handles setting up an annotation for this object if a flag has changed value */
 	void MarkUsageFlagDirty(EMaterialUsage Usage, bool CurrentValue, bool NewValue);
@@ -1329,7 +1350,11 @@ public:
 	template<typename ExpressionType>
 	ExpressionType* FindExpressionByGUID(const FGuid &InGUID)
 	{
-		return FindExpressionByGUIDRecursive<ExpressionType>(InGUID, Expressions);
+		if (InGUID.IsValid())
+		{
+			return FindExpressionByGUIDRecursive<ExpressionType>(InGUID, Expressions);
+		}
+		return nullptr;
 	}
 
 	/* Get all expressions of the requested type */
@@ -1470,7 +1495,7 @@ private:
 	 * The results will be applied to this FMaterial in the renderer when they are finished compiling.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	void CacheResourceShadersForRendering(bool bRegenerateId);
+	void CacheResourceShadersForRendering(bool bRegenerateId, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default);
 
 	/**
 	 * Cache resource shaders for cooking on the given shader platform.
@@ -1482,7 +1507,7 @@ private:
 	void CacheResourceShadersForCooking(EShaderPlatform Platform, TArray<FMaterialResource*>& OutCachedMaterialResources, const ITargetPlatform* TargetPlatform = nullptr);
 
 	/** Caches shader maps for an array of material resources. */
-	void CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, const ITargetPlatform* TargetPlatform = nullptr);
+	void CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default, const ITargetPlatform* TargetPlatform = nullptr);
 
 #if WITH_EDITOR
 	/**
@@ -1674,7 +1699,11 @@ public:
 	ENGINE_API virtual bool GetExpressionsInPropertyChain(EMaterialProperty InProperty, 
 		TArray<UMaterialExpression*>& OutExpressions, struct FStaticParameterSet* InStaticParameterSet,
 		ERHIFeatureLevel::Type InFeatureLevel = ERHIFeatureLevel::Num, EMaterialQualityLevel::Type InQuality = EMaterialQualityLevel::Num, ERHIShadingPath::Type InShadingPath = ERHIShadingPath::Num);
-#endif
+
+	/** Add to the set any texture referenced by expressions, including nested functions, as well as any overrides from parameters. */
+	ENGINE_API virtual void GetReferencedTexturesAndOverrides(TSet<const UTexture*>& InOutTextures) const;
+
+#endif // WITH_EDITOR
 
 	/** Appends textures referenced by expressions, including nested functions. */
 	ENGINE_API virtual TArrayView<UObject* const> GetReferencedTextures() const override final { return CachedExpressionData.ReferencedTextures; }
@@ -1715,7 +1744,7 @@ protected:
 #endif
 
 public:
-	void DumpDebugInfo();
+	void DumpDebugInfo() const;
 	void SaveShaderStableKeys(const class ITargetPlatform* TP);
 	ENGINE_API virtual void SaveShaderStableKeysInner(const class ITargetPlatform* TP, const struct FStableShaderKeyAndValue& SaveKeyVal) override;
 
@@ -1732,6 +1761,7 @@ public:
 	bool HasNormalConnected() const { return Normal.IsConnected(); }
 	bool HasSpecularConnected() const { return Specular.IsConnected(); }
 	bool HasEmissiveColorConnected() const { return EmissiveColor.IsConnected(); }
+	bool HasAnisotropyConnected() const { return Anisotropy.IsConnected(); }
 
 #if WITH_EDITOR
 	static void NotifyCompilationFinished(UMaterialInterface* Material);

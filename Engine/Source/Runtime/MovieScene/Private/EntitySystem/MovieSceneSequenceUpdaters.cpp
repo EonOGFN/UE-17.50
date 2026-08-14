@@ -17,6 +17,7 @@
 #include "Compilation/MovieSceneCompiledDataManager.h"
 
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
+#include "Evaluation/MovieSceneRootOverridePath.h"
 
 #include "MovieSceneTimeHelpers.h"
 
@@ -42,11 +43,13 @@ struct FSequenceUpdater_Flat : ISequenceUpdater
 	virtual void Destroy(UMovieSceneEntitySystemLinker* Linker) override;
 	virtual TUniquePtr<ISequenceUpdater> MigrateToHierarchical() override;
 	virtual FInstanceHandle FindSubInstance(FMovieSceneSequenceID SubSequenceID) const override { return FInstanceHandle(); }
+	virtual void OverrideRootSequence(UMovieSceneEntitySystemLinker* InLinker, FInstanceHandle InstanceHandle, FMovieSceneSequenceID NewRootOverrideSequenceID) override {}
 
 private:
 
 	TRange<FFrameNumber> CachedEntityRange;
 
+	TOptional<TArray<FFrameTime>> CachedDeterminismFences;
 	FMovieSceneCompiledDataID CompiledDataID;
 };
 
@@ -64,7 +67,8 @@ struct FSequenceUpdater_Hierarchical : ISequenceUpdater
 	virtual void InvalidateCachedData(UMovieSceneEntitySystemLinker* Linker) override;
 	virtual void Destroy(UMovieSceneEntitySystemLinker* Linker) override;
 	virtual TUniquePtr<ISequenceUpdater> MigrateToHierarchical() override { return nullptr; }
-	virtual FInstanceHandle FindSubInstance(FMovieSceneSequenceID SubSequenceID) const override { return SequenceInstances.FindRef(SubSequenceID); }
+	virtual FInstanceHandle FindSubInstance(FMovieSceneSequenceID SubSequenceID) const override { return SequenceInstances.FindRef(SubSequenceID).Handle; }
+	virtual void OverrideRootSequence(UMovieSceneEntitySystemLinker* InLinker, FInstanceHandle InstanceHandle, FMovieSceneSequenceID NewRootOverrideSequenceID) override;
 
 private:
 
@@ -76,9 +80,16 @@ private:
 
 	TRange<FFrameNumber> CachedEntityRange;
 
-	TSortedMap<FMovieSceneSequenceID, FInstanceHandle, TInlineAllocator<8>> SequenceInstances;
+	struct FSubInstanceData
+	{
+		FInstanceHandle Handle;
+		bool bNeedsDestroy = false;
+	};
+	TSortedMap<FMovieSceneSequenceID, FSubInstanceData, TInlineAllocator<8>> SequenceInstances;
 
 	FMovieSceneCompiledDataID CompiledDataID;
+
+	FMovieSceneSequenceID RootOverrideSequenceID;
 };
 
 
@@ -182,11 +193,26 @@ TUniquePtr<ISequenceUpdater> FSequenceUpdater_Flat::MigrateToHierarchical()
 
 void FSequenceUpdater_Flat::DissectContext(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* InPlayer, const FMovieSceneContext& Context, TArray<TRange<FFrameTime>>& OutDissections)
 {
-	UMovieSceneCompiledDataManager* CompiledDataManager = InPlayer->GetEvaluationTemplate().GetCompiledDataManager();
-	TArrayView<const FFrameTime>    DeterminismFences   = CompiledDataManager->GetEntry(CompiledDataID).DeterminismFences;
-	TArrayView<const FFrameTime>    TraversedFences     = GetFencesWithinRange(DeterminismFences, Context.GetFrameNumberRange());
+	if (!CachedDeterminismFences.IsSet())
+	{
+		UMovieSceneCompiledDataManager* CompiledDataManager = InPlayer->GetEvaluationTemplate().GetCompiledDataManager();
+		TArrayView<const FFrameTime>    DeterminismFences   = CompiledDataManager->GetEntryRef(CompiledDataID).DeterminismFences;
 
-	UE::MovieScene::DissectRange(TraversedFences, Context.GetRange(), OutDissections);
+		if (DeterminismFences.Num() != 0)
+		{
+			CachedDeterminismFences = TArray<FFrameTime>(DeterminismFences.GetData(), DeterminismFences.Num());
+		}
+		else
+		{
+			CachedDeterminismFences.Emplace();
+		}
+	}
+
+	if (CachedDeterminismFences->Num() != 0)
+	{
+		TArrayView<const FFrameTime> TraversedFences = GetFencesWithinRange(CachedDeterminismFences.GetValue(), Context.GetFrameNumberRange());
+		UE::MovieScene::DissectRange(TraversedFences, Context.GetRange(), OutDissections);
+	}
 }
 
 void FSequenceUpdater_Flat::Start(UMovieSceneEntitySystemLinker* Linker, FInstanceHandle InstanceHandle, IMovieScenePlayer* InPlayer, const FMovieSceneContext& InContext)
@@ -199,6 +225,12 @@ void FSequenceUpdater_Flat::Update(UMovieSceneEntitySystemLinker* Linker, FInsta
 	SequenceInstance.SetContext(Context);
 
 	const FMovieSceneEntityComponentField* ComponentField = InPlayer->GetEvaluationTemplate().GetCompiledDataManager()->FindEntityComponentField(CompiledDataID);
+	UMovieSceneSequence* Sequence = InPlayer->GetEvaluationTemplate().GetSequence(MovieSceneSequenceID::Root);
+	if (Sequence == nullptr)
+	{
+		SequenceInstance.Ledger.UnlinkEverything(Linker);
+		return;
+	}
 
 	FMovieSceneEvaluationFieldEntitySet EntitiesScratch;
 
@@ -216,24 +248,27 @@ void FSequenceUpdater_Flat::Update(UMovieSceneEntitySystemLinker* Linker, FInsta
 
 		FEntityImportSequenceParams Params;
 		Params.InstanceHandle = InstanceHandle;
-		Params.DefaultCompletionMode = InPlayer->GetEvaluationTemplate().GetSequence(MovieSceneSequenceID::Root)->DefaultCompletionMode;
+		Params.DefaultCompletionMode = Sequence->DefaultCompletionMode;
 		Params.HierarchicalBias = 0;
 
 		SequenceInstance.Ledger.UpdateEntities(Linker, Params, ComponentField, EntitiesScratch);
 	}
 
 	// Update any one-shot entities for the current frame
-	if (ComponentField)
+	if (ComponentField && ComponentField->HasAnyOneShotEntities())
 	{
 		EntitiesScratch.Reset();
 		ComponentField->QueryOneShotEntities(Context.GetFrameNumberRange(), EntitiesScratch);
 
-		FEntityImportSequenceParams Params;
-		Params.InstanceHandle = InstanceHandle;
-		Params.DefaultCompletionMode = InPlayer->GetEvaluationTemplate().GetSequence(MovieSceneSequenceID::Root)->DefaultCompletionMode;
-		Params.HierarchicalBias = 0;
+		if (EntitiesScratch.Num() != 0)
+		{
+			FEntityImportSequenceParams Params;
+			Params.InstanceHandle = InstanceHandle;
+			Params.DefaultCompletionMode = Sequence->DefaultCompletionMode;
+			Params.HierarchicalBias = 0;
 
-		SequenceInstance.Ledger.UpdateOneShotEntities(Linker, Params, ComponentField, EntitiesScratch);
+			SequenceInstance.Ledger.UpdateOneShotEntities(Linker, Params, ComponentField, EntitiesScratch);
+		}
 	}
 }
 
@@ -250,6 +285,7 @@ void FSequenceUpdater_Flat::Destroy(UMovieSceneEntitySystemLinker* Linker)
 void FSequenceUpdater_Flat::InvalidateCachedData(UMovieSceneEntitySystemLinker* Linker)
 {
 	CachedEntityRange = TRange<FFrameNumber>::Empty();
+	CachedDeterminismFences.Reset();
 }
 
 
@@ -260,6 +296,7 @@ FSequenceUpdater_Hierarchical::FSequenceUpdater_Hierarchical(FMovieSceneCompiled
 	: CompiledDataID(InCompiledDataID)
 {
 	CachedEntityRange = TRange<FFrameNumber>::Empty();
+	RootOverrideSequenceID = MovieSceneSequenceID::Root;
 }
 
 FSequenceUpdater_Hierarchical::~FSequenceUpdater_Hierarchical()
@@ -274,8 +311,8 @@ void FSequenceUpdater_Hierarchical::DissectContext(UMovieSceneEntitySystemLinker
 	TArray<FFrameTime>   RootDissectionTimes;
 
 	{
-		TArrayView<const FFrameTime> RootDeterminismFences = CompiledDataManager->GetEntry(CompiledDataID).DeterminismFences;
-		TArrayView<const FFrameTime> TraversedFences       = GetFencesWithinRange(RootDeterminismFences, Context.GetFrameNumberRange());
+		const FMovieSceneCompiledDataEntry& DataEntry       = CompiledDataManager->GetEntryRef(CompiledDataID);
+		TArrayView<const FFrameTime>        TraversedFences = GetFencesWithinRange(DataEntry.DeterminismFences, Context.GetFrameNumberRange());
 
 		UE::MovieScene::DissectRange(TraversedFences, Context.GetRange(), OutDissections);
 	}
@@ -308,7 +345,7 @@ void FSequenceUpdater_Hierarchical::DissectContext(UMovieSceneEntitySystemLinker
 					continue;
 				}
 
-				TArrayView<const FFrameTime> SubDeterminismFences = CompiledDataManager->GetEntry(SubDataID).DeterminismFences;
+				TArrayView<const FFrameTime> SubDeterminismFences = CompiledDataManager->GetEntryRef(SubDataID).DeterminismFences;
 				if (SubDeterminismFences.Num() > 0)
 				{
 					TRange<FFrameTime>   InnerRange           = SubData->RootToSequenceTransform.TransformRangeUnwarped(RootClampRange);
@@ -338,15 +375,35 @@ void FSequenceUpdater_Hierarchical::DissectContext(UMovieSceneEntitySystemLinker
 
 FInstanceHandle FSequenceUpdater_Hierarchical::GetOrCreateSequenceInstance(IMovieScenePlayer* InPlayer, FInstanceRegistry* InstanceRegistry, FInstanceHandle RootInstanceHandle, FMovieSceneSequenceID SequenceID)
 {
-	FInstanceHandle InstanceHandle = SequenceInstances.FindRef(SequenceID);
-
-	if (!InstanceHandle.IsValid())
+	if (FSubInstanceData* Existing = SequenceInstances.Find(SequenceID))
 	{
-		InstanceHandle = InstanceRegistry->AllocateSubInstance(InPlayer, SequenceID, RootInstanceHandle);
-		SequenceInstances.Add(SequenceID, InstanceHandle);
+		Existing->bNeedsDestroy = false;
+		return Existing->Handle;
 	}
 
+	FInstanceHandle InstanceHandle = InstanceRegistry->AllocateSubInstance(InPlayer, SequenceID, RootInstanceHandle);
+	SequenceInstances.Add(SequenceID, FSubInstanceData { InstanceHandle });
+
 	return InstanceHandle;
+}
+
+void FSequenceUpdater_Hierarchical::OverrideRootSequence(UMovieSceneEntitySystemLinker* InLinker, FInstanceHandle MasterInstanceHandle, FMovieSceneSequenceID NewRootOverrideSequenceID)
+{
+	if (RootOverrideSequenceID != NewRootOverrideSequenceID)
+	{
+		if (RootOverrideSequenceID == MovieSceneSequenceID::Root)
+		{
+			// When specifying a new root override where there was none before (ie, when we were previously evaluating from the master)
+			// We unlink everything from the master sequence since we know they won't be necessary.
+			// This is because the root sequence instance is handled separately in FSequenceUpdater_Hierarchical::Update, and it wouldn't
+			// get automatically unlinked like other sub sequences would (by way of not being present in the ActiveSequences map)
+			FInstanceRegistry* InstanceRegistry = InLinker->GetInstanceRegistry();
+			InstanceRegistry->MutateInstance(MasterInstanceHandle).Ledger.UnlinkEverything(InLinker);
+		}
+
+		InvalidateCachedData(InLinker);
+		RootOverrideSequenceID = NewRootOverrideSequenceID;
+	}
 }
 
 void FSequenceUpdater_Hierarchical::Start(UMovieSceneEntitySystemLinker* Linker, FInstanceHandle InstanceHandle, IMovieScenePlayer* InPlayer, const FMovieSceneContext& InContext)
@@ -355,79 +412,124 @@ void FSequenceUpdater_Hierarchical::Start(UMovieSceneEntitySystemLinker* Linker,
 
 void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker, FInstanceHandle InstanceHandle, IMovieScenePlayer* InPlayer, const FMovieSceneContext& Context)
 {
-	const FFrameNumber RootTime = Context.GetTime().FrameNumber;
-
-	const bool bGatherEntities = !CachedEntityRange.Contains(RootTime);
-
 	FInstanceRegistry* InstanceRegistry = Linker->GetInstanceRegistry();
 	UMovieSceneCompiledDataManager* CompiledDataManager = InPlayer->GetEvaluationTemplate().GetCompiledDataManager();
 
 	FMovieSceneEvaluationFieldEntitySet EntitiesScratch;
 
+	FInstanceHandle             RootInstanceHandle = InstanceHandle;
+	FMovieSceneCompiledDataID   RootCompiledDataID = CompiledDataID;
+	FMovieSceneRootOverridePath RootOverridePath;
+	FMovieSceneContext          RootContext = Context;
+
+	TArray<FMovieSceneSequenceID, TInlineAllocator<16>> ActiveSequences;
+
+	if (RootOverrideSequenceID != MovieSceneSequenceID::Root)
+	{
+		const FMovieSceneSequenceHierarchy* MasterHierarchy = CompiledDataManager->FindHierarchy(CompiledDataID);
+		const FMovieSceneSubSequenceData*   SubData         = MasterHierarchy ? MasterHierarchy->FindSubData(RootOverrideSequenceID) : nullptr;
+		UMovieSceneSequence*                RootSequence    = SubData ? SubData->GetSequence() : nullptr;
+		if (ensure(RootSequence))
+		{
+			RootInstanceHandle = GetOrCreateSequenceInstance(InPlayer, InstanceRegistry, InstanceHandle, RootOverrideSequenceID);
+			RootCompiledDataID = CompiledDataManager->GetDataID(RootSequence);
+			RootContext        = Context.Transform(SubData->RootToSequenceTransform, SubData->TickResolution);
+
+			RootOverridePath.Set(RootOverrideSequenceID, MasterHierarchy);
+
+			ActiveSequences.Add(RootOverrideSequenceID);
+		}
+	}
+
+	const FFrameNumber RootTime = RootContext.GetTime().FrameNumber;
+	const bool bGatherEntities = !CachedEntityRange.Contains(RootTime);
+
 	// ------------------------------------------------------------------------------------------------
 	// Handle the root sequence entities first
 	{
 		// Set the context for the root sequence instance
-		FSequenceInstance& RootInstance = InstanceRegistry->MutateInstance(InstanceHandle);
-		RootInstance.SetContext(Context);
+		FSequenceInstance& RootInstance = InstanceRegistry->MutateInstance(RootInstanceHandle);
+		RootInstance.SetContext(RootContext);
 
-		const FMovieSceneEntityComponentField* RootComponentField = CompiledDataManager->FindEntityComponentField(CompiledDataID);
+		const FMovieSceneEntityComponentField* RootComponentField = CompiledDataManager->FindEntityComponentField(RootCompiledDataID);
+		UMovieSceneSequence* RootSequence = CompiledDataManager->GetEntryRef(RootCompiledDataID).GetSequence();
 
-		// Update entities if necessary
-		if (bGatherEntities)
+		if (RootSequence == nullptr)
 		{
-			CachedEntityRange = UpdateEntitiesForSequence(RootComponentField, RootTime, EntitiesScratch);
-
-			FEntityImportSequenceParams Params;
-			Params.InstanceHandle = InstanceHandle;
-			Params.DefaultCompletionMode = InPlayer->GetEvaluationTemplate().GetSequence(MovieSceneSequenceID::Root)->DefaultCompletionMode;
-			Params.HierarchicalBias = 0;
-
-			RootInstance.Ledger.UpdateEntities(Linker, Params, RootComponentField, EntitiesScratch);
+			RootInstance.Ledger.UnlinkEverything(Linker);
 		}
-
-		// Update any one-shot entities for the current root frame
-		if (RootComponentField)
+		else
 		{
-			EntitiesScratch.Reset();
-			RootComponentField->QueryOneShotEntities(Context.GetFrameNumberRange(), EntitiesScratch);
+			// Update entities if necessary
+			if (bGatherEntities)
+			{
+				CachedEntityRange = UpdateEntitiesForSequence(RootComponentField, RootTime, EntitiesScratch);
 
-			FEntityImportSequenceParams Params;
-			Params.InstanceHandle = InstanceHandle;
-			Params.DefaultCompletionMode = InPlayer->GetEvaluationTemplate().GetSequence(MovieSceneSequenceID::Root)->DefaultCompletionMode;
-			Params.HierarchicalBias = 0;
+				FEntityImportSequenceParams Params;
+				Params.InstanceHandle = RootInstanceHandle;
+				Params.DefaultCompletionMode = RootSequence->DefaultCompletionMode;
+				Params.HierarchicalBias = 0;
 
-			RootInstance.Ledger.UpdateOneShotEntities(Linker, Params, RootComponentField, EntitiesScratch);
+				RootInstance.Ledger.UpdateEntities(Linker, Params, RootComponentField, EntitiesScratch);
+			}
+
+			// Update any one-shot entities for the current root frame
+			if (RootComponentField && RootComponentField->HasAnyOneShotEntities())
+			{
+				EntitiesScratch.Reset();
+				RootComponentField->QueryOneShotEntities(Context.GetFrameNumberRange(), EntitiesScratch);
+
+				if (EntitiesScratch.Num() != 0)
+				{
+					FEntityImportSequenceParams Params;
+					Params.InstanceHandle = RootInstanceHandle;
+					Params.DefaultCompletionMode = RootSequence->DefaultCompletionMode;
+					Params.HierarchicalBias = 0;
+
+					RootInstance.Ledger.UpdateOneShotEntities(Linker, Params, RootComponentField, EntitiesScratch);
+				}
+			}
 		}
 	}
 
-	TArray<FMovieSceneSequenceID, TInlineAllocator<16>> ActiveSequences;
-
 	// ------------------------------------------------------------------------------------------------
 	// Handle sub sequence entities next
-	const FMovieSceneSequenceHierarchy* Hierarchy = CompiledDataManager->FindHierarchy(CompiledDataID);
-	if (Hierarchy)
+	const FMovieSceneSequenceHierarchy* RootOverrideHierarchy = CompiledDataManager->FindHierarchy(RootCompiledDataID);
+	if (RootOverrideHierarchy)
 	{
-		FMovieSceneEvaluationTreeRangeIterator SubSequenceIt = Hierarchy->GetTree().IterateFromTime(RootTime);
+		FMovieSceneEvaluationTreeRangeIterator SubSequenceIt = RootOverrideHierarchy->GetTree().IterateFromTime(RootTime);
 		
 		if (bGatherEntities)
 		{
 			CachedEntityRange = TRange<FFrameNumber>::Intersection(CachedEntityRange, SubSequenceIt.Range());
 		}
 
-		for (FMovieSceneSubSequenceTreeEntry Entry : Hierarchy->GetTree().GetAllData(SubSequenceIt.Node()))
+		for (FMovieSceneSubSequenceTreeEntry Entry : RootOverrideHierarchy->GetTree().GetAllData(SubSequenceIt.Node()))
 		{
-			ActiveSequences.Add(Entry.SequenceID);
+			// When a root override path is specified, we always remap the 'local' sequence IDs to their equivalents from the master sequence.
+			FMovieSceneSequenceID SequenceIDFromMaster = RootOverridePath.Remap(Entry.SequenceID);
 
-			const FMovieSceneSubSequenceData* SubData = Hierarchy->FindSubData(Entry.SequenceID);
+			ActiveSequences.Add(SequenceIDFromMaster);
+
+			const FMovieSceneSubSequenceData* SubData = RootOverrideHierarchy->FindSubData(Entry.SequenceID);
 			checkf(SubData, TEXT("Sub data does not exist for a SequenceID that exists in the hierarchical tree - this indicates a corrupt compilation product."));
 
-			if (UMovieSceneSequence* SubSequence = SubData->GetSequence())
+			UMovieSceneSequence* SubSequence = SubData->GetSequence();
+			if (SubSequence == nullptr)
+			{
+				FInstanceHandle SubSequenceHandle = SequenceInstances.FindRef(SequenceIDFromMaster).Handle;
+				if (SubSequenceHandle.IsValid())
+				{
+					FSequenceInstance& SubSequenceInstance = InstanceRegistry->MutateInstance(SubSequenceHandle);
+					SubSequenceInstance.Ledger.UnlinkEverything(Linker);
+				}
+			}
+			else
 			{
 				FMovieSceneCompiledDataID SubDataID = CompiledDataManager->GetDataID(SubSequence);
 
 				// Set the context for the root sequence instance
-				FInstanceHandle    SubSequenceHandle = GetOrCreateSequenceInstance(InPlayer, InstanceRegistry, InstanceHandle, Entry.SequenceID);
+				FInstanceHandle    SubSequenceHandle = GetOrCreateSequenceInstance(InPlayer, InstanceRegistry, InstanceHandle, SequenceIDFromMaster);
 				FSequenceInstance& SubSequenceInstance = InstanceRegistry->MutateInstance(SubSequenceHandle);
 
 				// Update the sub sequence's context
@@ -435,7 +537,7 @@ void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker
 				SubContext.ReportOuterSectionRanges(SubData->PreRollRange.Value, SubData->PostRollRange.Value);
 				SubContext.SetHierarchicalBias(SubData->HierarchicalBias);
 
-
+				// Handle crossing a pre/postroll boundary
 				const bool bWasPreRoll  = SubSequenceInstance.GetContext().IsPreRoll();
 				const bool bWasPostRoll = SubSequenceInstance.GetContext().IsPostRoll();
 				const bool bIsPreRoll   = SubContext.IsPreRoll();
@@ -443,7 +545,14 @@ void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker
 
 				if (bWasPreRoll != bIsPreRoll || bWasPostRoll != bIsPostRoll)
 				{
-					SubSequenceInstance.Ledger.UnlinkEverything(Linker);
+					// When crossing a pre/postroll boundary, we invalidate all entities currently imported, which results in them being re-imported 
+					// with the same EntityID. This ensures that the state is maintained for such entities across prerolls (ie entities with a
+					// spawnable binding component on them will not cause the spawnable to be destroyed and recreated again).
+					// The one edge case that this could open up is where a preroll entity has meaningfully different components from its 'normal' entity,
+					// and there are systems that track the link/unlink lifetime for such components. Under this circumstance, the unlink for the entity
+					// will not be seen until the whole entity goes away, not just the preroll region. This is a very nuanced edge-case however, and can
+					// be solved by giving the entities unique IDs (FMovieSceneEvaluationFieldEntityKey::EntityID) in the evaluation field.
+					SubSequenceInstance.Ledger.Invalidate();
 				}
 
 				SubSequenceInstance.SetContext(SubContext);
@@ -461,6 +570,7 @@ void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker
 				Params.HierarchicalBias = SubData->HierarchicalBias;
 				Params.bPreRoll  = bIsPreRoll;
 				Params.bPostRoll = bIsPostRoll;
+				Params.bHasHierarchicalEasing = SubData->bHasHierarchicalEasing;
 
 				if (bGatherEntities)
 				{
@@ -475,11 +585,15 @@ void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker
 				}
 
 				// Update any one-shot entities for the sub sequence
-				if (SubComponentField)
+				if (SubComponentField && SubComponentField->HasAnyOneShotEntities())
 				{
 					EntitiesScratch.Reset();
 					SubComponentField->QueryOneShotEntities(SubContext.GetFrameNumberRange(), EntitiesScratch);
-					SubSequenceInstance.Ledger.UpdateOneShotEntities(Linker, Params, SubComponentField, EntitiesScratch);
+
+					if (EntitiesScratch.Num() != 0)
+					{
+						SubSequenceInstance.Ledger.UpdateOneShotEntities(Linker, Params, SubComponentField, EntitiesScratch);
+					}
 				}
 			}
 		}
@@ -490,13 +604,21 @@ void FSequenceUpdater_Hierarchical::Update(UMovieSceneEntitySystemLinker* Linker
 
 	for (auto InstanceIt = SequenceInstances.CreateIterator(); InstanceIt; ++InstanceIt)
 	{
-		FInstanceHandle SubInstanceHandle = InstanceIt.Value();
-		Runner->MarkForUpdate(SubInstanceHandle);
+		FSubInstanceData SubData = InstanceIt.Value();
+		if (SubData.bNeedsDestroy)
+		{
+			InstanceRegistry->DestroyInstance(SubData.Handle);
+			InstanceIt.RemoveCurrent();
+			continue;
+		}
+
+		Runner->MarkForUpdate(SubData.Handle);
 
 		if (!ActiveSequences.Contains(InstanceIt.Key()))
 		{
 			// Remove all entities from this instance since it is no longer active
-			InstanceRegistry->MutateInstance(SubInstanceHandle).Finish(Linker);
+			InstanceRegistry->MutateInstance(SubData.Handle).Finish(Linker);
+			InstanceIt.Value().bNeedsDestroy = true;
 		}
 	}
 }
@@ -506,9 +628,9 @@ void FSequenceUpdater_Hierarchical::Finish(UMovieSceneEntitySystemLinker* Linker
 	FInstanceRegistry* InstanceRegistry = Linker->GetInstanceRegistry();
 
 	// Finish all sub sequences as well
-	for (TPair<FMovieSceneSequenceID, FInstanceHandle> Pair : SequenceInstances)
+	for (TPair<FMovieSceneSequenceID, FSubInstanceData> Pair : SequenceInstances)
 	{
-		InstanceRegistry->MutateInstance(Pair.Value).Finish(Linker);
+		InstanceRegistry->MutateInstance(Pair.Value.Handle).Finish(Linker);
 	}
 
 	InvalidateCachedData(Linker);
@@ -518,9 +640,9 @@ void FSequenceUpdater_Hierarchical::Destroy(UMovieSceneEntitySystemLinker* Linke
 {
 	FInstanceRegistry* InstanceRegistry = Linker->GetInstanceRegistry();
 
-	for (TPair<FMovieSceneSequenceID, FInstanceHandle> Pair : SequenceInstances)
+	for (TPair<FMovieSceneSequenceID, FSubInstanceData> Pair : SequenceInstances)
 	{
-		InstanceRegistry->DestroyInstance(Pair.Value);
+		InstanceRegistry->DestroyInstance(Pair.Value.Handle);
 	}
 }
 
@@ -530,9 +652,9 @@ void FSequenceUpdater_Hierarchical::InvalidateCachedData(UMovieSceneEntitySystem
 
 	FInstanceRegistry* InstanceRegistry = Linker->GetInstanceRegistry();
 
-	for (TPair<FMovieSceneSequenceID, FInstanceHandle> Pair : SequenceInstances)
+	for (TPair<FMovieSceneSequenceID, FSubInstanceData> Pair : SequenceInstances)
 	{
-		InstanceRegistry->MutateInstance(Pair.Value).Ledger.Invalidate();
+		InstanceRegistry->MutateInstance(Pair.Value.Handle).Ledger.Invalidate();
 	}
 }
 

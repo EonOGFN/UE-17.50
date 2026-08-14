@@ -556,7 +556,10 @@ void UNiagaraComponentPool::PooledComponentDestroyed(UNiagaraComponent* Componen
 				{
 					if (!NCPool->RemoveComponent(Component))
 					{
+						// Suppress excessive logging when not debugging the component pool - no easy way to tell if this is actually a problem
+#if ENABLE_NC_POOL_DEBUGGING
 						UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponentPool::PooledComponentDestroyed: Component is marked as FreeInPool but does not exist"));
+#endif
 					}
 				}
 			}
@@ -589,6 +592,15 @@ void UNiagaraComponentPool::PooledComponentDestroyed(UNiagaraComponent* Componen
 	}
 
 	Component->PoolingMethod = ENCPoolMethod::None;
+}
+
+void UNiagaraComponentPool::RemoveComponentsBySystem(UNiagaraSystem* System)
+{
+	if ( FNCPool* NCPool = WorldParticleSystemPools.Find(System) )
+	{
+		NCPool->Cleanup(false);
+		WorldParticleSystemPools.Remove(System);
+	}
 }
 
 void UNiagaraComponentPool::Dump()

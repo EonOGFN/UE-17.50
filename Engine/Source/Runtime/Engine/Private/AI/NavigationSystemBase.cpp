@@ -14,6 +14,7 @@
 DEFINE_LOG_CATEGORY(LogNavigation);
 DEFINE_LOG_CATEGORY(LogNavigationDataBuild);
 DEFINE_LOG_CATEGORY(LogNavLink);
+DEFINE_LOG_CATEGORY(LogAStar);
 
 #if !UE_BUILD_SHIPPING
 #include "CoreGlobals.h"
@@ -38,8 +39,38 @@ namespace FNavigationSystem
 		}
 	}
 
+	FNavigationSystemRunMode FindRunModeFromWorldType(const UWorld& World)
+	{
+		switch (World.WorldType)
+		{
+		case EWorldType::Editor:
+		case EWorldType::EditorPreview:
+			return FNavigationSystemRunMode::EditorMode;
+
+		case EWorldType::PIE:
+			return FNavigationSystemRunMode::PIEMode;
+
+		case EWorldType::Game:
+		case EWorldType::GamePreview:
+		case EWorldType::GameRPC:
+			return FNavigationSystemRunMode::GameMode;
+
+		case EWorldType::Inactive:
+		case EWorldType::None:
+			return FNavigationSystemRunMode::InvalidMode;
+
+		default:
+			UE_LOG(LogNavigation, Warning, TEXT("%s Unhandled world type, defaulting to FNavigationSystemRunMode::InvalidMode."), ANSI_TO_TCHAR(__FUNCTION__));
+			return FNavigationSystemRunMode::InvalidMode;
+		}
+	}
+
 	void AddNavigationSystemToWorld(UWorld& WorldOwner, const FNavigationSystemRunMode RunMode, UNavigationSystemConfig* NavigationSystemConfig, const bool bInitializeForWorld, const bool bOverridePreviousNavSys)
 	{
+		UE_LOG(LogNavigation, VeryVerbose, TEXT("%s (WorldOwner: %s)"), ANSI_TO_TCHAR(__FUNCTION__), *WorldOwner.GetOuter()->GetName());
+
+		const FNavigationSystemRunMode ResolvedRunMode = (RunMode == FNavigationSystemRunMode::InferFromWorldMode) ? FindRunModeFromWorldType(WorldOwner) : RunMode;
+
 		if (WorldOwner.GetNavigationSystem() == nullptr || bOverridePreviousNavSys)
 		{
 			if (NavigationSystemConfig == nullptr)
@@ -62,9 +93,9 @@ namespace FNavigationSystem
 		{
 			if (WorldOwner.GetNavigationSystem())
 			{
-				WorldOwner.GetNavigationSystem()->InitializeForWorld(WorldOwner, RunMode);
+				WorldOwner.GetNavigationSystem()->InitializeForWorld(WorldOwner, ResolvedRunMode);
 			}
-			else if (RunMode == FNavigationSystemRunMode::EditorMode)
+			else if (ResolvedRunMode == FNavigationSystemRunMode::EditorMode)
 			{
 				DiscardNavigationDataChunks(WorldOwner);
 			}

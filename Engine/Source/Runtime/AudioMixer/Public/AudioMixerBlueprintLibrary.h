@@ -77,6 +77,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects", meta = (WorldContext = "WorldContextObject"))
 	static void ClearSubmixEffects(const UObject* WorldContextObject, USoundSubmix* SoundSubmix);
 
+	/** Sets a submix effect chain override on the given submix. The effect chain will cross fade from the base effect chain or current override to the new override. */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects", meta = (WorldContext = "WorldContextObject"))
+	static void SetSubmixEffectChainOverride(const UObject* WorldContextObject, USoundSubmix* SoundSubmix, TArray<USoundEffectSubmixPreset*> SubmixEffectPresetChain, float FadeTimeSec);
+
+	/** Clears all submix effect overrides on the given submix and returns it to the default effect chain. */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects", meta = (WorldContext = "WorldContextObject"))
+	static void ClearSubmixEffectChainOverride(const UObject* WorldContextObject, USoundSubmix* SoundSubmix, float FadeTimeSec);
+
 	/** Start recording audio. By leaving the Submix To Record field blank, you can record the master output of the game. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Recording", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
 	static void StartRecordingOutput(const UObject* WorldContextObject, float ExpectedDuration, USoundSubmix* SubmixToRecord = nullptr);
@@ -109,7 +117,7 @@ public:
 	 *  @param InAttackTimeMsec - The attack time (in milliseconds) to apply to each band's envelope tracker.
 	 *  @param InReleaseTimeMsec - The release time (in milliseconds) to apply to each band's envelope tracker.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Audio|Analysis")
+	UFUNCTION(BlueprintPure, Category = "Audio|Analysis", meta = (AdvancedDisplay = 3))
 	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakeMusicalSpectralAnalysisBandSettings(int32 InNumSemitones=60, EMusicalNoteName InStartingMusicalNote = EMusicalNoteName::C, int32 InStartingOctave = 2, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
 
 	/** Make an array of logarithmically spaced bands. 
@@ -120,8 +128,8 @@ public:
 	 *  @param InAttackTimeMsec - The attack time (in milliseconds) to apply to each band's envelope tracker.
 	 *  @param InReleaseTimeMsec - The release time (in milliseconds) to apply to each band's envelope tracker.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Audio|Analysis")
-	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakeFullSpectrumSpectralAnalysisBandSettings(int32 InNumBands, float InMinimumFrequency=40.f, float InMaximumFrequency=16000.f, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
+	UFUNCTION(BlueprintPure, Category = "Audio|Analysis", meta = (AdvancedDisplay = 3))
+	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakeFullSpectrumSpectralAnalysisBandSettings(int32 InNumBands = 30, float InMinimumFrequency=40.f, float InMaximumFrequency=16000.f, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
 
 	/** Make an array of bands which span the frequency range of a given EAudioSpectrumBandPresetType. 
 	 *
@@ -130,8 +138,8 @@ public:
 	 *  @param InAttackTimeMsec - The attack time (in milliseconds) to apply to each band's envelope tracker.
 	 *  @param InReleaseTimeMsec - The release time (in milliseconds) to apply to each band's envelope tracker.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Audio|Analysis")
-	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakePresetSpectralAnalysisBandSettings(EAudioSpectrumBandPresetType InBandPresetType, int32 InNumBands, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
+	UFUNCTION(BlueprintPure, Category = "Audio|Analysis", meta = (AdvancedDisplay = 2))
+	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakePresetSpectralAnalysisBandSettings(EAudioSpectrumBandPresetType InBandPresetType, int32 InNumBands = 10, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
 
 	/** Start spectrum analysis of the audio output. By leaving the Submix To Analyze blank, you can analyze the master output of the game. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 3))

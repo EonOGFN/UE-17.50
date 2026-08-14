@@ -17,6 +17,8 @@
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ProfilingDebugging/CsvProfilerTrace.h"
 
+#include <atomic>
+
 // Whether to allow the CSV profiler in shipping builds.
 // Enable in a .Target.cs file if required.
 #ifndef CSV_PROFILER_ENABLE_IN_SHIPPING
@@ -240,6 +242,9 @@ public:
 	CORE_API static void RecordEventAtTimestamp(int32 CategoryIndex, const FString& EventText, uint64 Cycles64);
 
 	CORE_API static void SetMetadata(const TCHAR* Key, const TCHAR* Value);
+	
+	/** Set Thread name for a TLS. Needs to be called before the first event of that thread is sent. */
+	CORE_API static void SetThreadName(const FString& ThreadName);
 
 	static CORE_API int32 RegisterCategory(const FString& Name, bool bEnableByDefault, bool bIsGlobal);
 
@@ -305,6 +310,16 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCSVProfileFinished, const FString& /*Filename */);
 	FOnCSVProfileFinished& OnCSVProfileFinished() { return OnCSVProfileFinishedDelegate; }
 
+	CORE_API void SetRenderThreadId(uint32 InRenderThreadId)
+	{
+		RenderThreadId = InRenderThreadId;
+	}
+
+	CORE_API void SetRHIThreadId(uint32 InRHIThreadId)
+	{
+		RHIThreadId = InRHIThreadId;
+	}
+
 private:
 	CORE_API static void VARARGS RecordEventfInternal(int32 CategoryIndex, const TCHAR* Fmt, ...);
 
@@ -342,6 +357,9 @@ private:
 	FOnCSVProfileEnd OnCSVProfileEndDelegate;
 	
 	FOnCSVProfileFinished OnCSVProfileFinishedDelegate;
+
+	std::atomic<uint32> RenderThreadId{ 0 };
+	std::atomic<uint32> RHIThreadId{ 0 };
 };
 
 class FScopedCsvStat

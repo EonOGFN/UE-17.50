@@ -73,6 +73,7 @@ enum class ECookByTheBookOptions
 	FullLoadAndSave =					0x00004000, // Load all packages into memory and save them all at once in one tick for speed reasons. This requires a lot of RAM for large games.
 	PackageStore =						0x00008000, // Cook package header information into a global package store
 	CookAgainstFixedBase =				0x00010000, // If cooking DLC, assume that the base content can not be modified. 
+	DlcLoadMainAssetRegistry =			0x00020000, // If cooking DLC, populate the main game asset registry
 
 	// Deprecated flags
 	DisableUnsolicitedPackages UE_DEPRECATED(4.26, "Use SkipSoftReferences and/or SkipHardReferences instead") = SkipSoftReferences | SkipHardReferences,
@@ -139,7 +140,6 @@ private:
 
 	FCookByTheBookOptions* CookByTheBookOptions = nullptr;
 	TUniquePtr<UE::Cook::FPlatformManager> PlatformManager;
-	FCriticalSection RequestLock;
 
 	//////////////////////////////////////////////////////////////////////////
 	// Cook on the fly options
@@ -254,12 +254,13 @@ private:
 	*/
 	void OnTargetPlatformChangedSupportedFormats(const ITargetPlatform* TargetPlatform);
 
-	/* In CookOnTheFly, requests can add a new platform; this function conditionally initializes the requested platform.  Returns false if the given TargetPlatform is not available, else true */
-	bool AddCookOnTheFlyPlatform(ITargetPlatform* TargetPlatform);
 	/* Version of AddCookOnTheFlyPlatform that takes the Platform name instead of an ITargetPlatform*.  Returns the Platform if found */
-	ITargetPlatform* AddCookOnTheFlyPlatform(const FString& PlatformName);
+	const ITargetPlatform* AddCookOnTheFlyPlatform(const FString& PlatformName);
 	/* Internal helper for AddCookOnTheFlyPlatform.  Initializing Platforms must be done on the tickloop thread; Platform data is read only on other threads */
 	void AddCookOnTheFlyPlatformFromGameThread(ITargetPlatform* TargetPlatform);
+
+	/* Callback to recalculate all ITargetPlatform* pointers when they change due to modules reloading */
+	void OnTargetPlatformsInvalidated();
 
 	/* Update polled fields used by CookOnTheFly's network request handlers */
 	void TickNetwork();
@@ -630,6 +631,9 @@ private:
 		const TArray<FString>& CookMaps, const TArray<FString>& CookDirectories, 
 		const TArray<FString>& IniMapSections, ECookByTheBookOptions FilesToCookFlags,
 		const TArrayView<const ITargetPlatform* const>& TargetPlatforms);
+	/* Collect filespackages that should not be cooked from ini settings and commandline. Does not include checking UAssetManager, which has to be queried later */
+	static TArray<FName> GetNeverCookPackages(TArrayView<const FString> ExtraNeverCookDirectories = TArrayView<const FString>());
+
 
 	/**
 	* AddFileToCook add file to cook list 
@@ -642,19 +646,29 @@ private:
 	void InitShaderCodeLibrary(void);
     
 	/**
-	* Invokes the necessary FShaderCodeLibrary functions to open a named code library.
-	*/
-	void OpenShaderCodeLibrary(FString const& Name);
+	 * Opens Global shader library. Global shaderlib isn't split into chunks nor associated with the assets, so it a special case
+	 */
+	void OpenGlobalShaderLibrary();
+
+	/**
+	 * Saves Global shader library. Global shaderlib isn't split into chunks nor associated with the assets, so it a special case
+	 */
+	void SaveGlobalShaderLibrary();
+
+	/**
+	 * Invokes the necessary FShaderCodeLibrary functions to open a named code library.
+	 */
+	void OpenShaderLibrary(FString const& Name);
     
 	/**
-	* Invokes the necessary FShaderCodeLibrary functions to save and close a named code library.
-	*/
-	void SaveShaderCodeLibrary(FString const& Name);
+	 * Invokes the necessary FShaderCodeLibrary functions to save and close a named code library.
+	 */
+	void SaveShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name, const TArray<TSet<FName>>* ChunkAssignments = nullptr);
 
 	/**
 	* Calls the ShaderPipelineCacheToolsCommandlet to build a upipelinecache file from the .stablepc.csv file, if any
 	*/
-	void ProcessShaderCodeLibraries(const FString& LibraryName);
+	void CreatePipelineCache(const ITargetPlatform* TargetPlatform, const FString& LibraryName);
 
 	/**
 	* Invokes the necessary FShaderCodeLibrary functions to clean out all the temporary files.
@@ -706,7 +720,7 @@ private:
 	 */
 	bool HandleNetworkFileServerNewConnection( const FString& VersionInfo, const FString& PlatformName );
 
-	void GetCookOnTheFlyUnsolicitedFiles(const ITargetPlatform* TargetPlatform, TArray<FString>& UnsolicitedFiles, const FString& Filename, bool bIsCookable);
+	void GetCookOnTheFlyUnsolicitedFiles(const ITargetPlatform* TargetPlatform, const FString& PlatformName, TArray<FString>& UnsolicitedFiles, const FString& Filename, bool bIsCookable);
 
 	/**
 	* Cook requests for a package from network
@@ -927,13 +941,18 @@ private:
 	bool IsCookingAgainstFixedBase() const;
 
 	/**
+	* Returns whether or not we should populate the Asset Registry using the main game content
+	*/
+	bool ShouldPopulateFullAssetRegistry() const;
+
+	/**
 	* GetBaseDirectoryForDLC
 	* 
 	* @return return the path to the DLC
 	*/
 	FString GetBaseDirectoryForDLC() const;
 
-	FString GetContentDirecctoryForDLC() const;
+	FString GetContentDirectoryForDLC() const;
 
 	bool IsCreatingReleaseVersion();
 

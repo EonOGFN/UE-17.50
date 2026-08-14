@@ -405,6 +405,15 @@ protected:
 };
 
 /**
+ * Lightweight struct used to list the MIP levels of rendered assets.
+ */
+struct FRenderedTextureStats
+{
+	int32 MaxMipLevelShown;
+	FString TextureGroup;
+};
+
+/**
  * Interface to add functions specifically related to texture/mesh streaming
  */
 struct IRenderAssetStreamingManager : public IStreamingManager
@@ -433,10 +442,7 @@ struct IRenderAssetStreamingManager : public IStreamingManager
 	virtual bool StreamOutRenderAssetData(int64 RequiredMemorySize) = 0;
 
 	/** Adds a new texture/mesh to the streaming manager. */
-	virtual void AddStreamingRenderAsset(UTexture2D* Texture) = 0;
-	virtual void AddStreamingRenderAsset(UStaticMesh* StaticMesh) = 0;
-	virtual void AddStreamingRenderAsset(USkeletalMesh* SkeletalMesh) = 0;
-	virtual void AddStreamingRenderAsset(ULandscapeLODStreamingProxy* Landscape) = 0;
+	virtual void AddStreamingRenderAsset(UStreamableRenderAsset* RenderAsset) = 0;
 
 	/** Removes a texture/mesh from the streaming manager. */
 	virtual void RemoveStreamingRenderAsset(UStreamableRenderAsset* RenderAsset) = 0;
@@ -474,6 +480,8 @@ struct IRenderAssetStreamingManager : public IStreamingManager
 
 	/** Notify the streamer that the mounted state of a file needs to be re-evaluated. */
 	virtual void MarkMountedStateDirty(FIoFilenameHash FilenameHash) = 0;
+
+	ENGINE_API virtual void AddRenderedTextureStats(TMap<FString, FRenderedTextureStats>& InOutRenderedTextureAssets) = 0;
 };
 
 enum class EAudioChunkLoadResult : uint8
@@ -674,19 +682,14 @@ struct FStreamingManagerCollection : public IStreamingManager
 	ENGINE_API bool IsStreamingEnabled() const;
 
 	/**
-	 * Checks whether texture streaming is enabled
+	 * Checks whether texture streaming is enabled. 
 	 */
-	ENGINE_API bool IsTextureStreamingEnabled() const;
-
-	/**
-	 * Checks whether mesh streaming is enabled
-	 */
-	ENGINE_API bool IsMeshStreamingEnabled() const;
+	FORCEINLINE bool IsTextureStreamingEnabled() const { return IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::Texture); }
 
 	/**
 	 * Checks whether texture/mesh streaming is enabled
 	 */
-	virtual bool IsRenderAssetStreamingEnabled() const;
+	ENGINE_API bool IsRenderAssetStreamingEnabled(EStreamableRenderAssetType FilteredAssetType = EStreamableRenderAssetType::None) const;
 
 	/**
 	 * Gets a reference to the Texture Streaming Manager interface
@@ -803,7 +806,7 @@ protected:
 	float LoadMapTimeLimit;
 
 	/** The currently added texture streaming manager. Can be NULL*/
-	FRenderAssetStreamingManager* TextureStreamingManager;
+	FRenderAssetStreamingManager* RenderAssetStreamingManager;
 
 	/** The audio streaming manager, should always exist */
 	IAudioStreamingManager* AudioStreamingManager;

@@ -26,6 +26,7 @@
 
 #ifdef CAD_LIBRARY
 #include "AliasCoretechWrapper.h" // requires CoreTech as public dependency
+#include "CADInterfacesModule.h"
 #include "CoreTechParametricSurfaceExtension.h"
 #endif
 
@@ -57,10 +58,12 @@ DEFINE_LOG_CATEGORY_STATIC(LogDatasmithWireTranslator, Log, All);
 #define LOCTEXT_NAMESPACE "DatasmithWireTranslator"
 
 #define WRONG_VERSION_TEXT "Unsupported version of Alias detected. Please downgrade to Alias 2020.0 (or earlier version) or upgrade to Alias 2021 (or later version)."
+#define CAD_INTERFACE_UNAVAILABLE "CAD Interface module is unavailable. Meshing will be done by Alias."
 
 #ifdef USE_OPENMODEL
 
 using namespace OpenModelUtils;
+using namespace CADLibrary;
 
 class BodyData
 {
@@ -224,6 +227,51 @@ private:
 
  	TOptional< FMeshDescription > ImportMesh(AlMesh& Mesh, CADLibrary::FMeshParameters& MeshParameters);
 
+	FORCEINLINE bool IsTransparent(FColor& TransparencyColor)
+	{
+		float Opacity = 1.0f - ((float)(TransparencyColor.R + TransparencyColor.G + TransparencyColor.B)) / 765.0f;
+		return !FMath::IsNearlyEqual(Opacity, 1.0f);
+	}
+
+	FORCEINLINE bool GetCommonParameters(AlShadingFields Field, double Value, FColor& Color, FColor& TransparencyColor, FColor& IncandescenceColor, double GlowIntensity)
+	{
+		switch (Field)
+		{
+		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_R:
+			Color.R = (uint8)Value;
+			return true;
+		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_G:
+			Color.G = (uint8)Value;
+			return true;
+		case  AlShadingFields::kFLD_SHADING_COMMON_COLOR_B:
+			Color.B = (uint8)Value;
+			return true;
+		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_R:
+			IncandescenceColor.R = (uint8)Value;
+			return true;
+		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_G:
+			IncandescenceColor.G = (uint8)Value;
+			return true;
+		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_B:
+			IncandescenceColor.B = (uint8)Value;
+			return true;
+		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_R:
+			TransparencyColor.R = (uint8)Value;
+			return true;
+		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_G:
+			TransparencyColor.G = (uint8)Value;
+			return true;
+		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_B:
+			TransparencyColor.B = (uint8)Value;
+			return true;
+		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
+			GlowIntensity = Value;
+			return true;
+		default :
+			return false;
+		}
+	}
+
 	void AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
 	void AddAlLambertParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
 	void AddAlLightSourceParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
@@ -314,10 +362,10 @@ bool FWireTranslatorImpl::Read()
 void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Blinn material
-	double Color[] = { 0.57, 0.58, 0.60 };
-	double TransparencyColor[] = { 0.0, 0.0, 0.0 };
-	double IncandescenceColor[] = { 0.0, 0.0, 0.0 };
-	double SpecularColor[] = { 0.15, 0.15, 0.15 } ;
+	FColor Color(145, 148, 153);
+	FColor TransparencyColor(0, 0, 0);
+	FColor IncandescenceColor(0, 0, 0);
+	FColor SpecularColor(38, 38, 38);
 	double Diffuse = 1.0;
 	double GlowIntensity = 0.0;
 	double Gloss = 0.8;
@@ -336,6 +384,11 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 			continue;
 		}
 
+		if (GetCommonParameters(Item->field(), Value, Color, TransparencyColor, IncandescenceColor, GlowIntensity))
+		{
+			continue;
+		}
+
 		switch (Item->field())
 		{
 		case AlShadingFields::kFLD_SHADING_BLINN_DIFFUSE:
@@ -345,13 +398,13 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 			Gloss = Value;
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULAR_R:
-			SpecularColor[0] = Value;
+			SpecularColor.R = (uint8) (255.f * Value);
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULAR_G:
-			SpecularColor[1] = Value;
+			SpecularColor.G = (uint8)(255.f * Value);;
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULAR_B:
-			SpecularColor[2] = Value;
+			SpecularColor.B = (uint8)(255.f * Value);;
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULARITY_:
 			Specularity = Value;
@@ -365,43 +418,10 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 		case AlShadingFields::kFLD_SHADING_BLINN_REFLECTIVITY:
 			Reflectivity = Value;
 			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_R:
-			Color[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_G:
-			Color[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_COLOR_B:
-			Color[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_R:
-			IncandescenceColor[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_G:
-			IncandescenceColor[1] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_B:
-			IncandescenceColor[2] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_R:
-			TransparencyColor[0] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_G:
-			TransparencyColor[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_B:
-			TransparencyColor[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
-			GlowIntensity = Value;
-			break;
-		default:
-			continue;
 		}
 	}
 
-	float Opacity = 1.0f - (TransparencyColor[0] + TransparencyColor[1] + TransparencyColor[2]) / 3.0f;
-	bool bIsTransparent = !FMath::IsNearlyEqual(Opacity, 1.0f);
+	bool bIsTransparent = IsTransparent(TransparencyColor);
 
 	// Construct parameter expressions
 	IDatasmithMaterialExpressionScalar* DiffuseExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
@@ -414,7 +434,7 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 
 	IDatasmithMaterialExpressionColor* SpecularColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	SpecularColorExpression->SetName(TEXT("SpecularColor"));
-	SpecularColorExpression->GetColor() = FLinearColor(pow(SpecularColor[0], 2.2), pow(SpecularColor[1], 2.2), pow(SpecularColor[2], 2.2), 1.0f);
+	SpecularColorExpression->GetColor() = FLinearColor::FromSRGBColor(SpecularColor);
 
 	IDatasmithMaterialExpressionScalar* SpecularityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	SpecularityExpression->GetScalar() = Specularity * 0.3;
@@ -434,15 +454,15 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 
 	IDatasmithMaterialExpressionColor* ColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	ColorExpression->SetName(TEXT("Color"));
-	ColorExpression->GetColor() = FLinearColor(pow(Color[0] / 255.0, 2.2), pow(Color[1] / 255.0, 2.2), pow(Color[2] / 255.0, 2.2), 255);
+	ColorExpression->GetColor() = FLinearColor::FromSRGBColor(Color);
 
 	IDatasmithMaterialExpressionColor* IncandescenceColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	IncandescenceColorExpression->SetName(TEXT("IncandescenceColor"));
-	IncandescenceColorExpression->GetColor() = FLinearColor(pow(IncandescenceColor[0] / 255.0, 2.2), pow(IncandescenceColor[1] / 255.0, 2.2), pow(IncandescenceColor[2] / 255.0, 2.2), 255);
+	IncandescenceColorExpression->GetColor() = FLinearColor::FromSRGBColor(IncandescenceColor);
 
 	IDatasmithMaterialExpressionColor* TransparencyColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	TransparencyColorExpression->SetName(TEXT("TransparencyColor"));
-	TransparencyColorExpression->GetColor() = FLinearColor(pow(TransparencyColor[0] / 255.0, 2.2), pow(TransparencyColor[1] / 255.0, 2.2), pow(TransparencyColor[2] / 255.0, 2.2), 255);
+	TransparencyColorExpression->GetColor() = FLinearColor::FromSRGBColor(TransparencyColor);
 
 	IDatasmithMaterialExpressionScalar* GlowIntensityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	GlowIntensityExpression->GetScalar() = GlowIntensity;
@@ -626,9 +646,9 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Lambert material
-	double Color[] = { 0.57, 0.58, 0.60 };
-	double TransparencyColor[] = { 0.0, 0.0, 0.0 };
-	double IncandescenceColor[] = { 0.0, 0.0, 0.0 };
+	FColor Color(145, 148, 153);
+	FColor TransparencyColor(0, 0, 0);
+	FColor IncandescenceColor(0, 0, 0);
 	double Diffuse = 1.0;
 	double GlowIntensity = 0.0;
 
@@ -642,48 +662,20 @@ void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<ID
 			continue;
 		}
 
+		if (GetCommonParameters(Item->field(), Value, Color, TransparencyColor, IncandescenceColor, GlowIntensity))
+		{
+			continue;
+		}
+
 		switch (Item->field())
 		{
 		case AlShadingFields::kFLD_SHADING_LAMBERT_DIFFUSE:
 			Diffuse = Value;
 			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_R:
-			Color[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_G:
-			Color[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_COLOR_B:
-			Color[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_R:
-			IncandescenceColor[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_G:
-			IncandescenceColor[1] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_B:
-			IncandescenceColor[2] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_R:
-			TransparencyColor[0] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_G:
-			TransparencyColor[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_B:
-			TransparencyColor[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
-			GlowIntensity = Value;
-			break;
-		default:
-			continue;
 		}
 	}
 
-	float Opacity = 1.0f - (TransparencyColor[0] + TransparencyColor[1] + TransparencyColor[2]) / 3.0f;
-	bool bIsTransparent = !FMath::IsNearlyEqual(Opacity, 1.0f);
+	bool bIsTransparent = IsTransparent(TransparencyColor);
 
 	// Construct parameter expressions
 	IDatasmithMaterialExpressionScalar* DiffuseExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
@@ -692,15 +684,15 @@ void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<ID
 
 	IDatasmithMaterialExpressionColor* ColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	ColorExpression->SetName(TEXT("Color"));
-	ColorExpression->GetColor() = FLinearColor(pow(Color[0] / 255.0, 2.2), pow(Color[1] / 255.0, 2.2), pow(Color[2] / 255.0, 2.2), 255);
+	ColorExpression->GetColor() = FLinearColor::FromSRGBColor(Color);
 
 	IDatasmithMaterialExpressionColor* IncandescenceColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	IncandescenceColorExpression->SetName(TEXT("IncandescenceColor"));
-	IncandescenceColorExpression->GetColor() = FLinearColor(pow(IncandescenceColor[0] / 255.0, 2.2), pow(IncandescenceColor[1] / 255.0, 2.2), pow(IncandescenceColor[2] / 255.0, 2.2), 255);
+	IncandescenceColorExpression->GetColor() = FLinearColor::FromSRGBColor(IncandescenceColor);
 
 	IDatasmithMaterialExpressionColor* TransparencyColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	TransparencyColorExpression->SetName(TEXT("TransparencyColor"));
-	TransparencyColorExpression->GetColor() = FLinearColor(pow(TransparencyColor[0] / 255.0, 2.2), pow(TransparencyColor[1] / 255.0, 2.2), pow(TransparencyColor[2] / 255.0, 2.2), 255);
+	TransparencyColorExpression->GetColor() = FLinearColor::FromSRGBColor(TransparencyColor);
 
 	IDatasmithMaterialExpressionScalar* GlowIntensityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	GlowIntensityExpression->GetScalar() = GlowIntensity;
@@ -813,9 +805,9 @@ void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<ID
 void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a LightSource material
-	double Color[] = { 0.57, 0.58, 0.60 };
-	double TransparencyColor[] = { 0.0, 0.0, 0.0 };
-	double IncandescenceColor[] = { 0.0, 0.0, 0.0 };
+	FColor Color(145, 148, 153);
+	FColor TransparencyColor(0, 0, 0);
+	FColor IncandescenceColor(0, 0, 0);
 	double GlowIntensity = 0.0;
 
 	AlList* List = Shader->fields();
@@ -828,58 +820,23 @@ void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRe
 			continue;
 		}
 
-		switch (Item->field())
-		{
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_R:
-			Color[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_G:
-			Color[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_COLOR_B:
-			Color[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_R:
-			IncandescenceColor[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_G:
-			IncandescenceColor[1] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_B:
-			IncandescenceColor[2] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_R:
-			TransparencyColor[0] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_G:
-			TransparencyColor[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_B:
-			TransparencyColor[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
-			GlowIntensity = Value;
-			break;
-		default:
-			continue;
-		}
+		GetCommonParameters(Item->field(), Value, Color, TransparencyColor, IncandescenceColor, GlowIntensity);
 	}
 
-	float Opacity = 1.0f - (TransparencyColor[0] + TransparencyColor[1] + TransparencyColor[2]) / 3.0f;
-	bool bIsTransparent = !FMath::IsNearlyEqual(Opacity, 1.0f);
+	bool bIsTransparent = IsTransparent(TransparencyColor);
 
 	// Construct parameter expressions
 	IDatasmithMaterialExpressionColor* ColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	ColorExpression->SetName(TEXT("Color"));
-	ColorExpression->GetColor() = FLinearColor(pow(Color[0] / 255.0, 2.2), pow(Color[1] / 255.0, 2.2), pow(Color[2] / 255.0, 2.2), 255);
+	ColorExpression->GetColor() = FLinearColor::FromSRGBColor(Color);
 
 	IDatasmithMaterialExpressionColor* IncandescenceColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	IncandescenceColorExpression->SetName(TEXT("IncandescenceColor"));
-	IncandescenceColorExpression->GetColor() = FLinearColor(pow(IncandescenceColor[0] / 255.0, 2.2), pow(IncandescenceColor[1] / 255.0, 2.2), pow(IncandescenceColor[2] / 255.0, 2.2), 255);
+	IncandescenceColorExpression->GetColor() = FLinearColor::FromSRGBColor(IncandescenceColor);
 
 	IDatasmithMaterialExpressionColor* TransparencyColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	TransparencyColorExpression->SetName(TEXT("TransparencyColor"));
-	TransparencyColorExpression->GetColor() = FLinearColor(pow(TransparencyColor[0] / 255.0, 2.2), pow(TransparencyColor[1] / 255.0, 2.2), pow(TransparencyColor[2] / 255.0, 2.2), 255);
+	TransparencyColorExpression->GetColor() = FLinearColor::FromSRGBColor(TransparencyColor);
 
 	IDatasmithMaterialExpressionScalar* GlowIntensityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	GlowIntensityExpression->GetScalar() = GlowIntensity;
@@ -974,10 +931,10 @@ void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRe
 void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Phong material
-	double Color[] = { 0.57, 0.58, 0.60 };
-	double TransparencyColor[] = { 0.0, 0.0, 0.0 };
-	double IncandescenceColor[] = { 0.0, 0.0, 0.0 };
-	double SpecularColor[] = { 0.15, 0.15, 0.15 } ;
+	FColor Color(145, 148, 153);
+	FColor TransparencyColor(0, 0, 0);
+	FColor IncandescenceColor(0, 0, 0);
+	FColor SpecularColor(38, 38, 38);
 	double Diffuse = 1.0;
 	double GlowIntensity = 0.0;
 	double Gloss = 0.8;
@@ -995,6 +952,11 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 			continue;
 		}
 
+		if (GetCommonParameters(Item->field(), Value, Color, TransparencyColor, IncandescenceColor, GlowIntensity))
+		{
+			continue;
+		}
+
 		switch (Item->field())
 		{
 		case AlShadingFields::kFLD_SHADING_PHONG_DIFFUSE:
@@ -1004,13 +966,13 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 			Gloss = Value;
 			break;
 		case AlShadingFields::kFLD_SHADING_PHONG_SPECULAR_R:
-			SpecularColor[0] = Value;
+			SpecularColor.R = (uint8)(255.f * Value);;
 			break;
 		case AlShadingFields::kFLD_SHADING_PHONG_SPECULAR_G:
-			SpecularColor[1] = Value;
+			SpecularColor.G = (uint8)(255.f * Value);;
 			break;
 		case AlShadingFields::kFLD_SHADING_PHONG_SPECULAR_B:
-			SpecularColor[2] = Value;
+			SpecularColor.B = (uint8)(255.f * Value);;
 			break;
 		case AlShadingFields::kFLD_SHADING_PHONG_SPECULARITY_:
 			Specularity = Value;
@@ -1021,49 +983,10 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 		case AlShadingFields::kFLD_SHADING_PHONG_REFLECTIVITY:
 			Reflectivity = Value;
 			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_R:
-			Color[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_COLOR_G:
-			Color[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_COLOR_B:
-			Color[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_R:
-			IncandescenceColor[0] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_G:
-			IncandescenceColor[1] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_INCANDESCENCE_B:
-			IncandescenceColor[2] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_R:
-			TransparencyColor[0] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_G:
-			TransparencyColor[1] = Value;
-			break;
-		case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_B:
-			TransparencyColor[2] = Value;
-			break;
-		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
-			GlowIntensity = Value;
-			break;
-			//case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_DEPTH:
-			//	TransparencyDepth = Value;
-			//	break;
-			//case  AlShadingFields::kFLD_SHADING_COMMON_TRANSPARENCY_SHADE:
-			//	TransparencyShade = Value;
-			//	break;
-		default:
-			continue;
 		}
 	}
 
-	float Opacity = 1.0f - (TransparencyColor[0] + TransparencyColor[1] + TransparencyColor[2]) / 3.0f;
-	bool bIsTransparent = !FMath::IsNearlyEqual(Opacity, 1.0f);
+	bool bIsTransparent = IsTransparent(TransparencyColor);
 
 	// Construct parameter expressions
 	IDatasmithMaterialExpressionScalar* DiffuseExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
@@ -1076,7 +999,7 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 
 	IDatasmithMaterialExpressionColor* SpecularColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	SpecularColorExpression->SetName(TEXT("SpecularColor"));
-	SpecularColorExpression->GetColor() = FLinearColor(pow(SpecularColor[0], 2.2), pow(SpecularColor[1], 2.2), pow(SpecularColor[2], 2.2), 1.0f);
+	SpecularColorExpression->GetColor() = FLinearColor::FromSRGBColor(SpecularColor);
 
 	IDatasmithMaterialExpressionScalar* SpecularityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	SpecularityExpression->GetScalar() = Specularity * 0.3;
@@ -1092,15 +1015,15 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 
 	IDatasmithMaterialExpressionColor* ColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	ColorExpression->SetName(TEXT("Color"));
-	ColorExpression->GetColor() = FLinearColor(pow(Color[0] / 255.0, 2.2), pow(Color[1] / 255.0, 2.2), pow(Color[2] / 255.0, 2.2), 255);
+	ColorExpression->GetColor() = FLinearColor::FromSRGBColor(Color);
 
 	IDatasmithMaterialExpressionColor* IncandescenceColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	IncandescenceColorExpression->SetName(TEXT("IncandescenceColor"));
-	IncandescenceColorExpression->GetColor() = FLinearColor(pow(IncandescenceColor[0] / 255.0, 2.2), pow(IncandescenceColor[1] / 255.0, 2.2), pow(IncandescenceColor[2] / 255.0, 2.2), 255);
+	IncandescenceColorExpression->GetColor() = FLinearColor::FromSRGBColor(IncandescenceColor);
 
 	IDatasmithMaterialExpressionColor* TransparencyColorExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
 	TransparencyColorExpression->SetName(TEXT("TransparencyColor"));
-	TransparencyColorExpression->GetColor() = FLinearColor(pow(TransparencyColor[0] / 255.0, 2.2), pow(TransparencyColor[1] / 255.0, 2.2), pow(TransparencyColor[2] / 255.0, 2.2), 255);
+	TransparencyColorExpression->GetColor() = FLinearColor::FromSRGBColor(TransparencyColor);
 
 	IDatasmithMaterialExpressionScalar* GlowIntensityExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
 	GlowIntensityExpression->GetScalar() = GlowIntensity;
@@ -2131,6 +2054,14 @@ FDatasmithWireTranslator::FDatasmithWireTranslator()
 
 void FDatasmithWireTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
+
+#ifdef CAD_LIBRARY
+	if (ICADInterfacesModule::IsAvailable() == ECADInterfaceAvailability::Unavailable)
+	{
+		UE_LOG(LogDatasmithWireTranslator, Warning, TEXT(CAD_INTERFACE_UNAVAILABLE));
+	}
+#endif // CAD_INTERFACE
+
 #ifdef USE_OPENMODEL
 	if (FPlatformProcess::GetDllHandle(TEXT("libalias_api.dll")))
 	{

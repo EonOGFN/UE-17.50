@@ -14,7 +14,11 @@
 
 TUniquePtr<MovieRenderPipeline::IVideoCodecWriter> UMoviePipelineAppleProResOutput::Initialize_GameThread(const FString& InFileName, FIntPoint InResolution, EImagePixelType InPixelType, ERGBFormat InPixelFormat, uint8 InBitDepth, uint8 InNumChannels)
 {
-	const UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindOrAddSetting<UMoviePipelineOutputSetting>();
+	const UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
+	if (!OutputSettings)
+	{
+		return nullptr;
+	}
 	 
 	FAppleProResEncoderOptions Options;
 	Options.OutputFilename = InFileName;
@@ -25,7 +29,7 @@ TUniquePtr<MovieRenderPipeline::IVideoCodecWriter> UMoviePipelineAppleProResOutp
 	Options.Codec = Codec;
 	Options.ColorPrimaries = EAppleProResEncoderColorPrimaries::CD_HDREC709; // Force Rec 709 for now
 	Options.ScanMode = EAppleProResEncoderScanMode::IM_PROGRESSIVE_SCAN; // No interlace sources.
-	Options.bWriteAlpha = bWriteAlpha;
+	Options.bWriteAlpha = true;
 
 	TUniquePtr<FAppleProResEncoder> Encoder = MakeUnique<FAppleProResEncoder>(Options);
 	
@@ -57,7 +61,7 @@ void UMoviePipelineAppleProResOutput::WriteFrame_EncodeThread(MovieRenderPipelin
 	ProResPayload->MasterFrameNumber = PipelinePayload->SampleState.OutputState.SourceFrameNumber;
 
 	// ProRes can handle quantization internally but expects sRGB to be applied to the incoming data.
-	TUniquePtr<FImagePixelData> sRGBData = UE::MoviePipeline::QuantizeImagePixelDataToBitDepth(InPixelData, 16, ProResPayload);
+	TUniquePtr<FImagePixelData> sRGBData = UE::MoviePipeline::QuantizeImagePixelDataToBitDepth(InPixelData, 16, ProResPayload, InWriter->bConvertToSrgb);
 	CodecWriter->Writer->WriteFrame(sRGBData.Get());
 }
 
@@ -86,6 +90,7 @@ void UMoviePipelineAppleProResOutput::Finalize_EncodeThread(MovieRenderPipeline:
 	CodecWriter->Writer->Finalize();
 }
 
+#if WITH_EDITOR
 FText UMoviePipelineAppleProResOutput::GetDisplayText() const
 {
 	// When it's called from the CDO it's in the drop down menu so they haven't selected a setting yet.
@@ -103,3 +108,4 @@ FText UMoviePipelineAppleProResOutput::GetDisplayText() const
 		return NSLOCTEXT("MovieRenderPipeline", "AppleProRes_DisplayName10Bit", "Apple ProRes [10bit]");
 	}
 }
+#endif

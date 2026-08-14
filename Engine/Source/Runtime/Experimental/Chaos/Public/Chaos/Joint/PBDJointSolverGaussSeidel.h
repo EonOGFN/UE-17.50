@@ -81,6 +81,12 @@ namespace Chaos
 			return bIsActive;
 		}
 
+		FORCEINLINE FReal InvM(int32 index) const
+		{
+			return InvMs[index];
+		}
+
+
 		FJointSolverGaussSeidel();
 
 		void Init(
@@ -568,7 +574,7 @@ namespace Chaos
 		FReal LinearSoftLambda;
 		FReal TwistSoftLambda;
 		FReal SwingSoftLambda;
-		FReal LinearDriveLambda;
+		FVec3 LinearDriveLambdas;
 		FVec3 RotationDriveLambdas;
 
 		// Constraint padding which can act something like a velocity constraint (for reslockfreetitution)

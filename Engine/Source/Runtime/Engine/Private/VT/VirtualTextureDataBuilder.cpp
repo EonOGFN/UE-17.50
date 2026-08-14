@@ -85,7 +85,7 @@ struct FPixelDataRectangle
 		// Copy the data a scan line at a time
 
 		uint8 *DstScanline = Data + DestX * PixelSize + DestY * DstScanlineSize;
-		const uint8 *SrcScanline = Source.Data + SourceX * PixelSize + SourceY * SrcScanlineSize;
+		const uint8 *SrcScanline = Source.Data + SourceX * PixelSize + (SIZE_T)SourceY * (SIZE_T)SrcScanlineSize;
 
 		for (int Y = 0; Y < ClampedHeight; Y++)
 		{
@@ -613,6 +613,10 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
  
 		GeneratedData.TilePayload.AddDefaulted(TileList.Num());
 
+		// ParallelFor is implemented with TaskGraph so it can cause deadlock if it invokes a compressor that also
+		// uses TaskGraph in combination with FAsyncTask.
+		bool bUsesTaskGraph = Compressor->UsesTaskGraph(TBSettings);
+
 		ParallelFor(TileList.Num(), [&](int32 TileIndex)
 		{
 			const FVTSourceTileEntry& Tile = TileList[TileIndex];
@@ -677,7 +681,7 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
 			{
 				GeneratedData.TilePayload[TileIndex] = MoveTemp(CompressedMip[0].RawData);
 			}
-		}, !bAllowAsync); // ParallelFor
+		}, !bAllowAsync || bUsesTaskGraph); // ParallelFor
 
 		if (BuildSettingsLayer0.bVirtualTextureEnableCompressZlib)
 		{
@@ -1210,7 +1214,7 @@ bool FVirtualTextureDataBuilder::DetectAlphaChannel(const FImage &Image)
 {
 	if (Image.Format == ERawImageFormat::BGRA8)
 	{
-		const FColor *SrcColors = Image.AsBGRA8();
+		const FColor* SrcColors = (&Image.AsBGRA8()[0]);
 		const FColor* LastColor = SrcColors + (Image.SizeX * Image.SizeY * Image.NumSlices);
 		while (SrcColors < LastColor)
 		{
@@ -1224,7 +1228,7 @@ bool FVirtualTextureDataBuilder::DetectAlphaChannel(const FImage &Image)
 	}
 	else if (Image.Format == ERawImageFormat::RGBA16F)
 	{
-		const FFloat16Color *SrcColors = Image.AsRGBA16F();
+		const FFloat16Color* SrcColors = (&Image.AsRGBA16F()[0]);
 		const FFloat16Color* LastColor = SrcColors + (Image.SizeX * Image.SizeY * Image.NumSlices);
 		while (SrcColors < LastColor)
 		{

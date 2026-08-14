@@ -668,7 +668,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The default compiler version to be used, if installed. 
 		/// </summary>
-		static readonly VersionNumber DefaultClangToolChainVersion = VersionNumber.Parse("9.0.0");
+		static readonly VersionNumber DefaultClangToolChainVersion = VersionNumber.Parse("10.0.0");
 
 		/// <summary>
 		/// The compiler toolchains to be used if installed, the first installed in the list will be used.
@@ -1135,6 +1135,23 @@ namespace UnrealBuildTool
 								}
 							}
 						}
+
+						// Check for LLVM_PATH environment variable.
+						string LLVMPath = Environment.GetEnvironmentVariable("LLVM_PATH");
+						if (!String.IsNullOrEmpty(LLVMPath))
+						{
+							DirectoryReference LLVMPathDir = new DirectoryReference(LLVMPath);
+							if (IsValidToolChainDirClang(LLVMPathDir))
+							{
+								FileReference CompilerFile = FileReference.Combine(LLVMPathDir, "bin", "clang-cl.exe");
+								if (FileReference.Exists(CompilerFile))
+								{
+									FileVersionInfo VersionInfo = FileVersionInfo.GetVersionInfo(CompilerFile.FullName);
+									VersionNumber Version = new VersionNumber(VersionInfo.FileMajorPart, VersionInfo.FileMinorPart, VersionInfo.FileBuildPart);
+									ToolChainInstallations[Version] = new ToolChainInstallation(LLVMPathDir, false);
+								}
+							}
+						}
 					}
 					else if(Compiler == WindowsCompiler.Intel)
 					{
@@ -1210,11 +1227,22 @@ namespace UnrealBuildTool
 					VersionNumber Version;
 					if (IsValidToolChainDir2017or2019(ToolChainDir, out Version))
 					{
+						
 						Log.TraceLog("Found Visual Studio toolchain: {0} (Version={1})", ToolChainDir, Version);
 						if (!ToolChainInstallations.ContainsKey(Version))
 						{
+							//Add VS installation based on cl.exe internal Product Version
 							ToolChainInstallations[Version] = new ToolChainInstallation(ToolChainDir, bPreview);
 						}
+
+						VersionNumber VersionFolder;
+						if ( (VersionNumber.TryParse(ToolChainDir.GetDirectoryName(), out VersionFolder)) && (VersionFolder != Version) && (!ToolChainInstallations.ContainsKey(VersionFolder)))
+						{
+							//Add VS installation based on the version number in the installation path
+							Log.TraceLog("Found Visual Studio toolchain: {0} (Version={1})", ToolChainDir, VersionFolder);
+							ToolChainInstallations[VersionFolder] = new ToolChainInstallation(ToolChainDir, bPreview);
+						}
+
 					}
 				}
 			}

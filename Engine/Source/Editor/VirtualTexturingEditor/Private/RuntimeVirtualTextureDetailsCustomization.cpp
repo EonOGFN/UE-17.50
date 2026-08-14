@@ -7,9 +7,9 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Editor.h"
 #include "Engine/Texture2D.h"
 #include "Factories/Texture2dFactoryNew.h"
-#include "RuntimeVirtualTextureBuildMinMaxHeight.h"
 #include "RuntimeVirtualTextureBuildStreamingMips.h"
 #include "RuntimeVirtualTextureSetBounds.h"
 #include "ScopedTransaction.h"
@@ -19,6 +19,7 @@
 #include "VT/VirtualTextureBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SWrapBox.h"
 
 #define LOCTEXT_NAMESPACE "VirtualTexturingEditorModule"
@@ -99,6 +100,10 @@ void FRuntimeVirtualTextureDetailsCustomization::CustomizeDetails(IDetailLayoutB
 		return;
 	}
 
+	// Set UIMax dependent on adaptive page table setting
+	FString MaxTileCountString = FString::Printf(TEXT("%d"), URuntimeVirtualTexture::GetMaxTileCountLog2(VirtualTexture->GetAdaptivePageTable()));
+	DetailBuilder.GetProperty(FName(TEXT("TileCount")))->SetInstanceMetaData("UIMax", MaxTileCountString);
+
 	// Add size helpers
 	IDetailCategoryBuilder& SizeCategory = DetailBuilder.EditCategory("Size", FText::GetEmpty());
 	AddTextToProperty(DetailBuilder, SizeCategory, "TileCount", TileCountText);
@@ -107,62 +112,85 @@ void FRuntimeVirtualTextureDetailsCustomization::CustomizeDetails(IDetailLayoutB
 
 	// Add details block
 	IDetailCategoryBuilder& DetailsCategory = DetailBuilder.EditCategory("Details", FText::GetEmpty(), ECategoryPriority::Important);
-	static const FText RowText = LOCTEXT("Category_Details", "Details");
-	DetailsCategory.AddCustomRow(RowText)
-	.WholeRowContent()
+	static const FText CustomRowSizeText = LOCTEXT("Details_RowFilter_Size", "Virtual Size");
+	DetailsCategory.AddCustomRow(CustomRowSizeText)
+	.NameContent()
 	[
-		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.VAlign(VAlign_Center)
-		.Padding(4.0f)
-		[
-			SAssignNew(SizeText, STextBlock)
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.VAlign(VAlign_Center)
-		.Padding(4.0f)
-		[
-			SAssignNew(PageTableTextureMemoryText, STextBlock)
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.VAlign(VAlign_Center)
-		.Padding(4.0f)
-		[
-			SAssignNew(PhysicalTextureMemoryText, STextBlock)
-		]
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Text(LOCTEXT("Details_Size", "Virtual Texture Size"))
+		.ToolTipText(LOCTEXT("Details_Size_Tooltip", "Virtual resolution derived from Size properties."))
+	]
+	.ValueContent()
+	[
+		SAssignNew(SizeText, STextBlock)
+	];
+	static const FText CustomRowPageTableSizeText = LOCTEXT("Details_RowFilter_PageTableSize", "Page Table Size");
+	DetailsCategory.AddCustomRow(CustomRowPageTableSizeText)
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Text(LOCTEXT("Details_PageTableSize", "Page Table Size"))
+		.ToolTipText(LOCTEXT("Details_PageTableSize_Tooltip", "Final page table size. This can vary according to the adaptive page table setting."))
+	]
+	.ValueContent()
+	[
+		SAssignNew(PageTableSizeText, STextBlock)
 	];
 
+	// Cache detail builder to refresh view updates
+	CachedDetailBuilder = &DetailBuilder;
+
 	// Add refresh callback for all properties 
-	DetailBuilder.GetProperty(FName(TEXT("TileCount")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
-	DetailBuilder.GetProperty(FName(TEXT("TileSize")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
-	DetailBuilder.GetProperty(FName(TEXT("TileBorderSize")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
-	DetailBuilder.GetProperty(FName(TEXT("MaterialType")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
-	DetailBuilder.GetProperty(FName(TEXT("bCompressTextures")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
-	DetailBuilder.GetProperty(FName(TEXT("RemoveLowMips")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetails));
+	DetailBuilder.GetProperty(FName(TEXT("TileCount")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshTextDetails));
+	DetailBuilder.GetProperty(FName(TEXT("TileSize")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshTextDetails));
+	DetailBuilder.GetProperty(FName(TEXT("TileBorderSize")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshTextDetails));
+	DetailBuilder.GetProperty(FName(TEXT("bAdaptive")))->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FRuntimeVirtualTextureDetailsCustomization::RefreshDetailsView));
 
 	// Initialize text blocks
-	RefreshDetails();
+	RefreshTextDetails();
 }
 
-void FRuntimeVirtualTextureDetailsCustomization::RefreshDetails()
+void FRuntimeVirtualTextureDetailsCustomization::RefreshTextDetails()
 {
 	FNumberFormattingOptions SizeOptions;
 	SizeOptions.UseGrouping = false;
 	SizeOptions.MaximumFractionalDigits = 0;
 
  	TileCountText->SetText(FText::Format(LOCTEXT("Details_Number", "{0}"), FText::AsNumber(VirtualTexture->GetTileCount(), &SizeOptions)));
- 	TileSizeText->SetText(FText::Format(LOCTEXT("Details_Number", "{0}"), FText::AsNumber(VirtualTexture->GetTileSize(), &SizeOptions)));
+	TileSizeText->SetText(FText::Format(LOCTEXT("Details_Number", "{0}"), FText::AsNumber(VirtualTexture->GetTileSize(), &SizeOptions)));
  	TileBorderSizeText->SetText(FText::Format(LOCTEXT("Details_Number", "{0}"), FText::AsNumber(VirtualTexture->GetTileBorderSize(), &SizeOptions)));
 
-	SizeText->SetText(FText::Format(LOCTEXT("Details_Size", "Virtual Texture Size: {0}"), FText::AsNumber(VirtualTexture->GetSize(), &SizeOptions)));
-	PageTableTextureMemoryText->SetText(FText::Format(LOCTEXT("Details_PageTableMemory", "Page Table Texture Memory (estimated): {0} KiB"), FText::AsNumber(VirtualTexture->GetEstimatedPageTableTextureMemoryKb(), &SizeOptions)));
-	PhysicalTextureMemoryText->SetText(FText::Format(LOCTEXT("Details_PhysicalMemory", "Physical Texture Memory (estimated): {0} KiB"), FText::AsNumber(VirtualTexture->GetEstimatedPhysicalTextureMemoryKb(), &SizeOptions)));
+	FString SizeUnits = TEXT("Texels");
+	int32 Size = VirtualTexture->GetSize();
+	int32 SizeLog2 = FMath::CeilLogTwo(Size);
+	if (SizeLog2 >= 30)
+	{
+		Size = Size >> 30;
+		SizeUnits = TEXT("GiTexels");
+	}
+	else if (SizeLog2 >= 20)
+	{
+		Size = Size >> 20;
+		SizeUnits = TEXT("MiTexels");
+	}
+	else if (SizeLog2 >= 10)
+	{
+		Size = Size >> 10;
+		SizeUnits = TEXT("KiTexels");
+	}
+	SizeText->SetText(FText::Format(LOCTEXT("Details_Number_Units", "{0} {1}"), FText::AsNumber(Size, &SizeOptions), FText::FromString(SizeUnits)));
+
+	PageTableSizeText->SetText(FText::Format(LOCTEXT("Details_Number", "{0}"), FText::AsNumber(VirtualTexture->GetPageTableSize(), &SizeOptions)));
+}
+
+void FRuntimeVirtualTextureDetailsCustomization::RefreshDetailsView()
+{
+	if (CachedDetailBuilder != nullptr)
+	{
+		CachedDetailBuilder->ForceRefreshDetails();
+	}
 }
 
 
@@ -173,11 +201,6 @@ FRuntimeVirtualTextureComponentDetailsCustomization::FRuntimeVirtualTextureCompo
 TSharedRef<IDetailCustomization> FRuntimeVirtualTextureComponentDetailsCustomization::MakeInstance()
 {
 	return MakeShareable(new FRuntimeVirtualTextureComponentDetailsCustomization);
-}
-
-bool FRuntimeVirtualTextureComponentDetailsCustomization::IsMinMaxTextureEnabled() const
-{
-	return RuntimeVirtualTextureComponent->IsMinMaxTextureEnabled();
 }
 
 void FRuntimeVirtualTextureComponentDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
@@ -195,11 +218,9 @@ void FRuntimeVirtualTextureComponentDetailsCustomization::CustomizeDetails(IDeta
 		return;
 	}
 
-	// TransformFromBounds button.
-	IDetailCategoryBuilder& BoundsCategory = DetailBuilder.EditCategory("TransformFromBounds", FText::GetEmpty(), ECategoryPriority::Important);
-
-	BoundsCategory
-	.AddCustomRow(LOCTEXT("Button_SetBounds", "Set Bounds"))
+	// Apply custom widget for SetBounds.
+	TSharedRef<IPropertyHandle> SetBoundsPropertyHandle = DetailBuilder.GetProperty(TEXT("bSetBoundsButton"));
+	DetailBuilder.EditDefaultProperty(SetBoundsPropertyHandle)->CustomWidget()
 	.NameContent()
 	[
 		SNew(STextBlock)
@@ -216,91 +237,68 @@ void FRuntimeVirtualTextureComponentDetailsCustomization::CustomizeDetails(IDeta
 		.ContentPadding(2)
 		.Text(LOCTEXT("Button_SetBounds", "Set Bounds"))
 		.OnClicked(this, &FRuntimeVirtualTextureComponentDetailsCustomization::SetBounds)
+		.IsEnabled(this, &FRuntimeVirtualTextureComponentDetailsCustomization::IsSetBoundsEnabled)
 	];
 
-	// VirtualTextureBuild buttons.
-	IDetailCategoryBuilder& VirtualTextureCategory = DetailBuilder.EditCategory("VirtualTextureBuild", FText::GetEmpty());
-	
-	VirtualTextureCategory
-	.AddCustomRow(LOCTEXT("Button_BuildStreamingMips", "Build Streaming Mips"), true)
+	// Apply custom widget for BuildStreamingMips.
+	TSharedRef<IPropertyHandle> BuildStreamingMipsPropertyHandle = DetailBuilder.GetProperty(TEXT("bBuildStreamingMipsButton"));
+	DetailBuilder.EditDefaultProperty(BuildStreamingMipsPropertyHandle)->CustomWidget()
 	.NameContent()
 	[
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(LOCTEXT("Button_BuildStreamingMips", "Build Streaming Mips"))
+		.Text(LOCTEXT("Button_BuildStreamingTexture", "Build Streaming Texture"))
 		.ToolTipText(LOCTEXT("Button_Build_Tooltip", "Build the low mips as streaming virtual texture data"))
 	]
 	.ValueContent()
-	.MaxDesiredWidth(125.f)
 	[
-		SNew(SButton)
-		.VAlign(VAlign_Center)
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.FillWidth(4.0f)
+		[
+			SNew(SButton)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.ContentPadding(2)
+			.Text(LOCTEXT("Button_Build", "Build"))
+			.OnClicked(this, &FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMips)
+		]
+		+ SHorizontalBox::Slot()
 		.HAlign(HAlign_Center)
-		.ContentPadding(2)
-		.Text(LOCTEXT("Button_Build", "Build"))
-		.OnClicked(this, &FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMips)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SImage)
+			.Image(FEditorStyle::GetBrush("Icons.Warning"))
+			.Visibility(this, &FRuntimeVirtualTextureComponentDetailsCustomization::IsBuildWarningIconVisible)
+			.ToolTipText(LOCTEXT("Warning_Build_Tooltip", "The settings have changed since the Streaming Texture was last rebuilt. Streaming mips are disabled."))
+		]
 	];
+}
 
-	VirtualTextureCategory
-	.AddCustomRow(LOCTEXT("Button_BuildDebugStreamingMips", "Build Debug Streaming Mips"), true)
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(LOCTEXT("Button_BuildDebugStreamingMips", "Build Debug Streaming Mips"))
-		.ToolTipText(LOCTEXT("Button_BuildDebug_Tooltip", "Build the low mips with debug data"))
-	]
-	.ValueContent()
-	.MaxDesiredWidth(125.f)
-	[
-		SNew(SButton)
-		.VAlign(VAlign_Center)
-		.HAlign(HAlign_Center)
-		.ContentPadding(2)
-		.Text(LOCTEXT("Button_Build", "Build"))
-		.OnClicked(this, &FRuntimeVirtualTextureComponentDetailsCustomization::BuildLowMipsDebug)
-	];
-
-	VirtualTextureCategory
-	.AddCustomRow(LOCTEXT("Button_BuildMinMaxTexture", "Build MinMax Texture"), true)
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(LOCTEXT("Button_BuildMinMaxTexture", "Build MinMax Texture"))
-		.ToolTipText(LOCTEXT("Button_BuildMinMaxTexture_Tooltip", "Build the min/max height texture"))
-	]
-	.ValueContent()
-	.MaxDesiredWidth(125.f)
-	[
-		SNew(SButton)
-		.VAlign(VAlign_Center)
-		.HAlign(HAlign_Center)
-		.ContentPadding(2)
-		.Text(LOCTEXT("Button_Build", "Build"))
-		.OnClicked(this, &FRuntimeVirtualTextureComponentDetailsCustomization::BuildMinMaxTexture)
-		.IsEnabled(this, &FRuntimeVirtualTextureComponentDetailsCustomization::IsMinMaxTextureEnabled)
-	];
+bool FRuntimeVirtualTextureComponentDetailsCustomization::IsSetBoundsEnabled() const
+{
+	return RuntimeVirtualTextureComponent->GetVirtualTexture() != nullptr;
 }
 
 FReply FRuntimeVirtualTextureComponentDetailsCustomization::SetBounds()
 {
-	const FScopedTransaction Transaction(LOCTEXT("Transaction_SetBounds", "Set RuntimeVirtualTextureComponent Bounds"));
-	RuntimeVirtualTexture::SetBounds(RuntimeVirtualTextureComponent);
-	return FReply::Handled();
+	if (RuntimeVirtualTextureComponent->GetVirtualTexture() != nullptr)
+	{
+		const FScopedTransaction Transaction(LOCTEXT("Transaction_SetBounds", "Set RuntimeVirtualTextureComponent Bounds"));
+		RuntimeVirtualTexture::SetBounds(RuntimeVirtualTextureComponent);
+		// Force update of editor view widget.
+		GEditor->NoteSelectionChange(false);
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+EVisibility FRuntimeVirtualTextureComponentDetailsCustomization::IsBuildWarningIconVisible() const
+{
+	return RuntimeVirtualTextureComponent->IsStreamingTextureValid() ? EVisibility::Hidden : EVisibility::Visible;
 }
 
 FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMips()
-{
-	return BuildStreamedMipsInternal(false);
-}
-
-FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildLowMipsDebug()
-{
-	return BuildStreamedMipsInternal(true);
-}
-
-FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMipsInternal(bool bDebug)
 {
 	// Create a new asset if none is already bound
 	UVirtualTextureBuilder* CreatedTexture = nullptr;
@@ -320,7 +318,7 @@ FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMipsInt
 	bool bOK = false;
 	if (RuntimeVirtualTextureComponent->GetStreamingTexture() != nullptr || CreatedTexture != nullptr)
 	{
-		const FScopedTransaction Transaction(LOCTEXT("Transaction_BuildDebugStreamingMips", "Build Streaming Mips"));
+		const FScopedTransaction Transaction(LOCTEXT("Transaction_BuildDebugStreamingTexture", "Build Streaming Texture"));
 
 		if (CreatedTexture != nullptr)
 		{
@@ -330,47 +328,9 @@ FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildStreamedMipsInt
 
 		RuntimeVirtualTextureComponent->GetStreamingTexture()->Modify();
 
+		const bool bDebug = RuntimeVirtualTextureComponent->IsBuildDebugStreamingMips();
 		const ERuntimeVirtualTextureDebugType DebugType = bDebug ? ERuntimeVirtualTextureDebugType::Debug : ERuntimeVirtualTextureDebugType::None;
 		if (RuntimeVirtualTexture::BuildStreamedMips(RuntimeVirtualTextureComponent, DebugType))
-		{
-			bOK = true;
-		}
-	}
-
-	return bOK ? FReply::Handled() : FReply::Unhandled();
-}
-
-FReply FRuntimeVirtualTextureComponentDetailsCustomization::BuildMinMaxTexture()
-{
-	// Create a new asset if none is already bound
-	UTexture2D* CreatedTexture = nullptr;
-	if (RuntimeVirtualTextureComponent->GetMinMaxTexture() == nullptr)
-	{
-		FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
-
-		const FString DefaultPath = FPackageName::GetLongPackagePath(RuntimeVirtualTextureComponent->GetVirtualTexture()->GetPathName());
-		const FString DefaultName = FPackageName::GetShortName(RuntimeVirtualTextureComponent->GetVirtualTexture()->GetName() + TEXT("_MinMax"));
-
-		UFactory* Factory = NewObject<UTexture2DFactoryNew>();
-		UObject* Object = AssetToolsModule.Get().CreateAssetWithDialog(DefaultName, DefaultPath, UTexture2D::StaticClass(), Factory);
-		CreatedTexture = Cast<UTexture2D>(Object);
-	}
-
-	// Build the texture contents
-	bool bOK = false;
-	if (RuntimeVirtualTextureComponent->GetMinMaxTexture() != nullptr || CreatedTexture != nullptr)
-	{
-		const FScopedTransaction Transaction(LOCTEXT("Transaction_BuildMinMaxTexture", "Build MinMax Texture"));
-
-		if (CreatedTexture != nullptr)
-		{
-			RuntimeVirtualTextureComponent->Modify();
-			RuntimeVirtualTextureComponent->SetMinMaxTexture(CreatedTexture);
-		}
-
-		RuntimeVirtualTextureComponent->GetMinMaxTexture()->Modify();
-
-		if (RuntimeVirtualTexture::BuildMinMaxHeightTexture(RuntimeVirtualTextureComponent))
 		{
 			bOK = true;
 		}

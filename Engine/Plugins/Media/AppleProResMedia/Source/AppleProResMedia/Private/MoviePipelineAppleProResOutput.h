@@ -15,7 +15,6 @@ class UMoviePipelineAppleProResOutput : public UMoviePipelineVideoOutputBase
 		UMoviePipelineAppleProResOutput()
 		: UMoviePipelineVideoOutputBase()
 		, Codec(EAppleProResEncoderCodec::ProRes_4444XQ)
-		, bWriteAlpha(false)
 		, bDropFrameTimecode(false)
 		, bOverrideMaximumEncodingThreads(false)
 		, MaxNumberOfEncodingThreads(0)
@@ -34,22 +33,15 @@ protected:
 	// ~UMoviePipelineVideoOutputBase Interface
 
 	// UMoviePipelineOutputBase Interface
+#if WITH_EDITOR
 	virtual FText GetDisplayText() const override;
-	virtual bool IsAlphaSupportedImpl() const override
-	{
-		bool bSupportedCodec = Codec == EAppleProResEncoderCodec::ProRes_4444 || Codec == EAppleProResEncoderCodec::ProRes_4444XQ;
-		return bSupportedCodec && bWriteAlpha;
-	}
+#endif
 	// ~UMoviePipelineOutputBase Interface
 
 public:
 	/** Which Apple ProRes codec should we use? See Apple documentation for more specifics. Uses Rec 709 color primaries. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
 	EAppleProResEncoderCodec Codec;
-
-	/** Should we write alpha? Increases encoding time. Only works with some codecs. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(EditCondition="Codec==EAppleProResEncoderCodec::ProRes_4444 || Codec==EAppleProResEncoderCodec::ProRes_4444XQ"), Category = "Settings")
-	bool bWriteAlpha;
 
 	/** Should the embedded timecode track be written using drop-frame format? Only applicable if the sequence framerate is 29.97 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")

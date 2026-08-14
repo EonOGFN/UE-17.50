@@ -65,6 +65,8 @@ UReplicationGraph::InitConnectionGraphNodes
 
 struct FReplicationGraphDestructionSettings;
 
+typedef TObjectKey<class UNetReplicationGraphConnection> FRepGraphConnectionKey;
+
 #define DO_ENABLE_REPGRAPH_DEBUG_ACTOR !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 UCLASS(transient, config=Engine)
@@ -108,6 +110,8 @@ public:
 
 	virtual FString GetDebugString() const { return GetName(); }
 
+	void DoCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const;
+
 	/** Allocates and initializes ChildNode of a specific type T. This is what you will want to call in your FCreateChildNodeFuncs.  */
 	template< class T >
 	T* CreateChildNode()
@@ -125,11 +129,18 @@ public:
 		KeepOrder,		// Use slower removal but keep the node order intact
 	};
 
-	/** Remove a child node from our list and flag it for destruction */
-	void RemoveChildNode(UReplicationGraphNode* OutChildNode, UReplicationGraphNode::NodeOrdering NodeOrder=UReplicationGraphNode::NodeOrdering::IgnoreOrdering);
+	/** Remove a child node from our list and flag it for destruction. Returns if the node was found or not */
+	bool RemoveChildNode(UReplicationGraphNode* OutChildNode, UReplicationGraphNode::NodeOrdering NodeOrder=UReplicationGraphNode::NodeOrdering::IgnoreOrdering);
 
 	/** Remove all null and about to be destroyed nodes from our list */
 	void CleanChildNodes(UReplicationGraphNode::NodeOrdering NodeOrder);
+
+protected:
+
+	/**
+	 * Implement this to visit any FActorRepListRefView and FStreamingLevelActorListCollection your node implemented.
+	 */
+	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const {}
 
 protected:
 
@@ -156,11 +167,15 @@ struct FStreamingLevelActorListCollection
 	void GetAll_Debug(TArray<FActorRepListType>& OutArray) const;
 	void Log(FReplicationGraphDebugInfo& DebugInfo) const;
 	int32 NumLevels() const { return StreamingLevelLists.Num(); }
-	
+	void TearDown();
 
 	struct FStreamingLevelActors
 	{
-		FStreamingLevelActors(FName InName) : StreamingLevelName(InName) { repCheck(InName != NAME_None); ReplicationActorList.Reset(4); /** FIXME[19]: see above comment */ }
+		FStreamingLevelActors(FName InName) : StreamingLevelName(InName) 
+		{ 
+			repCheck(InName != NAME_None); 
+		}
+
 		FName StreamingLevelName;
 		FActorRepListRefView ReplicationActorList;
 		bool operator==(const FName& InName) const { return InName == StreamingLevelName; };
@@ -185,8 +200,6 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_ActorList : public UReplication
 	GENERATED_BODY()
 
 public:
-	
-	UReplicationGraphNode_ActorList() { if (!HasAnyFlags(RF_ClassDefaultObject)) { ReplicationActorList.Reset(4); } }
 
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo) override;
 	
@@ -198,7 +211,9 @@ public:
 
 	virtual void LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const override;
 
-	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const;
+	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const override;
+
+	virtual void TearDown() override;
 
 	/** Removes the actor very quickly but breaks the list order */
 	bool RemoveNetworkActorFast(const FNewReplicatedActorInfo& ActorInfo);
@@ -210,6 +225,8 @@ protected:
 
 	/** Just logs our ReplicationActorList and StreamingLevelCollection (not our child nodes). Useful when subclasses override LogNode */
 	void LogActorList(FReplicationGraphDebugInfo& DebugInfo) const;
+
+	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
 
 	/** The base list that most actors will go in */
 	FActorRepListRefView ReplicationActorList;
@@ -268,7 +285,11 @@ public:
 
 	virtual void LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const override;
 
-	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const;
+	virtual void TearDown() override;
+
+	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const override;
+
+	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
 
 	void SetNonStreamingCollectionSize(const int32 NewSize);
 
@@ -398,6 +419,26 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_ConnectionDormancyNode : public
 {
 	GENERATED_BODY()
 public:
+
+	/** 
+	* This setting determines the number of frames from the last Gather call when we consider a node obsolete.
+	* The default value of 0 disables this condition.
+	* Enable this to reduce the memory footprint of the RepGraph and optimize the exponential cost of dormancy events (the more each connection moves around the grid cell the more each dormancy events is listened to).
+	* Inversely if clients go back and forth across the same cell multiple times the cost of the first Gather of newly created cell is very high (it rechecks all dormant actors in the cell before removing them).
+	* This means this optimization is ideal only if you know the clients can't go back to previously visited cells, or that they do so very infrequently.
+	*/
+	static void SetNumFramesUntilObsolete(uint32 NumFrames);
+
+public:
+
+	void InitConnectionNode(const FRepGraphConnectionKey& InConnectionOwner, uint32 CurrentFrame) 
+	{
+		ConnectionOwner = InConnectionOwner;
+		LastGatheredFrame = CurrentFrame;
+	}
+
+	virtual void TearDown() override;
+
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
 	virtual bool NotifyRemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo, bool WarnIfNotFound) override;
 	virtual void NotifyResetAllNetworkActors() override;
@@ -406,7 +447,18 @@ public:
 
 	void OnClientVisibleLevelNameAdd(FName LevelName, UWorld* World);
 
+	bool IsNodeObsolete(uint32 CurrentFrame) const;
+
 private:
+
+	static uint32 NumFramesUntilObsolete;
+
+private:
+
+	FRepGraphConnectionKey ConnectionOwner;
+
+	uint32 LastGatheredFrame = 0;
+
 	void ConditionalGatherDormantActorsForConnection(FActorRepListRefView& ConnectionRepList, const FConnectionGatherActorListParameters& Params, FActorRepListRefView* RemovedList);
 	
 	int32 TrickleStartCounter = 10;
@@ -424,7 +476,10 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_DormancyNode : public UReplicat
 
 public:
 
-	static float MaxZForConnection; // Connection Z location has to be < this for ConnectionsNodes to be made.
+	/** Connection Z location has to be < this for ConnectionsNodes to be made. */
+	static float MaxZForConnection; 
+
+public:
 
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo) override { ensureMsgf(false, TEXT("UReplicationGraphNode_DormancyNode::NotifyAddNetworkActor not functional.")); }
 	virtual bool NotifyRemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound=true) override { ensureMsgf(false, TEXT("UReplicationGraphNode_DormancyNode::NotifyRemoveNetworkActor not functional.")); return false; }
@@ -445,7 +500,21 @@ public:
 
 private:
 
-	TMap<UNetReplicationGraphConnection*, UReplicationGraphNode_ConnectionDormancyNode*> ConnectionNodes;
+	UReplicationGraphNode_ConnectionDormancyNode* CreateConnectionNode(const FConnectionGatherActorListParameters& Params);
+
+	/** Function called on every ConnectionDormancyNode in our list */
+	typedef TFunction<void(UReplicationGraphNode_ConnectionDormancyNode*)> FConnectionDormancyNodeFunction;
+
+	/**
+	 * Iterates over all ConnectionDormancyNodes and calls the function on those still valid.
+	 * If the node is considered obsolete, the function will destroy or skip over the ConnectionDormancyNode 
+	 */
+	void CallFunctionOnValidConnectionNodes(FConnectionDormancyNodeFunction Function);
+
+private:
+
+	typedef TSortedMap<FRepGraphConnectionKey, UReplicationGraphNode_ConnectionDormancyNode*> FConnectionDormancyNodeMap;
+	FConnectionDormancyNodeMap ConnectionNodes;
 };
 
 UCLASS()
@@ -723,12 +792,19 @@ public:
 	
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
 
+	virtual void TearDown() override;
+
 	/** Rebuilt-every-frame list based on UNetConnection state */
 	FActorRepListRefView ReplicationActorList;
 
 	/** List of previously (or currently if nothing changed last tick) focused actor data per connection */
 	UPROPERTY()
 	TArray<FAlwaysRelevantActorInfo> PastRelevantActors;
+
+protected:
+
+	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
+
 };
 
 // -----------------------------------
@@ -770,6 +846,10 @@ public:
 	TArray<FTearOffActorInfo> TearOffActors;
 
 	FActorRepListRefView ReplicationActorList;
+
+protected:
+
+	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
 };
 
 // -----------------------------------
@@ -869,6 +949,8 @@ public:
 	virtual void LogGraph(FReplicationGraphDebugInfo& DebugInfo) const;
 	virtual void LogGlobalGraphNodes(FReplicationGraphDebugInfo& DebugInfo) const;
 	virtual void LogConnectionGraphNodes(FReplicationGraphDebugInfo& DebugInfo) const;
+
+	virtual void CollectRepListStats(struct FActorRepListStatCollector& StatCollector) const;
 
 	const TSharedPtr<FReplicationGraphGlobalData>& GetGraphGlobals() const { return GraphGlobals; }
 
@@ -991,6 +1073,10 @@ protected:
 
 private:
 
+	UNetReplicationGraphConnection* FixGraphConnectionList(TArray<UNetReplicationGraphConnection*>& OutList, int32& ConnectionId, UNetConnection* RemovedNetConnection);
+
+private:
+
 	/** Whether or not a connection was saturated during an update. */
 	bool bWasConnectionSaturated = false;
 
@@ -1071,7 +1157,11 @@ public:
 
 	bool bEnableDebugging;
 
+	/** Index of the connection in the global list. Will be reassigned when any client disconnects so it is a key that can be referenced only during a single tick */
+	int32 ConnectionOrderNum;
+
 	// ID that is assigned by the replication graph. Will be reassigned/compacted as clients disconnect. Useful for spacing out connection operations. E.g., not stable but always compact.
+	UE_DEPRECATED(4.26, "This variable was renamed to ConnectionOrderNum to better reflect that it is not persistent and should not be considered an ID.")
 	int32 ConnectionId; 
 
 	UPROPERTY()

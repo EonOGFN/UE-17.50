@@ -47,8 +47,9 @@ protected:
 	virtual void CreateActor(USkeletalMeshComponent* InOwnerComponent, UClothingAssetBase* InAsset, int32 SimDataIndex) = 0;
 
 	/** Do any required initialization after all the actors have been loaded */
-	virtual void PostActorCreationInitialize() = 0;
-	
+	UE_DEPRECATED(4.26, "No longer required.")
+	virtual void PostActorCreationInitialize() {}
+
 	/** Create a new context, will not be filled, call FillContext before simulating with this context */
 	virtual IClothingSimulationContext* CreateContext() = 0;
 
@@ -161,4 +162,6 @@ public:
 	virtual int32 GetNumSubsteps() const { return 0; }
 	/** Return the simulation time in ms. Implementation must be thread safe. */
 	virtual float GetSimulationTime() const { return 0.f; }
+	/** Return whether the simulation is teleported. Implementation must be thread safe. */
+	virtual bool IsTeleported() const { return false; }
 };

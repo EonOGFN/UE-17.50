@@ -16,7 +16,7 @@
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SPopup.h"
 #include "Widgets/Layout/SWindowTitleBarArea.h"
-#include "DebugCanvas.h"
+#include "Slate/DebugCanvas.h"
 #include "Types/InvisibleToWidgetReflectorMetaData.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -392,9 +392,7 @@ public:
 	{
 		OwningPlayer = InOwningPlayer;
 
-		SOverlay::Construct(
-			SOverlay::FArguments()
-			.Clipping(EWidgetClipping::ClipToBoundsAlways));
+		SOverlay::Construct(SOverlay::FArguments());
 	}
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
@@ -435,7 +433,8 @@ TSharedPtr<SGameLayerManager::FPlayerLayer> SGameLayerManager::FindOrCreatePlaye
 
 		// Create a new overlay widget to house any widgets we want to display for the player.
 		NewLayer->Widget = SNew(SPlayerLayer, LocalPlayer)
-			.AddMetaData(StopNavigation);
+			.AddMetaData(StopNavigation)
+			.Clipping(EWidgetClipping::ClipToBoundsAlways);
 		
 		// Add the overlay to the player canvas, which we'll update every frame to match
 		// the dimensions of the player's split screen rect.

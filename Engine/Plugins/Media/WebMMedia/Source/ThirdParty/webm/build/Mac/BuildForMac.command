@@ -37,7 +37,7 @@ LIBFILES=(
 # Build script will be in <lib>/Build/Mac so get that path and drop two folders to leave us
 # in the actual lib folder
 pushd . > /dev/null
-SCRIPT_DIR="`dirname "${BASH_SOURCE[0]}"`"
+SCRIPT_DIR="$(cd $(dirname "${BASH_SOURCE[0]}") && pwd)"
 cd ${SCRIPT_DIR}/${DROP_TO_LIBROOT}
 LIB_ROOT_DIR=${PWD}
 echo Changed to ${LIB_ROOT_DIR}
@@ -103,6 +103,12 @@ fi
 mkdir -p $BUILD_DIR
 cd $BUILD_DIR
 cp ${SCRIPT_DIR}/CMakeLists.txt $SOURCE_DIR/CMakeLists.txt
+
+# Unreal uses the dwarf-2 format.  Updating it will require removing '-gdwarf-2' from:
+#   Engine/Source/Programs/UnrealBuildTool/Platform/Mac/MacToolChain.cs
+export CFLAGS="-gdwarf-2"
+export CXXFLAGS="-gdwarf-2"
+
 echo "#######################################"
 echo "# Configuring $VER"
 cmake -DCMAKE_OSX_ARCHITECTURES="${OSX_ARCHITECTURES}" $SOURCE_DIR > $SCRIPT_DIR/build.log

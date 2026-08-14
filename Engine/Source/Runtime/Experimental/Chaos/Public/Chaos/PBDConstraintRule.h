@@ -152,9 +152,11 @@ namespace Chaos
 
 		virtual void SetUseContactGraph(const bool InUseContactGraph) {}
 
-		/** Remove all constraints associated with the specified particles */
-		// @todo(ccaulfield): remove uint version
-		virtual void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) { }
+		/** Disable all constraints associated with the specified particles */
+		virtual void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) { }
+
+		/** Remove all constraints */
+		virtual void ResetConstraints() {}
 
 		/** The number of constraints in the collection */
 		virtual int32 NumConstraints() const { return 0; }
@@ -197,6 +199,8 @@ namespace Chaos
 		virtual void UpdatePositionBasedState(const FReal Dt) override;
 
 		virtual void AddToGraph() override;
+		
+		virtual void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) override;
 
 		virtual int32 NumConstraints() const override;
 
@@ -339,6 +343,11 @@ namespace Chaos
 		virtual void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& InConstraints)
 		{
 			Constraints.RemoveConstraints(InConstraints);
+		}
+
+		virtual void ResetConstraints()
+		{
+			Constraints.Reset();
 		}
 
 		virtual bool ApplyPushOut(const FReal Dt, int32 Island, const int32 It, const int32 NumIts) override

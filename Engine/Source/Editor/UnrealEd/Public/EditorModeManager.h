@@ -104,6 +104,7 @@ public:
 	/**
 	 * Whether or not the mode toolbox (where mode details panels and some tools are) should be shown.
 	 */
+	UE_DEPRECATED(4.26, "Individual toolkit hosts, such as the level editor, should handle determining if they show a mode toolbox for hosted toolkits.")
 	bool ShouldShowModeToolbox() const;
 protected:
 	/** Deactivates the editor mode at the specified index */
@@ -323,6 +324,16 @@ public:
 	 * Retrieves the current widget mode, taking overrides into account.
 	 */
 	FWidget::EWidgetMode GetWidgetMode() const;
+
+	/**
+	* Set Scale On The Widget
+	*/
+	void SetWidgetScale(float InScale);
+
+	/**
+	*  Get Widget Scale
+	*/
+	float GetWidgetScale() const;
 
 	/**
 	 * Gets the current state of script editor usage of show friendly names
@@ -597,6 +608,10 @@ protected:
 
 	/** if true the current selection has a scene component */
 	bool bSelectionHasSceneComponent;
+
+	/** Scale Factor for Widget*/
+	float WidgetScale;
+
 private:
 	struct FEdModeToolbarRow
 	{

@@ -197,7 +197,7 @@ void FUnixPlatformMisc::PlatformInit()
 	UE_LOG(LogInit, Log, TEXT(" - Memory allocator used: %s"), GMalloc->GetDescriptiveName());
 	UE_LOG(LogInit, Log, TEXT(" - This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
 		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
-		PLATFORM_COMPILER_OPTIMIZATION_PG ? TEXT("yes") : TEXT("no"),
+		FPlatformMisc::IsPGOEnabled() ? TEXT("yes") : TEXT("no"),
 		PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING ? TEXT("yes") : TEXT("no")
 		);
 	UE_LOG(LogInit, Log, TEXT(" - This is %s build."), BuildSettings::IsLicenseeVersion() ? TEXT("a licensee") : TEXT("an internal"));
@@ -361,9 +361,15 @@ void FUnixPlatformMisc::RequestExit(bool Force)
 	{
 		// Lets set our selfs to request exit as the generic platform request exit could log
 		// This is deprecated but one of the few excpetions to leave around for now as we dont want to UE_LOG as that may allocate memory
+		// ShouldRequestExit *should* only be used this way in cases where non-reentrant code is required
+#if UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+		extern bool GShouldRequestExit;
+		GShouldRequestExit = 1;
+#else
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GIsRequestingExit = 1;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // UE_SET_REQUEST_EXIT_ON_TICK_ONLY
 	}
 	else
 	{
@@ -1009,12 +1015,6 @@ void FUnixPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR*
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 }
 
 void FUnixPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text)
@@ -1022,24 +1022,12 @@ void FUnixPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICH
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 }
 
 void FUnixPlatformMisc::EndNamedEvent()
 {
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PopEvent();
-#endif
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputEndEvent();
-	}
 #endif
 }
 

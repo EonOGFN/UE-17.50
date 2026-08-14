@@ -91,14 +91,18 @@ public:
 
 	/**
 	 * Returns the directory for default Editor UI Layout files of the engine
-	 *
 	 * @return Directory for default Editor UI Layout files.
 	 */
 	static FString EngineDefaultLayoutDir();
 
 	/**
+	 * Returns the directory for project Editor UI Layout files of the engine
+	 * @return Directory for project Editor UI Layout files.
+	 */
+	static FString EngineProjectLayoutDir();
+
+	/**
 	 * Returns the directory for user-generated Editor UI Layout files of the engine
-	 *
 	 * @return Directory for user-generated Editor UI Layout files.
 	 */
 	static FString EngineUserLayoutDir();
@@ -143,7 +147,7 @@ public:
 	 *
 	 * @return BaseDir and usable extension directories under BaseDir (either Engine or Project)
 	 */
-	static const TArray<FString>& GetExtensionDirs(const FString& BaseDir, const FString& SubDir=FString());
+	static TArray<FString> GetExtensionDirs(const FString& BaseDir, const FString& SubDir=FString());
 
 	/**
 	 * Returns the root directory of the engine directory tree

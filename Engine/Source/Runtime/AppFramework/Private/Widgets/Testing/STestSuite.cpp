@@ -1746,7 +1746,7 @@ struct RichTextHelper
 	static FText GetAliceInWonderland()
 	{
 		return FText::FromString(
-			TEXT("The <a id=\"browser\" href=\"http://en.wikipedia.org/wiki/Dormouse_(Alice%27s_Adventures_in_Wonderland)\" style=\"RichText.Interactive.Text.Hyperlink\">Dormouse</> had closed its eyes by this time, and was going off into a doze; but, on being pinched by the Hatter, it woke up again with a little shriek, and went on: '<RichText.Interactive.Text.Dialogue>-that begins with an M, such as </><a id=\"browser\" href=\"http://en.wikipedia.org/wiki/Mousetrap_(weapon)\" style=\"RichText.Interactive.Text.DialogueHyperlink\">mouse-traps</><RichText.Interactive.Text.Dialogue>, and the moon, and memory, and muchness-you know you say things are \"much of a muchness\"-did you ever see such a thing as a drawing of a muchness?</>'")
+			TEXT("The <a id=\"browser\" href=\"http://en.wikipedia.org/wiki/Dormouse_(Alice%27s_Adventures_in_Wonderland)\" style=\"RichText.Interactive.Text.Hyperlink\">Dormouse</> had closed its eyes by this time, and was going off into a doze; but, on being pinched by the Hatter, it woke up again with a little shriek, and went on: '<RichText.Interactive.Text.Dialogue>-that begins with an M, such as </><a id=\"browser\" href=\"http://en.wikipedia.org/wiki/Mousetrap\" style=\"RichText.Interactive.Text.DialogueHyperlink\">mouse-traps</><RichText.Interactive.Text.Dialogue>, and the moon, and memory, and muchness-you know you say things are \"much of a muchness\"-did you ever see such a thing as a drawing of a muchness?</>'")
 			TEXT("\n\n")
 			TEXT("'<RichText.Interactive.Text.Dialogue>Really, now you ask me,</>' said <a id=\"browser\" href=\"http://en.wikipedia.org/wiki/Alice_(Alice%27s_Adventures_in_Wonderland)\" style=\"RichText.Interactive.Text.Hyperlink\">Alice</>, very much confused, '<RichText.Interactive.Text.Dialogue>I don't think-</>'")
 			TEXT("\n\n")
@@ -4378,6 +4378,60 @@ class SDPIScalingTest : public SCompoundWidget
 	SVerticalBox::FSlot* ScalerSlot;
 };
 
+class SGlobalInvalidationTest : public SCompoundWidget
+{
+	SLATE_BEGIN_ARGS(SGlobalInvalidationTest)
+	{}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		ChildSlot
+		.Padding(10)
+		[
+			SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SButton)
+				.Text_Lambda([]() {
+					return FText::Format(LOCTEXT("ToggleInvalidationMode", "Toggle Slate Global Invalidation [{0}]"),
+						GSlateEnableGlobalInvalidation ? LOCTEXT("Off", "Off") : LOCTEXT("On", "On"));
+				})
+				.OnClicked_Lambda([this]()
+				{
+					FSlateApplication::Get().ToggleGlobalInvalidation(!GSlateEnableGlobalInvalidation);
+					return FReply::Handled();
+				})
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.HAlign(HAlign_Left)
+			[
+				SNew(SBox)
+				.WidthOverride(200)
+				.HeightOverride(150)
+				[
+					SNew(SScrollBox)
+
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+					+ SScrollBox::Slot()[SNew(SButton).Text(LOCTEXT("Button", "Button"))]
+				]
+			]
+		];
+	}
+};
+
 class SInvalidationTest : public SCompoundWidget
 {
 	SLATE_BEGIN_ARGS(SInvalidationTest)
@@ -4390,6 +4444,34 @@ class SInvalidationTest : public SCompoundWidget
 		.Padding(10)
 		[
 			SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("OpenSlateGlobalInvalidationTestWindow", "Open Slate Global Invalidation Test Window"))
+				.OnClicked_Lambda([this]()
+				{
+					TSharedRef<SWindow> TestWindow = SNew(SWindow)
+					.ClientSize(FVector2D(640,480))
+					.AutoCenter(EAutoCenter::PrimaryWorkArea)
+					[
+						SNew(SGlobalInvalidationTest)
+					];
+
+					TestWindow->SetAllowFastUpdate(true);
+
+					FSlateApplication::Get().AddWindow( TestWindow );
+					return FReply::Handled();
+				})
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("Invalidation Panels", "INVALIDATION PANELS"))
+			]
 
 			+ SVerticalBox::Slot()
 			.AutoHeight()

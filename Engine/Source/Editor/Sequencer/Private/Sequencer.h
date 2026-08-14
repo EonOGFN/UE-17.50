@@ -8,6 +8,7 @@
 #include "Misc/Attribute.h"
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
+#include "UObject/WeakInterfacePtr.h"
 #include "Widgets/SWidget.h"
 #include "SequencerNodeTree.h"
 #include "DisplayNodes/SequencerDisplayNode.h"
@@ -261,7 +262,7 @@ public:
 	TSet<FFrameNumber> GetVerticalFrames() const;
 
 	/** @return The set of marked frames */
-	TArray<FMovieSceneMarkedFrame> GetMarkedFrames() const;
+	TArray<FMovieSceneMarkedFrame> GetMarkedFrames() const override;
 
 	TArray<FMovieSceneMarkedFrame> GetGlobalMarkedFrames() const;
 	void InvalidateGlobalMarkedFramesCache() { bGlobalMarkedFramesCached = false; }
@@ -389,6 +390,9 @@ public:
 
 		return SequencerSharedBindings;
 	}
+
+	virtual void SetDisplayName(FGuid InBinding,const FText& InDisplayName) override;
+	virtual FText GetDisplayName(FGuid InBinding) override;
 
 	/**
 	 * Builds up the sequencer's "Add Track" menu.
@@ -748,6 +752,7 @@ public:
 	virtual void SetPlaybackSpeed(float InPlaybackSpeed) override { PlaybackSpeed = InPlaybackSpeed; }
 	virtual float GetPlaybackSpeed() const override { return PlaybackSpeed; }
 	virtual TArray<FGuid> AddActors(const TArray<TWeakObjectPtr<AActor> >& InActors, bool bSelectActors = true) override;
+	virtual TArray<FGuid> ConvertToSpawnable(FGuid Guid) override;
 	virtual void AddSubSequence(UMovieSceneSequence* Sequence) override;
 	virtual bool CanKeyProperty(FCanKeyPropertyParams CanKeyPropertyParams) const override;
 	virtual void KeyProperty(FKeyPropertyParams KeyPropertyParams) override;
@@ -766,6 +771,7 @@ public:
 	virtual void SelectFolder(UMovieSceneFolder* Folder) override;
 	virtual void SelectByPropertyPaths(const TArray<FString>& InPropertyPaths) override;
 	virtual void SelectByChannels(UMovieSceneSection* Section, TArrayView<const FMovieSceneChannelHandle> InChannels, bool bSelectParentInstead, bool bSelect) override;
+	virtual void SelectByChannels(UMovieSceneSection* Section, const TArray<FName>& InChannelNames, bool bSelectParentInstead, bool bSelect) override;
 	virtual void SelectByNthCategoryNode(UMovieSceneSection* Section, int Index, bool bSelect) override;
 	virtual void EmptySelection() override;
 	virtual void ThrobKeySelection() override;
@@ -776,6 +782,7 @@ public:
 	virtual FOnBeginScrubbingEvent& OnBeginScrubbingEvent() override { return OnBeginScrubbingDelegate; }
 	virtual FOnEndScrubbingEvent& OnEndScrubbingEvent() override { return OnEndScrubbingDelegate; }
 	virtual FOnMovieSceneDataChanged& OnMovieSceneDataChanged() override { return OnMovieSceneDataChangedDelegate; }
+	virtual FOnChannelChanged& OnChannelChanged() override { return OnChannelChangedDelegate; }
 	virtual FOnMovieSceneBindingsChanged& OnMovieSceneBindingsChanged() override { return OnMovieSceneBindingsChangedDelegate; }
 	virtual FOnMovieSceneBindingsPasted& OnMovieSceneBindingsPasted() override { return OnMovieSceneBindingsPastedDelegate; }
 	virtual FOnSelectionChangedObjectGuids& GetSelectionChangedObjectGuids() override { return OnSelectionChangedObjectGuidsDelegate; }
@@ -784,6 +791,7 @@ public:
 	virtual FOnSelectionChangedSections& GetSelectionChangedSections() override { return OnSelectionChangedSectionsDelegate; }
 	virtual FGuid CreateBinding(UObject& InObject, const FString& InName) override;
 	virtual UObject* GetPlaybackContext() const override;
+	virtual IMovieScenePlaybackClient* GetPlaybackClient() override;
 	virtual TArray<UObject*> GetEventContexts() const override; 
 	virtual FOnActorAddedToSequencer& OnActorAddedToSequencer() override;
 	virtual FOnPreSave& OnPreSave() override;
@@ -801,7 +809,7 @@ public:
 	virtual void ExternalSelectionHasChanged() override { SynchronizeSequencerSelectionWithExternalSelection(); }
 	virtual void ObjectImplicitlyAdded(UObject* InObject) const override;
 	/** Access the user-supplied settings object */
-	virtual USequencerSettings* GetSequencerSettings() override { return Settings; }
+	virtual USequencerSettings* GetSequencerSettings() const override { return Settings; }
 	virtual void SetSequencerSettings(USequencerSettings* InSettings) override { Settings = InSettings; }
 	virtual TSharedPtr<class ITimeSlider> GetTopTimeSliderWidget() const override;
 	virtual void ResetTimeController() override;
@@ -1025,6 +1033,9 @@ private:
 	/** Updates a viewport client from camera cut data */
 	void UpdatePreviewLevelViewportClientFromCameraCut(FLevelEditorViewportClient& InViewportClient, UObject* InCameraObject, const EMovieSceneCameraCutParams& CameraCutParams);
 
+	/** Updates viewport clients' actor locks if they relate to sequencer cameras */
+	void UpdateLevelViewportClientsActorLocks();
+
 	/** Expands Possessables with multiple bindings into indidual Possessables for each binding */
 	TArray<FGuid> ExpandMultiplePossessableBindings(FGuid PossessableGuid);
 
@@ -1045,7 +1056,7 @@ private:
 
 	/** Handles loading in previously recorded data. */
 	void OnLoadRecordedData();
-
+	
 	/** Adds the track to the selected folder (if FGuid is invalid) and selects the track, throbs it, and notifies the sequence to rebuild any necessary data. */
 	void OnAddTrack(const TWeakObjectPtr<UMovieSceneTrack>& InTrack, const FGuid& ObjectBinding) override;
 
@@ -1103,7 +1114,9 @@ private:
 	void ToggleAsyncEvaluation();
 	bool UsesAsyncEvaluation();
 
-	void UpdateCachedPlaybackContext();
+	void UpdateCachedPlaybackContextAndClient();
+
+	void UpdateCachedCameraActors();
 
 public:
 
@@ -1286,6 +1299,9 @@ private:
 	/** A delegate which is called any time the movie scene data is changed. */
 	FOnMovieSceneDataChanged OnMovieSceneDataChangedDelegate;
 
+	/** A delegate which is called when the channel is changed by Sequencer. */
+	FOnChannelChanged OnChannelChangedDelegate;
+
 	/** A delegate which is called any time the movie scene bindings are changed. */
 	FOnMovieSceneBindingsChanged OnMovieSceneBindingsChangedDelegate;
 
@@ -1341,8 +1357,14 @@ private:
 	/** Attribute used to retrieve the playback context for this frame */
 	TAttribute<UObject*> PlaybackContextAttribute;
 
+	/** Attribute used to retrieve the playback client for this frame */
+	TAttribute<IMovieScenePlaybackClient*> PlaybackClientAttribute;
+
 	/** Cached playback context for this frame */
 	TWeakObjectPtr<UObject> CachedPlaybackContext;
+
+	/** Cached playback context for this frame */
+	TWeakInterfacePtr<IMovieScenePlaybackClient> CachedPlaybackClient;
 
 	/** Attribute used to retrieve event contexts */
 	TAttribute<TArray<UObject*>> EventContextsAttribute;
@@ -1415,4 +1437,8 @@ private:
 	float PreAnimatedViewportFOV;
 
 	TOptional<FMovieSceneSequenceID> ScrubPositionParent;
+
+	/** Cache of all bound cameras in the sequence hierarchy */
+	TSet<AActor*> CachedCameraActors;
+	uint32 LastKnownStateSerial = 0;
 };

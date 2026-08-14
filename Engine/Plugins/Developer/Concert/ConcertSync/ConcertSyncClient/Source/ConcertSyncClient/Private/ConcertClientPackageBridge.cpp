@@ -139,7 +139,7 @@ void FConcertClientPackageBridge::HandlePackagePreSave(UPackage* Package)
 		return;
 	}
 
-	UObject* Asset = ConcertSyncClientUtil::FindAssetInPackage(Package);
+	UObject* Asset = Package->FindAssetInPackage();
 
 	FString PackageFilename;
 	if (FPackageName::TryConvertLongPackageNameToFilename(Package->GetFName().ToString(), PackageFilename, Asset && Asset->IsA<UWorld>() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension()))
@@ -218,11 +218,13 @@ void FConcertClientPackageBridge::HandleAssetAdded(UObject *Object)
 	// Save this package to disk so that we can send its contents immediately
 	{
 		FScopedIgnoreLocalSave IgnorePackageSaveScope(*this);
-		UObject* Asset = ConcertSyncClientUtil::FindAssetInPackage(Package);
+		UObject* Asset = Package->FindAssetInPackage();
+		// @todo FH: Pass the Asset instead of the World to save package when the incidental IsFullyLoaded is fixed
+		UWorld* World = Cast<UWorld>(Asset);
 
 		const FString PackageFilename = FPaths::ProjectIntermediateDir() / TEXT("Concert") / TEXT("Temp") / FGuid::NewGuid().ToString() + (Asset && Asset->IsA<UWorld>() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
 		uint32 PackageFlags = Package->GetPackageFlags();
-		if (UPackage::SavePackage(Package, Asset, RF_Standalone, *PackageFilename, GWarn, nullptr, false, false, SAVE_NoError | SAVE_KeepDirty))
+		if (UPackage::SavePackage(Package, World, RF_Standalone, *PackageFilename, GWarn, nullptr, false, false, SAVE_NoError | SAVE_KeepDirty))
 		{
 			// Saving the newly added asset here shouldn't modify any of its package flags since it's a 'dummy' save i.e. PKG_NewlyCreated
 			Package->SetPackageFlagsTo(PackageFlags);

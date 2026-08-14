@@ -57,6 +57,17 @@ public:
 			TInstanceData<ModelDef>& InstanceData = DataStore->Instances.GetByIndexChecked(BitIt.GetIndex());
 
 			FNetworkPredictionDriver<ModelDef>::PostPhysicsResimulate(InstanceData.Info.Driver);
+
+			if (UpdatePendingFrame)
+			{
+				UE_NP_TRACE_SIM_TICK(InstanceData.TraceID);
+			}
+			else
+			{
+				UE_NP_TRACE_SIM(InstanceData.TraceID);
+			}
+
+			UE_NP_TRACE_PHYSICS_STATE_CURRENT(ModelDef, InstanceData.Info.Driver);
 		}
 	}
 
@@ -69,7 +80,7 @@ public:
 			// This is needed so that we can UE_NP_TRACE_SIM_TICK to tell the trace system the sim ticked this frame
 			// Right now this is under the assumption that physics is fixed tick once per engine/physics frame.
 			// When that changes, this will need to change. We will probably just want another function on IPhysicsService
-			// that is called after every Np fixed tick / Physics ticked frame, however that neds up looking.
+			// that is called after every Np fixed tick / Physics ticked frame, however that ends up looking.
 			// For now this gets us traced physics state which is super valuable.
 			const int32 ServerFrame = (TickState->PendingFrame-1) + TickState->Offset; // -1 because PendingFrame was already ++ this frame
 			UE_NP_TRACE_PUSH_TICK(ServerFrame * TickState->FixedStepMS, TickState->FixedStepMS, ServerFrame+1);
@@ -83,6 +94,7 @@ public:
 			// Could maybe have physics only sims use different rep proxies that can query the sleeping state themselves
 			if (UpdatePendingFrame)
 			{
+				// Trace explicit "we ticked a frame" (because this has no backing NP sim that would have already traced it)
 				UE_NP_TRACE_SIM_TICK(InstanceData.TraceID);
 
 				// This actually is no good: it will cause clients to not be corrected if they incorrectly predict taking the physics object
@@ -93,6 +105,11 @@ public:
 				{
 					InstanceData.Info.View->PendingFrame = TickState->PendingFrame;
 				}
+			}
+			else
+			{
+				// We already traced the tick itself earlier, but we still need to push the TraceID in order to trace the resulting physics state
+				UE_NP_TRACE_SIM(InstanceData.TraceID);
 			}
 
 			UE_NP_TRACE_PHYSICS_STATE_CURRENT(ModelDef, InstanceData.Info.Driver);

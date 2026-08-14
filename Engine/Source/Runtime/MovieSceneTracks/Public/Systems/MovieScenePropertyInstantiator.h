@@ -138,7 +138,7 @@ private:
 	void InitializeBlendPath(const FPropertyParameters& Params);
 	int32 FindCustomAccessorIndex(UE::MovieScene::FCustomAccessorView Accessors, UClass* ClassType, FName PropertyPath);
 	TOptional<uint16> ComputeFastPropertyPtrOffset(UClass* ObjectClass, const FMovieScenePropertyBinding& PropertyBinding);
-	int32 ResolveProperty(UE::MovieScene::FCustomAccessorView CustomAccessors, UObject* Object, const FMovieScenePropertyBinding& PropertyBinding);
+	int32 ResolveProperty(UE::MovieScene::FCustomAccessorView CustomAccessors, UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, int32 PropertyDefinitionIndex);
 
 	UE::MovieScene::FPropertyRecomposerPropertyInfo FindPropertyFromSource(FMovieSceneEntityID EntityID, UObject* Object) const;
 
@@ -155,6 +155,9 @@ private:
 	TSparseArray<FObjectPropertyInfo> ResolvedProperties;
 	TMultiMap<int32, FMovieSceneEntityID> Contributors;
 	TMultiMap<int32, FMovieSceneEntityID> NewContributors;
+
+	/** Reverse lookup from an entity to the index within ResolvedProperties that it animates.
+	 * @note: can contain INDEX_NONE for properties that have not resolved. */
 	TMap<FMovieSceneEntityID, int32> EntityToProperty;
 	TMap< TTuple<UObject*, FName>, int32 > ObjectPropertyToResolvedIndex;
 

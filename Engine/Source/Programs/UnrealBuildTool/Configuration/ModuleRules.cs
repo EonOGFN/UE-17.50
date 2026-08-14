@@ -1216,8 +1216,6 @@ namespace UnrealBuildTool
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"Chaos",
-					"ChaosSolvers",
-					"FieldSystemCore"
 				}
 				);
 			// 

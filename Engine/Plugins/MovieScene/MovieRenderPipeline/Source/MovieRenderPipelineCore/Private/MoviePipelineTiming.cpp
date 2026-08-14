@@ -19,6 +19,10 @@
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineOutputSetting.h"
 
+#if WITH_EDITOR
+#include "MoviePipelineDebugSettings.h"
+#endif
+
 void UMoviePipeline::TickProducingFrames()
 {
 	// The callback for this function does not get registered until Initialization has been called, which sets
@@ -40,7 +44,7 @@ void UMoviePipeline::TickProducingFrames()
 			if (!OutputFuture.Get())
 			{
 				UE_LOG(LogMovieRenderPipeline, Error, TEXT("Error exporting frame, canceling movie export."));
-				RequestShutdown();
+				RequestShutdown(true);
 				break;
 			}
 		}
@@ -110,16 +114,37 @@ void UMoviePipeline::TickProducingFrames()
 		// This means that the camera will be in the correct location for warm-up frames to allow any systems
 		// dependent on camera position to properly warm up. If motion blur fixes are enabled, then we'll jump 
 		// again after the warm-up frames.
-		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
+		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
 
 		if (!CurrentCameraCut->ShotInfo.bEmulateFirstFrameMotionBlur)
 		{
-			// If we're going to use the camera cut length for warm ups then we want to evaluate before the first frame in the camera cut.
-			// We've already calculated out how far the camera cut extended past the playback range (and accounted for handle frames,
-			// and our CurrentMasterSeqTick accounts for handle frames as well) so we simply move back further. Convert frames to ticks.
-			// We back off one extra frame because the code below expects to always move us into the current frame.
-			FFrameTime DeltaTickOffset = FFrameRate::TransformTime(FFrameTime(FFrameNumber(CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining + 1)), TargetSequence->GetMovieScene()->GetDisplayRate(), TargetSequence->GetMovieScene()->GetTickResolution());
-			CurrentCameraCut->ShotInfo.CurrentLocalSeqTick -= DeltaTickOffset.FloorToFrame();
+			FFrameTime TicksToEndOfPreviousFrame;
+			float WorldTimeDilation = GetWorld()->GetWorldSettings()->GetEffectiveTimeDilation();
+
+			UMoviePipelineAntiAliasingSetting* AntiAliasing = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
+			if (AntiAliasing->TemporalSampleCount == 1)
+			{
+				TicksToEndOfPreviousFrame = FrameMetrics.TicksPerOutputFrame;
+			}
+			else
+			{
+				// The first sub-frame accumulation is going to try to go forward
+				// by the amount the shutter is closed, plus the duration of one sample
+				// because that is the logic we use for every other frame.
+				TicksToEndOfPreviousFrame = FrameMetrics.TicksPerSample + FrameMetrics.TicksWhileShutterClosed;
+			}
+
+			if (!FMath::IsNearlyEqual(WorldTimeDilation, 1.f))
+			{
+				TicksToEndOfPreviousFrame = TicksToEndOfPreviousFrame * WorldTimeDilation;
+			}
+
+			// The above calculation will offset us by a portion of a frame. We then offset by the number of whole frames we need to back up by.
+			// The warmup state (when using camera cut for warmup) will simply advance us an entire frame each time. This means that when we go
+			// to render the first frame we will be on the correct offset.
+			TicksToEndOfPreviousFrame += FFrameRate::TransformTime(FFrameTime(FFrameNumber(CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining)), TargetSequence->GetMovieScene()->GetDisplayRate(), TargetSequence->GetMovieScene()->GetTickResolution());
+			AccumulatedTickSubFrameDeltas -= TicksToEndOfPreviousFrame.GetSubFrame();
+			CurrentCameraCut->ShotInfo.CurrentLocalSeqTick = CurrentCameraCut->ShotInfo.CurrentLocalSeqTick - TicksToEndOfPreviousFrame.FloorToFrame();
 		}
 
 		// Jump to the first frame of the sequence that we will be playing from. This doesn't take into account camera timing offset or temporal sampling, but that is
@@ -170,9 +195,11 @@ void UMoviePipeline::TickProducingFrames()
 		CachedOutputState.bDiscardRenderResult = true;
 
 		// We only render a warm up frame if this is the last engine warmup frame and there are render warmup frames to do.
-		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
+		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
 		check(AntiAliasingSettings);
-		const bool bRenderFrame = CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining == 0 && AntiAliasingSettings->RenderWarmUpCount > 0;
+		// Some features (such as GPU particles) need to be rendered to warm up
+		const bool bRenderFrame = (CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining == 0 && AntiAliasingSettings->RenderWarmUpCount > 0) || AntiAliasingSettings->bRenderWarmUpFrames;
+
 		CachedOutputState.bSkipRendering = !bRenderFrame;
 
 		// Render the next frame at a reasonable frame rate to pass time in the world.
@@ -213,7 +240,7 @@ void UMoviePipeline::TickProducingFrames()
 		FFrameTime TicksToEndOfPreviousFrame;
 		float WorldTimeDilation = GetWorld()->GetWorldSettings()->GetEffectiveTimeDilation();
 
-		UMoviePipelineAntiAliasingSetting* AntiAliasing = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
+		UMoviePipelineAntiAliasingSetting* AntiAliasing = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
 		if (AntiAliasing->TemporalSampleCount == 1)
 		{
 			TicksToEndOfPreviousFrame = FrameMetrics.TicksPerOutputFrame;
@@ -287,7 +314,7 @@ void UMoviePipeline::TickProducingFrames()
 		// engine delta time at the end.
 		FFrameTime DeltaFrameTime = FFrameTime();
 
-		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
+		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
 		check(AntiAliasingSettings);
 
 		// If we've rendered the last sample and wrapped around, then we're going to be
@@ -538,10 +565,13 @@ void UMoviePipeline::TickProducingFrames()
 			LevelSequenceActor->GetSequencePlayer()->Play();
 		}
 
-		
-		// If the user doesn't want to render every frame we need to increase the delta time so that enough
-		// time passes in the world. The framerate of the output media will be adjusted to match.
-		// FrameDeltaTime = FrameDeltaTime * 1.0 / (double)Config->OutputFrameStep.Value;
+		if (DeltaFrameTime.GetFrame() == FFrameNumber(0))
+		{
+			// Too many temporal samples for the given shutter angle.
+			UE_LOG(LogMovieRenderPipeline, Error, TEXT("Too many temporal samples for the given shutter angle/tick rate combination. Temporal Samples: %d Shutter Angle: %f TicksPerOutputFrame: %s TicksPerSample: %s. Consider converting to Spatial Samples instead!"),
+				AntiAliasingSettings->TemporalSampleCount, FrameMetrics.ShutterAnglePercentage, *LexToString(FrameMetrics.TicksPerOutputFrame), *LexToString(FrameMetrics.TicksPerSample));
+			DeltaFrameTime = FFrameTime(FFrameNumber(1));
+		}
 
 		double FrameDeltaTime = FrameMetrics.TickResolution.AsSeconds(FFrameTime(DeltaFrameTime.GetFrame()));
 		CachedOutputState.TimeData.FrameDeltaTime = FrameDeltaTime;
@@ -583,6 +613,19 @@ void UMoviePipeline::TickProducingFrames()
 			CachedOutputState.OutputFrameNumber++;
 			CachedOutputState.ShotOutputFrameNumber++;
 		}
+	
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+		{
+			UMoviePipelineDebugSettings* DebugSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineDebugSettings>();
+			if (IsValid(DebugSettings) && DebugSettings->IsRenderDocEnabled())
+			{
+				if (CachedOutputState.OutputFrameNumber == DebugSettings->CaptureFrame)
+				{
+					CachedOutputState.bCaptureRendering = true;
+				}
+			}
+		}
+#endif
 
 		// Check to see if we should be rendering this frame. If they are frame stepping (rendering every Nth frame) then we
 		// just disable rendering but otherwise let the game logic remain the same for evaluation consistency.

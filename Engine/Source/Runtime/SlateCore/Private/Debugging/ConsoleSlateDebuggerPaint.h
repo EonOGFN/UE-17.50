@@ -8,6 +8,7 @@
 #if WITH_SLATE_DEBUGGING
 
 #include "CoreMinimal.h"
+#include "Debugging/ConsoleSlateDebuggerUtility.h"
 #include "Delegates/Delegate.h"
 #include "Input/Reply.h"
 #include "HAL/IConsoleManager.h"
@@ -34,10 +35,12 @@ public:
 
 	void StartDebugging();
 	void StopDebugging();
+	bool IsEnabled() const { return bEnabled; }
 
 	void SaveConfig();
 
 private:
+	void HandleEnabled(IConsoleVariable* Variable);
 	void HandleLogOnce();
 	void HandleToggleWidgetNameList();
 	void HandleEndFrame();
@@ -46,6 +49,7 @@ private:
 
 private:
 	bool bEnabled;
+	bool bEnabledCVarValue;
 
 	//~ Settings
 	bool bDisplayWidgetsNameList;
@@ -64,17 +68,15 @@ private:
 	//~ Console objects
 	FAutoConsoleCommand ShowPaintWidgetCommand;
 	FAutoConsoleCommand HidePaintWidgetCommand;
+	FAutoConsoleVariableRef EnabledRefCVar;
 	FAutoConsoleCommand LogPaintedWidgetOnceCommand;
 	FAutoConsoleCommand DisplayWidgetsNameListCommand;
 	FAutoConsoleVariableRef MaxNumberOfWidgetInListtRefCVar;
 	FAutoConsoleVariableRef LogWarningIfWidgetIsPaintedMoreThanOnceRefCVar;
 
-	using TSWidgetId = UPTRINT;
-	using TSWindowId = UPTRINT;
-
 	struct FPaintInfo 
 	{
-		TSWindowId Window;
+		FConsoleSlateDebuggerUtility::TSWindowId Window;
 		FVector2D PaintLocation;
 		FVector2D PaintSize;
 		FString WidgetName;
@@ -82,7 +84,7 @@ private:
 		int32 PaintCount;
 	};
 
-	using TPaintedWidgetMap = TMap<TSWidgetId, FPaintInfo>;
+	using TPaintedWidgetMap = TMap<FConsoleSlateDebuggerUtility::TSWidgetId, FPaintInfo>;
 	TPaintedWidgetMap PaintedWidgets;
 };
 

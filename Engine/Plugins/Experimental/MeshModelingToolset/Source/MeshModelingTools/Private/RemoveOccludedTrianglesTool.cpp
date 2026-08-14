@@ -80,6 +80,7 @@ URemoveOccludedTrianglesAdvancedProperties::URemoveOccludedTrianglesAdvancedProp
 
 URemoveOccludedTrianglesTool::URemoveOccludedTrianglesTool()
 {
+	SetToolDisplayName(LOCTEXT("ProjectToTargetToolName", "Jacketing Tool"));
 }
 
 void URemoveOccludedTrianglesTool::SetWorld(UWorld* World)
@@ -144,6 +145,10 @@ void URemoveOccludedTrianglesTool::Setup()
 
 	// initialize the PreviewMesh+BackgroundCompute object
 	SetupPreviews();
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("RemoveOccludedTrianglesToolDescription", "Remove triangles that are fully contained within the selected Meshes, and hence cannot be visible with opaque shading."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -239,6 +244,12 @@ void URemoveOccludedTrianglesTool::SetupPreviews()
 
 void URemoveOccludedTrianglesTool::Shutdown(EToolShutdownType ShutdownType)
 {
+	if (ShutdownType == EToolShutdownType::Accept && AreAllTargetsValid() == false)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Tool Target has become Invalid (possibly it has been Force Deleted). Aborting Tool."));
+		ShutdownType = EToolShutdownType::Cancel;
+	}
+
 	// Restore (unhide) the source meshes
 	for (TUniquePtr<FPrimitiveComponentTarget>& ComponentTarget : ComponentTargets)
 	{
@@ -372,11 +383,6 @@ void URemoveOccludedTrianglesTool::OnPropertyModified(UObject* PropertySet, FPro
 
 
 
-bool URemoveOccludedTrianglesTool::HasAccept() const
-{
-	return true;
-}
-
 bool URemoveOccludedTrianglesTool::CanAccept() const
 {
 	for (UMeshOpPreviewWithBackgroundCompute* Preview : Previews)
@@ -386,7 +392,7 @@ bool URemoveOccludedTrianglesTool::CanAccept() const
 			return false;
 		}
 	}
-	return true;
+	return Super::CanAccept();
 }
 
 

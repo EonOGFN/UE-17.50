@@ -14,7 +14,11 @@
 
 TUniquePtr<MovieRenderPipeline::IVideoCodecWriter> UMoviePipelineAvidDNxOutput::Initialize_GameThread(const FString& InFileName, FIntPoint InResolution, EImagePixelType InPixelType, ERGBFormat InPixelFormat, uint8 InBitDepth, uint8 InNumChannels)
 {
-	const UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindOrAddSetting<UMoviePipelineOutputSetting>();
+	UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
+	if (!OutputSettings)
+	{
+		return nullptr;
+	}
 		
 	 
 	FAvidDNxEncoderOptions Options;
@@ -48,7 +52,7 @@ void UMoviePipelineAvidDNxOutput::WriteFrame_EncodeThread(MovieRenderPipeline::I
 	FAvidWriter* CodecWriter = static_cast<FAvidWriter*>(InWriter);
 	
 	// Quantize our 16 bit float data to 8 bit and apply sRGB
-	TUniquePtr<FImagePixelData> QuantizedPixelData = UE::MoviePipeline::QuantizeImagePixelDataToBitDepth(InPixelData, 8);
+	TUniquePtr<FImagePixelData> QuantizedPixelData = UE::MoviePipeline::QuantizeImagePixelDataToBitDepth(InPixelData, 8, nullptr, InWriter->bConvertToSrgb);
 	 
 	const void* Data = nullptr;
 	int64 DataSize;

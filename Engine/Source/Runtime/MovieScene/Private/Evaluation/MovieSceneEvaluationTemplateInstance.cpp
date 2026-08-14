@@ -23,6 +23,9 @@ FMovieSceneRootEvaluationTemplateInstance::FMovieSceneRootEvaluationTemplateInst
 	, EntitySystemLinker(nullptr)
 	, RootID(MovieSceneSequenceID::Root)
 {
+#if WITH_EDITOR
+	EmulatedNetworkMask = EMovieSceneServerClientMask::All;
+#endif
 }
 
 void FMovieSceneRootEvaluationTemplateInstance::BeginDestroy()
@@ -64,7 +67,30 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	}
 	else
 	{
+#if WITH_EDITOR
+		EMovieSceneServerClientMask Mask = EmulatedNetworkMask;
+		if (Mask == EMovieSceneServerClientMask::All)
+		{
+			UObject* PlaybackContext = Player.GetPlaybackContext();
+			UWorld* World = PlaybackContext ? PlaybackContext->GetWorld() : nullptr;
+
+			if (World)
+			{
+				ENetMode NetMode = World->GetNetMode();
+				if (NetMode == ENetMode::NM_DedicatedServer)
+				{
+					Mask = EMovieSceneServerClientMask::Server;
+				}
+				else if (NetMode == ENetMode::NM_Client)
+				{
+					Mask = EMovieSceneServerClientMask::Client;
+				}
+			}
+		}
+		CompiledDataManager = UMovieSceneCompiledDataManager::GetPrecompiledData(Mask);
+#else
 		CompiledDataManager = UMovieSceneCompiledDataManager::GetPrecompiledData();
+#endif
 	}
 	bReinitialize |= (PreviousCompiledDataManager != CompiledDataManager);
 
@@ -102,7 +128,7 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	}
 }
 
-void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player, FMovieSceneSequenceID OverrideRootID)
+void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player)
 {
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_EntireEvaluationCost);
 
@@ -110,7 +136,7 @@ void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Cont
 
 	if (EntitySystemRunner.IsAttachedToLinker())
 	{
-		EntitySystemRunner.Update(Context, RootInstanceHandle, OverrideRootID);
+		EntitySystemRunner.Update(Context, RootInstanceHandle);
 	}
 }
 
@@ -161,6 +187,45 @@ bool FMovieSceneRootEvaluationTemplateInstance::HasEverUpdated() const
 	}
 
 	return false;
+}
+
+const FMovieSceneSequenceHierarchy* FMovieSceneRootEvaluationTemplateInstance::GetHierarchy() const
+{
+	return CompiledDataManager->FindHierarchy(GetCompiledDataID());
+}
+
+void FMovieSceneRootEvaluationTemplateInstance::GetSequenceParentage(const UE::MovieScene::FInstanceHandle InstanceHandle, TArray<UE::MovieScene::FInstanceHandle>& OutParentHandles) const
+{
+	using namespace UE::MovieScene;
+
+	if (!ensure(EntitySystemLinker))
+	{
+		return;
+	}
+
+	// Get the root instance so we can find all necessary sub-instances from it.
+	const FInstanceRegistry* InstanceRegistry = EntitySystemLinker->GetInstanceRegistry();
+
+	check(InstanceHandle.IsValid());
+	const FSequenceInstance& Instance = InstanceRegistry->GetInstance(InstanceHandle);
+
+	checkf(Instance.GetRootInstanceHandle() == RootInstanceHandle, TEXT("The provided instance handle relates to a different root sequence."));
+	const FSequenceInstance& RootInstance = InstanceRegistry->GetInstance(RootInstanceHandle);
+
+	// Find the hierarchy node for the provided instance, and walk up from there to populate the output array.
+	const FMovieSceneSequenceHierarchy* Hierarchy = GetHierarchy();
+	if (!ensure(Hierarchy))
+	{
+		return;
+	}
+
+	const FMovieSceneSequenceHierarchyNode* HierarchyNode = Hierarchy->FindNode(Instance.GetSequenceID());
+	while (HierarchyNode && HierarchyNode->ParentID.IsValid())
+	{
+		const FInstanceHandle ParentHandle = RootInstance.FindSubInstance(HierarchyNode->ParentID);
+		OutParentHandles.Add(ParentHandle);
+		HierarchyNode = Hierarchy->FindNode(HierarchyNode->ParentID);
+	}
 }
 
 UE::MovieScene::FSequenceInstance* FMovieSceneRootEvaluationTemplateInstance::FindInstance(FMovieSceneSequenceID SequenceID)
@@ -286,3 +351,15 @@ void FMovieSceneRootEvaluationTemplateInstance::CopyActuators(FMovieSceneBlendin
 		LegacyEvaluator->CopyActuators(Accumulator);
 	}
 }
+
+#if WITH_EDITOR
+void FMovieSceneRootEvaluationTemplateInstance::SetEmulatedNetworkMask(EMovieSceneServerClientMask InNewMask, IMovieScenePlayer& Player)
+{
+	check(InNewMask != EMovieSceneServerClientMask::None);
+	EmulatedNetworkMask = InNewMask;
+}
+EMovieSceneServerClientMask FMovieSceneRootEvaluationTemplateInstance::GetEmulatedNetworkMask() const
+{
+	return EmulatedNetworkMask;
+}
+#endif

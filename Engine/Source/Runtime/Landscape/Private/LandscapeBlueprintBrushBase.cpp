@@ -4,6 +4,10 @@
 #include "CoreMinimal.h"
 #include "LandscapeProxy.h"
 #include "Landscape.h"
+#include "Misc/MapErrors.h"
+#include "Misc/UObjectToken.h"
+#include "Logging/MessageLog.h"
+#include "Logging/TokenizedMessage.h"
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -72,12 +76,12 @@ void ALandscapeBlueprintBrushBase::RequestLandscapeUpdate()
 }
 
 #if WITH_EDITOR
-void ALandscapeBlueprintBrushBase::Tick(float DeltaSeconds)
+void ALandscapeBlueprintBrushBase::PushDeferredLayersContentUpdate()
 {
 #if WITH_EDITORONLY_DATA
 	// Avoid computing collision and client updates every frame
 	// Wait until we didn't trigger any more landscape update requests (padding of a couple of frames)
-	if (OwningLandscape != nullptr && 
+	if (OwningLandscape != nullptr &&
 		LastRequestLayersContentUpdateFrameNumber != InvalidLastRequestLayersContentUpdateFrameNumber &&
 		LastRequestLayersContentUpdateFrameNumber + CVarLandscapeBrushPadding.GetValueOnAnyThread() <= GFrameNumber)
 	{
@@ -97,7 +101,10 @@ void ALandscapeBlueprintBrushBase::Tick(float DeltaSeconds)
 		LastRequestLayersContentUpdateFrameNumber = InvalidLastRequestLayersContentUpdateFrameNumber;
 	}
 #endif
+}
 
+void ALandscapeBlueprintBrushBase::Tick(float DeltaSeconds)
+{
 	// Forward the Tick to the instances class of this BP
 	if (GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 	{
@@ -194,12 +201,28 @@ void ALandscapeBlueprintBrushBase::Destroyed()
 #endif
 }
 
-void ALandscapeBlueprintBrushBase::GetRenderDependencies(TSet<UTexture2D *>& OutTextures)
+void ALandscapeBlueprintBrushBase::CheckForErrors()
 {
-	TArray<UTexture2D*> BPDependencies;
+	Super::CheckForErrors();
+
+	if (GetWorld() && !IsTemplate())
+	{
+		if (OwningLandscape == nullptr)
+		{
+			FMessageLog("MapCheck").Error()
+				->AddToken(FUObjectToken::Create(this))
+				->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_MissingLandscape", "This brush requires a Landscape. Add one to the map or remove the brush actor.")))
+				->AddToken(FMapErrorToken::Create(TEXT("LandscapeBrushMissingLandscape")));
+		}
+	}
+}
+
+void ALandscapeBlueprintBrushBase::GetRenderDependencies(TSet<UObject*>& OutDependencies)
+{
+	TArray<UObject*> BPDependencies;
 	GetBlueprintRenderDependencies(BPDependencies);
 
-	OutTextures.Append(BPDependencies);
+	OutDependencies.Append(BPDependencies);
 }
 
 void ALandscapeBlueprintBrushBase::SetOwningLandscape(ALandscape* InOwningLandscape)

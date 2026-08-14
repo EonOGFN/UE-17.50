@@ -21,7 +21,6 @@ UMoviePipelineOutputSetting::UMoviePipelineOutputSetting()
 	, bAutoVersion(true)
 	, ZeroPadFrameNumbers(4)
 	, FrameNumberOffset(0)
-	, bDisableToneCurve(false)
 {
 	FileNameFormat = TEXT("{sequence_name}.{frame_number}");
 	OutputDirectory.Path = FPaths::ProjectSavedDir() / TEXT("MovieRenders/");
@@ -45,8 +44,7 @@ void UMoviePipelineOutputSetting::PostLoad()
 FText UMoviePipelineOutputSetting::GetFooterText(UMoviePipelineExecutorJob* InJob) const 
 {
 	FTextBuilder TextBuilder;
-	TextBuilder.AppendLine(NSLOCTEXT("MovieRenderPipeline", "OutputSettingFooterText_Fmt",
-		"A list of {format_strings} and example values that are valid to use in the File Name Format:\n"));
+	TextBuilder.AppendLine(NSLOCTEXT("MovieRenderPipeline", "OutputSettingFooterText_Fmt", "A list of {format_strings} and example values that are valid to use in the File Name Format:\n"));
 
 	FMoviePipelineFormatArgs FormatArgs;
 	FormatArgs.InJob = InJob;
@@ -89,5 +87,4 @@ void UMoviePipelineOutputSetting::GetFormatArguments(FMoviePipelineFormatArgs& I
 		FString VersionText = FString::Printf(TEXT("v%0*d"), 3, VersionNumber);
 		InOutFormatArgs.FilenameArguments.Add(TEXT("version"), VersionText);
 	}
-
 }

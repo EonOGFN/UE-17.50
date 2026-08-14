@@ -75,6 +75,12 @@ namespace UnrealBuildTool
 			}
 		}
 
+		public override void GetExternalDependencies(HashSet<FileItem> ExternalDependencies)
+		{
+			ExternalDependencies.Add(FileItem.GetItemByFileReference(EnvVars.CompilerPath));
+			ExternalDependencies.Add(FileItem.GetItemByFileReference(EnvVars.LinkerPath));
+		}
+
 		static public void AddDefinition(List<string> Arguments, string Definition)
 		{
 			// Split the definition into name and value
@@ -145,7 +151,7 @@ namespace UnrealBuildTool
 		}
 
 
-		void AppendCLArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		protected virtual void AppendCLArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
 			// Suppress generation of object code for unreferenced inline functions. Enabling this option is more standards compliant, and causes a big reduction
 			// in object file sizes (and link times) due to the amount of stuff we inline.
@@ -195,6 +201,9 @@ namespace UnrealBuildTool
 				{
 					Arguments.Add("--target=i686-pc-windows-msvc");
 				}
+
+				// This matches Microsoft's default support floor for SSE.
+				Arguments.Add("-mssse3");
 			}
 
 			// Compile into an .obj file, and skip linking.
@@ -504,14 +513,7 @@ namespace UnrealBuildTool
 			{
 				if (CompileEnvironment.bUndefinedIdentifierWarningsAsErrors)
 				{
-					if (Target.WindowsPlatform.Compiler == WindowsCompiler.VisualStudio2015_DEPRECATED)
-					{
-						Arguments.Add("/we4668");
-					}
-					else if (Target.WindowsPlatform.Compiler == WindowsCompiler.VisualStudio2017)
-					{
-						Arguments.Add("/wd4668");
-					}
+					Arguments.Add("/we4668");
 				}
 				else
 				{
@@ -542,6 +544,13 @@ namespace UnrealBuildTool
  				Arguments.Add("/wd4244");
 				Arguments.Add("/wd4838");
  			}
+
+			// If using WindowsSDK 10.0.18362.0 or later and compiling Win32 we need to add a definition
+			//   for ignoring packing mismatches.
+			if(CompileEnvironment.Platform == UnrealTargetPlatform.Win32 && EnvVars.WindowsSdkVersion >= VersionNumber.Parse("10.0.18362.0"))
+			{
+				AddDefinition(Arguments, "WINDOWS_IGNORE_PACKING_MISMATCH");
+			}
 		}
 
 		protected virtual void AppendCLArguments_CPP(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -1014,7 +1023,7 @@ namespace UnrealBuildTool
 					FileReference PCHCPPPath = CompileEnvironment.PrecompiledHeaderIncludeFilename.ChangeExtension(".cpp");
 					FileItem PCHCPPFile = Graph.CreateIntermediateTextFile(
 						PCHCPPPath,
-						string.Format("#include \"{0}\"\r\n", CompileEnvironment.PrecompiledHeaderIncludeFilename.FullName.Replace('\\', '/'))
+						string.Format("// Compiler: {0}\n#include \"{1}\"\r\n", EnvVars.CompilerVersion, CompileEnvironment.PrecompiledHeaderIncludeFilename.FullName.Replace('\\', '/'))
 						);
 
 					// Make sure the original source directory the PCH header file existed in is added as an include
@@ -1747,6 +1756,9 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Allow the toolchain to adjust/process the link arguments
+			ModifyFinalLinkArguments(LinkEnvironment, Arguments, bBuildImportLibraryOnly );
+
 			// Create a response file for the linker, unless we're generating IntelliSense data
 			FileReference ResponseFileName = GetResponseFileName(LinkEnvironment, OutputFile);
 			if (!ProjectFileGenerator.bGenerateProjectFiles)
@@ -1802,6 +1814,11 @@ namespace UnrealBuildTool
 			Log.TraceVerbose("     Command: " + LinkAction.CommandArguments);
 
 			return OutputFile;
+		}
+
+		protected virtual void ModifyFinalLinkArguments(LinkEnvironment LinkEnvironment, List<string> Arguments, bool bBuildImportLibraryOnly)
+		{
+			
 		}
 
 		private void ExportObjectFilePaths(LinkEnvironment LinkEnvironment, string FileName, VCEnvironment EnvVars)

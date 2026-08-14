@@ -28,8 +28,8 @@
 #include "SequencerUtilities.h"
 #include "MovieSceneToolHelpers.h"
 
-#include "Interrogation/SequencerInterrogationLinker.h"
-#include "Interrogation/SequencerInterrogatedPropertyInstantiator.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 #include "Systems/MovieScenePropertyInstantiator.h"
 #include "MovieSceneTracksComponentTypes.h"
 
@@ -572,7 +572,7 @@ void F3DTransformTrackEditor::OnLockCameraClicked(ECheckBoxState CheckBoxState, 
 			}
 
 			GetSequencer()->SetPerspectiveViewportCameraCutEnabled(false);
-			LevelVC->SetMatineeActorLock(nullptr);
+			LevelVC->SetCinematicActorLock(nullptr);
 			LevelVC->SetActorLock(CameraActor.Get());
 			LevelVC->bLockedCameraView = true;
 			LevelVC->UpdateViewForLockedActor();
@@ -594,7 +594,7 @@ void F3DTransformTrackEditor::ClearLockedCameras(AActor* LockedActor)
 		{
 			if (LevelVC->IsActorLocked(LockedActor))
 			{
-				LevelVC->SetMatineeActorLock(nullptr);
+				LevelVC->SetCinematicActorLock(nullptr);
 				LevelVC->SetActorLock(nullptr);
 				LevelVC->bLockedCameraView = false;
 				LevelVC->ViewFOV = LevelVC->FOVAngle;
@@ -864,9 +864,10 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 	using namespace UE::MovieScene;
 	using namespace UE::Sequencer;
 
-	USequencerInterrogationLinker* Interrogator = NewObject<USequencerInterrogationLinker>(GetTransientPackage());
+	FSystemInterrogator Interrogator;
+	Interrogator.TrackImportedEntities(true);
 
-	TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Interrogator->EntityManager);
+	TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Interrogator.GetLinker()->EntityManager);
 
 	TSet<UMovieSceneTrack*> TracksToInterrogate;
 	for (const FKeySectionOperation& Operation : SectionsToKey)
@@ -876,16 +877,17 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 			TracksToInterrogate.Add(Track);
 		}
 	}
-	Interrogator->ImportTracks(TracksToInterrogate.Array());
 
-	const FInterrogationChannel InterrogationChannel = Interrogator->AddInterrogation(KeyTime);
+	// Don't care about the object binding ID for now
+	Interrogator.ImportTracks(TracksToInterrogate.Array(), FGuid(), FInterrogationChannel::Default());
+	Interrogator.AddInterrogation(KeyTime);
 
-	Interrogator->Update();
+	Interrogator.Update();
 
 	TArray<FMovieSceneEntityID> EntitiesPerSection, ValidEntities;
 	for (const FKeySectionOperation& Operation : SectionsToKey)
 	{
-		FMovieSceneEntityID EntityID = Interrogator->FindEntityFromOwner(InterrogationChannel, Operation.Section->GetSectionObject(), 0);
+		FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(FInterrogationKey::Default(), Operation.Section->GetSectionObject(), 0);
 
 		EntitiesPerSection.Add(EntityID);
 		if (EntityID)
@@ -894,7 +896,7 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 		}
 	}
 
-	USequencerInterrogatedPropertyInstantiatorSystem* System = Interrogator->FindSystem<USequencerInterrogatedPropertyInstantiatorSystem>();
+	UMovieSceneInterrogatedPropertyInstantiatorSystem* System = Interrogator.GetLinker()->FindSystem<UMovieSceneInterrogatedPropertyInstantiatorSystem>();
 
 	if (ensure(System && ValidEntities.Num() != 0))
 	{
@@ -902,7 +904,7 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 
 		FDecompositionQuery Query;
 		Query.Entities = ValidEntities;
-		Query.bConvertFromSourceEntityIDs = true;
+		Query.bConvertFromSourceEntityIDs = false;
 		Query.Object   = Component;
 
 		FIntermediate3DTransform CurrentValue(Component->GetRelativeLocation(), Component->GetRelativeRotation(), Component->GetRelativeScale3D());

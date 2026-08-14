@@ -8,7 +8,9 @@
 #include "D3D12RHIPrivate.h"
 #include "Misc/ScopeRWLock.h"
 #include "Stats/StatsMisc.h"
+#if PLATFORM_WINDOWS
 #include "nvapi.h"
+#endif
 
 #include "d3dcompiler.h"
 
@@ -834,7 +836,15 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
 		if (FAILED(hr))
 		{
-			DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+			// First check if D3D device removed, hung or out of memory and handle that seperatly 
+			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
+			{
+				VERIFYD3D12RESULT_EX(hr, pDevice2);
+			}
+			else
+			{
+				DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+			}
 		}
 	}
 	else
@@ -843,7 +853,15 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 		HRESULT hr = CreatePipelineState(*PSO, Adapter->GetD3DDevice(), &Desc, CreationArgs->Library, Name);
 		if (FAILED(hr))
 		{
-			DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+			// First check if D3D device removed, hung or out of memory and handle that seperatly 
+			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
+			{
+				VERIFYD3D12RESULT_EX(hr, pDevice2);
+			}
+			else
+			{
+				DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+			}
 		}
 	}
 }
@@ -998,16 +1016,17 @@ static void CreateComputePipelineState(ID3D12PipelineState** PSO, FD3D12Adapter*
 		CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, true /* use stream */);
 	}
 }
+
 #else
 
 static FORCEINLINE void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs)
 {
-	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
+	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
 }
 
 static FORCEINLINE void CreateComputePipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const ComputePipelineCreationArgs_POD* CreationArgs)
 {
-	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
+	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
 }
 
 #endif

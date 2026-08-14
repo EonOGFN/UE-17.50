@@ -155,12 +155,14 @@ FVivoxVoiceChatUser::FVivoxVoiceChatUser(FVivoxVoiceChat& InVivoxVoiceChat)
 	: VivoxClientConnection(InVivoxVoiceChat.VivoxClientConnection) 
 	, VivoxVoiceChat(InVivoxVoiceChat)
 {
-	VivoxVoiceChat.RegisterVoiceChatUser(this);
 }
 
 FVivoxVoiceChatUser::~FVivoxVoiceChatUser()
 {
-	VivoxVoiceChat.UnregisterVoiceChatUser(this);
+	if (!bReleased)
+	{
+		VIVOXVOICECHATUSER_LOG(Error, TEXT("~FVivoxVoiceChatUser called via route other than FVivoxVoiceChat::ReleaseUser"));
+	}
 }
 
 void FVivoxVoiceChatUser::SetSetting(const FString& Name, const FString& Value)
@@ -529,10 +531,7 @@ void FVivoxVoiceChatUser::BlockPlayers(const TArray<FString>& PlayerNames)
 	}
 	else
 	{
-		for (const FString& PlayerName : PlayerNames)
-		{
-			VIVOXVOICECHATUSER_LOG(Verbose, TEXT("Player blocked: [%s]"), *PlayerName);
-		}
+		VIVOXVOICECHATUSER_LOG(Log, TEXT("Players blocked: [%s]"), *FString::Join(PlayerNames, TEXT(", ")));
 	}
 }
 
@@ -552,10 +551,7 @@ void FVivoxVoiceChatUser::UnblockPlayers(const TArray<FString>& PlayerNames)
 	}
 	else
 	{
-		for (const FString& PlayerName : PlayerNames)
-		{
-			VIVOXVOICECHATUSER_LOG(Verbose, TEXT("Player unblocked: [%s]"), *PlayerName);
-		}
+		VIVOXVOICECHATUSER_LOG(Log, TEXT("Players unblocked: [%s]"), *FString::Join(PlayerNames, TEXT(", ")));
 	}
 }
 
@@ -1966,9 +1962,40 @@ bool FVivoxVoiceChat::IsInitialized() const
 
 IVoiceChatUser* FVivoxVoiceChat::CreateUser()
 {
-	return new FVivoxVoiceChatUser(*this);
+	FScopeLock Lock(&VoiceChatUsersCriticalSection);
+	const TUniquePtr<FVivoxVoiceChatUser>& User = VoiceChatUsers.Emplace_GetRef(MakeUnique<FVivoxVoiceChatUser>(*this));
+	return User.Get();
 }
 
+void FVivoxVoiceChat::ReleaseUser(IVoiceChatUser* User)
+{
+	if (User)
+	{
+		if (IsInitialized()
+			&& IsConnected()
+			&& User->IsLoggedIn())
+		{
+			User->Logout(FOnVoiceChatLogoutCompleteDelegate::CreateLambda([](const FString& PlayerName, const FVoiceChatResult& Result)
+			{
+				if (!Result.IsSuccess())
+				{
+					UE_LOG(LogVivoxVoiceChat, Warning, TEXT("UnregisterVoiceChatUser PlayerName=[%s] Logout %s"), *PlayerName, *LexToString(Result))
+				}
+			}));
+		}
+
+		FScopeLock Lock(&VoiceChatUsersCriticalSection);
+		VoiceChatUsers.RemoveAll([User](TUniquePtr<FVivoxVoiceChatUser>& OtherUser)
+		{
+			if(User == OtherUser.Get())
+			{
+				OtherUser->bReleased = true;
+				return true;
+			}
+			return false;
+		});
+	}
+}
 
 void FVivoxVoiceChat::SetVivoxSdkConfigHints(vx_sdk_config_t& Hints)
 {
@@ -2294,7 +2321,7 @@ bool FVivoxVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 		{
 			for (int UserIndex = 0; UserIndex < VoiceChatUsers.Num(); ++UserIndex)
 			{
-				if (FVivoxVoiceChatUser* User = VoiceChatUsers[UserIndex])
+				if (const TUniquePtr<FVivoxVoiceChatUser>& User = VoiceChatUsers[UserIndex])
 				{
 					VIVOX_EXEC_LOG(TEXT("VivoxUser Index:%i PlayerName:%s"), UserIndex, *User->GetLoggedInPlayerName());
 				}
@@ -2316,7 +2343,7 @@ bool FVivoxVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 
 			for (int UserIndex = 0; UserIndex < VoiceChatUsers.Num(); ++UserIndex)
 			{
-				if (FVivoxVoiceChatUser* User = VoiceChatUsers[UserIndex])
+				if (const TUniquePtr<FVivoxVoiceChatUser>& User = VoiceChatUsers[UserIndex])
 				{
 					VIVOX_EXEC_LOG(TEXT("VivoxUser Index:%i PlayerName:%s"), UserIndex, *User->GetLoggedInPlayerName());
 					User->Exec(InWorld, SubCmd, Ar);
@@ -2360,11 +2387,11 @@ bool FVivoxVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 		{
 			if (RequestedUserIndex < VoiceChatUsers.Num())
 			{
-				if (FVivoxVoiceChatUser* User = VoiceChatUsers[RequestedUserIndex])
+				if (const TUniquePtr<FVivoxVoiceChatUser>& User = VoiceChatUsers[RequestedUserIndex])
 				{
 					if (FParse::Command(&Cmd, TEXT("DESTROYUSER")))
 					{
-						delete User;
+						ReleaseUser(User.Get());
 						return true;
 					}
 					else
@@ -2854,11 +2881,11 @@ FString FVivoxVoiceChat::InsecureGetJoinToken(const FString& ChannelName, EVoice
 template <typename TFn, typename... TArgs>
 void FVivoxVoiceChat::DispatchUsingAccountName(const TFn& Fn, const VivoxClientApi::AccountName& AccountName, TArgs&&... Args)
 {
-	for (FVivoxVoiceChatUser* User : VoiceChatUsers)
+	for (const TUniquePtr<FVivoxVoiceChatUser>& User : VoiceChatUsers)
 	{
 		if (User->LoginSession.AccountName.IsValid() && User->LoginSession.AccountName == AccountName)
 		{
-			(User->*Fn)(AccountName, Forward<TArgs>(Args)...);
+			(User.Get()->*Fn)(AccountName, Forward<TArgs>(Args)...);
 		}
 	}
 }
@@ -2866,9 +2893,9 @@ void FVivoxVoiceChat::DispatchUsingAccountName(const TFn& Fn, const VivoxClientA
 template <typename TFn, typename... TArgs>
 void FVivoxVoiceChat::DispatchAll(const TFn& Fn, TArgs&&... Args)
 {
-	for (FVivoxVoiceChatUser* User : VoiceChatUsers)
+	for (const TUniquePtr<FVivoxVoiceChatUser>& User : VoiceChatUsers)
 	{
-		(User->*Fn)(Forward<TArgs>(Args)...);
+		(User.Get()->*Fn)(Forward<TArgs>(Args)...);
 	}
 }
 
@@ -3171,32 +3198,4 @@ void FVivoxVoiceChat::onAudioUnitBeforeRecvAudioRendered(const char* SessionGrou
 {
 	FScopeLock Lock(&VoiceChatUsersCriticalSection);
 	DispatchAll(&FVivoxVoiceChatUser::onAudioUnitBeforeRecvAudioRendered, SessionGroupHandle, InitialTargetUri, PcmFrames, PcmFrameCount, AudioFrameRate, ChannelsPerFrame, bSilence);
-}
-
-void FVivoxVoiceChat::RegisterVoiceChatUser(FVivoxVoiceChatUser* User)
-{
-	FScopeLock Lock(&VoiceChatUsersCriticalSection);
-	VoiceChatUsers.Add(User);
-}
-
-void FVivoxVoiceChat::UnregisterVoiceChatUser(FVivoxVoiceChatUser* User)
-{
-	if (User)
-	{
-		if (IsInitialized()
-			&& IsConnected()
-			&& User->IsLoggedIn())
-		{
-			User->Logout(FOnVoiceChatLogoutCompleteDelegate::CreateLambda([](const FString& PlayerName, const FVoiceChatResult& Result)
-			{
-				if (!Result.IsSuccess())
-				{
-					UE_LOG(LogVivoxVoiceChat, Warning, TEXT("UnregisterVoiceChatUser PlayerName=[%s] Logout %s"), *PlayerName, *LexToString(Result))
-				}
-			}));
-		}
-
-		FScopeLock Lock(&VoiceChatUsersCriticalSection);
-		VoiceChatUsers.Remove(User);
-	}
 }

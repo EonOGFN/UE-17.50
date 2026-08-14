@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MoviePipelineBurnInSetting.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Slate/WidgetRenderer.h"
 #include "MovieRenderPipelineDataTypes.h"
 #include "MoviePipelineBurnInWidget.h"
@@ -13,12 +14,6 @@
 
 void UMoviePipelineBurnInSetting::GatherOutputPassesImpl(TArray<FMoviePipelinePassIdentifier>& ExpectedRenderPasses)
 {
-	// If this was transiently added, don't make a burn-in.
-	if (!GetIsUserCustomized() || !IsEnabled())
-	{
-		return;
-	}
-
 	if (BurnInClass.IsValid())
 	{
 		ExpectedRenderPasses.Add(FMoviePipelinePassIdentifier(TEXT("BurnInOverlay")));
@@ -27,12 +22,6 @@ void UMoviePipelineBurnInSetting::GatherOutputPassesImpl(TArray<FMoviePipelinePa
 
 void UMoviePipelineBurnInSetting::RenderSample_GameThreadImpl(const FMoviePipelineRenderPassMetrics& InSampleState)
 {
-	// If this was transiently added, don't make a burn-in.
-	if (!GetIsUserCustomized() || !IsEnabled())
-	{
-		return;
-	}
-
 	if (InSampleState.bDiscardResult)
 	{
 		return;
@@ -76,6 +65,7 @@ void UMoviePipelineBurnInSetting::RenderSample_GameThreadImpl(const FMoviePipeli
 			FrameData->PassIdentifier = FMoviePipelinePassIdentifier(TEXT("BurnInOverlay"));
 			FrameData->SampleState = InSampleState;
 			FrameData->bRequireTransparentOutput = true;
+			FrameData->SortingOrder = 3;
 
 			TUniquePtr<FImagePixelData> PixelData = MakeUnique<TImagePixelData<FColor>>(InSampleState.BackbufferSize, TArray64<FColor>(MoveTemp(RawPixels)), FrameData);
 
@@ -86,12 +76,6 @@ void UMoviePipelineBurnInSetting::RenderSample_GameThreadImpl(const FMoviePipeli
 
 void UMoviePipelineBurnInSetting::SetupImpl(const MoviePipeline::FMoviePipelineRenderPassInitSettings& InPassInitSettings)
 {
-	// If this was transiently added, don't make a burn-in.
-	if (!GetIsUserCustomized() || !IsEnabled())
-	{
-		return;
-	}
-
 	if (!BurnInClass.IsValid())
 	{
 		return;
@@ -123,12 +107,6 @@ void UMoviePipelineBurnInSetting::SetupImpl(const MoviePipeline::FMoviePipelineR
 
 void UMoviePipelineBurnInSetting::TeardownImpl() 
 {
-	// If this was transiently added, don't make a burn-in.
-	if (!GetIsUserCustomized() || !IsEnabled())
-	{
-		return;
-	}
-	
 	FlushRenderingCommands();
 
 	if (FSlateApplication::IsInitialized() && VirtualWindow.IsValid())

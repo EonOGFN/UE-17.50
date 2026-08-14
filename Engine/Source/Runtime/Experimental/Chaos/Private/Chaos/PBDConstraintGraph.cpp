@@ -13,6 +13,9 @@
 
 using namespace Chaos;
 
+bool ChaosSolverSleepEnabled = true;
+FAutoConsoleVariableRef CVarChaosSolverSleepEnabled(TEXT("p.Chaos.Solver.SleepEnabled"), ChaosSolverSleepEnabled, TEXT(""));
+
 bool ChaosSolverCollisionDefaultUseMaterialSleepThresholdsCVar = true;
 FAutoConsoleVariableRef CVarChaosSolverCollisionDefaultUseMaterialSleepThresholds(TEXT("p.ChaosSolverCollisionDefaultUseMaterialSleepThresholds"), ChaosSolverCollisionDefaultUseMaterialSleepThresholdsCVar, TEXT("Enable material support for sleeping thresholds[def:true]"));
 
@@ -162,7 +165,7 @@ void FPBDConstraintGraph::InitializeGraph(const TParticleView<TGeometryParticles
 	}
 	else
 	{
-		if (!ensure(NumNonDisabledParticles <= Nodes.Num()))
+		if (!CHAOS_ENSURE(NumNonDisabledParticles <= Nodes.Num()))
 		{
 			for (auto& Particle : Particles)
 			{
@@ -278,6 +281,35 @@ void FPBDConstraintGraph::AddConstraint(const uint32 InContainerId, FConstraintH
 	}
 }
 
+
+void FPBDConstraintGraph::RemoveConstraint(const uint32 InContainerId, FConstraintHandle* InConstraintHandle, const TVector<TGeometryParticleHandle<FReal, 3>*, 2>& ConstrainedParticles)
+{
+	check(InConstraintHandle);
+
+	int32* PNodeIndex0 = (ConstrainedParticles[0]) ? ParticleToNodeIndex.Find(ConstrainedParticles[0]) : nullptr;
+	int32* PNodeIndex1 = (ConstrainedParticles[1]) ? ParticleToNodeIndex.Find(ConstrainedParticles[1]) : nullptr;
+	if (ensure(PNodeIndex0 || PNodeIndex1) )
+	{
+		if ( InContainerId < (uint32)Edges.Num() )
+		{
+			int32 Index0 = INDEX_NONE, Index1 = INDEX_NONE;
+			if (PNodeIndex0) 
+			{
+				Nodes[*PNodeIndex0].Edges.Remove(InContainerId);
+				Index0 = *PNodeIndex0;
+			}
+			if (PNodeIndex1)
+			{
+				Nodes[*PNodeIndex1].Edges.Remove(InContainerId);
+				Index1 = *PNodeIndex1;
+			}
+			if (Edges[InContainerId].FirstNode == Index0 && Edges[InContainerId].SecondNode == Index1)
+			{
+				Edges[InContainerId] = FGraphEdge();
+			}
+		}
+	}
+}
 
 const typename FPBDConstraintGraph::FConstraintData& FPBDConstraintGraph::GetConstraintData(int32 ConstraintDataIndex) const
 {
@@ -621,6 +653,11 @@ bool FPBDConstraintGraph::ComputeIsland(const int32 InNode, const int32 Island, 
 
 bool FPBDConstraintGraph::SleepInactive(const int32 Island, const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& PerParticleMaterialAttributes, const THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials)
 {
+	if (!ChaosSolverSleepEnabled)
+	{
+		return false;
+	}
+
 	FReal LinearSleepingThreshold = FLT_MAX;
 	FReal AngularSleepingThreshold = FLT_MAX;
 	int32 SleepCounterThreshold = 0;
@@ -647,10 +684,10 @@ bool FPBDConstraintGraph::SleepInactive(const int32 Island, const TArrayCollecti
 			{
 				NumDynamicParticles++;
 
-				const FReal LinearSpeed2 = PBDRigid->V().SizeSquared();
+				const FReal LinearSpeed2 = PBDRigid->VSmooth().SizeSquared();
 				MaxLinearSpeed2 = FMath::Max(LinearSpeed2,MaxLinearSpeed2);
 
-				const FReal AngularSpeed2 = PBDRigid->W().SizeSquared();
+				const FReal AngularSpeed2 = PBDRigid->WSmooth().SizeSquared();
 				MaxAngularSpeed2 = FMath::Max(AngularSpeed2,MaxAngularSpeed2);
 
 				bool bThresholdsSet = false;

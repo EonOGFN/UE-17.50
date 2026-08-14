@@ -64,6 +64,49 @@ FImplicitObjectUnion::FImplicitObjectUnion(TArray<TUniquePtr<FImplicitObject>>&&
 	CacheAllImplicitObjects();
 }
 
+void FImplicitObjectUnion::Combine(TArray<TUniquePtr<FImplicitObject>>& OtherObjects)
+{
+	ensure(MObjects.Num());
+
+	for (int32 i = 0; i < OtherObjects.Num(); ++i)
+	{
+		MLocalBoundingBox.GrowToInclude(OtherObjects[i]->BoundingBox());
+	}
+
+	for (TUniquePtr<FImplicitObject>& ChildObject: OtherObjects)
+	{
+		MObjects.Add(MoveTemp(ChildObject));
+	}
+
+	CacheAllImplicitObjects();
+}
+
+void FImplicitObjectUnion::RemoveAt(int32 RemoveIndex)
+{
+	if (RemoveIndex < MObjects.Num())
+	{
+		MObjects[RemoveIndex].Reset(nullptr);
+		MObjects.RemoveAt(RemoveIndex);
+	}
+
+	MLocalBoundingBox = TAABB<float, 3>::EmptyAABB();
+	for (int32 i = 0; i < MObjects.Num(); ++i)
+	{
+		if (i > 0)
+		{
+			MLocalBoundingBox.GrowToInclude(MObjects[i]->BoundingBox());
+		}
+		else
+		{
+			MLocalBoundingBox = MObjects[i]->BoundingBox();
+		}
+	}
+
+	CacheAllImplicitObjects();
+
+}
+
+
 FImplicitObjectUnion::FImplicitObjectUnion(FImplicitObjectUnion&& Other)
 	: FImplicitObject(EImplicitObject::HasBoundingBox, ImplicitObjectType::Union)
 	, MObjects(MoveTemp(Other.MObjects))
@@ -198,13 +241,21 @@ void FImplicitObjectUnionClustered::FindAllIntersectingClusteredObjects(TArray<P
 	else
 	{
 		TArray<Pair<const FImplicitObject*, FRigidTransform3>> LocalOut;
-		for (const TUniquePtr<FImplicitObject>& Object : MObjects)
+		TArray<int32> Idxs;
+		for (int32 Idx = 0; Idx < MObjects.Num(); ++Idx)
 		{
+			int32 NumOut = LocalOut.Num();
+			const TUniquePtr<FImplicitObject>& Object = MObjects[Idx];
 			Object->FindAllIntersectingObjects(LocalOut, LocalBounds);
+			for (int32 i = NumOut; i < LocalOut.Num(); ++i)
+			{
+				Idxs.Add(Idx);
+			}
 		}
-		for (auto& OutElem : LocalOut)
+		for (int32 Idx = 0; Idx < LocalOut.Num(); ++Idx)
 		{
-			const TBVHParticles<FReal, 3>* Simplicial = nullptr;
+			auto& OutElem = LocalOut[Idx];
+			const TBVHParticles<FReal, 3>* Simplicial = MOriginalParticleLookupHack.IsValidIndex(Idxs[Idx]) ? MOriginalParticleLookupHack[Idxs[Idx]]->CollisionParticles().Get() : nullptr;
 			Out.Add(MakePair(MakePair(OutElem.First, Simplicial), OutElem.Second));
 		}
 	}

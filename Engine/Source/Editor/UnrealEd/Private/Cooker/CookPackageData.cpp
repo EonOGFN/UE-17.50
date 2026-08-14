@@ -4,6 +4,7 @@
 
 #include "Algo/AnyOf.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
+#include "CookPlatformManager.h"
 #include "Containers/StringView.h"
 #include "Misc/CoreMiscDefines.h"
 #include "Misc/Paths.h"
@@ -477,11 +478,11 @@ namespace Cook
 			{
 				if (GetIsUrgent())
 				{
-					PackageDatas.GetLoadPrepareQueue().PushFront(this);
+					PackageDatas.GetLoadPrepareQueue().AddFront(this);
 				}
 				else
 				{
-					PackageDatas.GetLoadPrepareQueue().PushBack(this);
+					PackageDatas.GetLoadPrepareQueue().Add(this);
 				}
 			}
 			break;
@@ -491,11 +492,11 @@ namespace Cook
 			{
 				if (GetIsUrgent())
 				{
-					PackageDatas.GetLoadReadyQueue().PushFront(this);
+					PackageDatas.GetLoadReadyQueue().AddFront(this);
 				}
 				else
 				{
-					PackageDatas.GetLoadReadyQueue().PushBack(this);
+					PackageDatas.GetLoadReadyQueue().Add(this);
 				}
 			}
 			break;
@@ -505,11 +506,11 @@ namespace Cook
 			{
 				if (GetIsUrgent())
 				{
-					PackageDatas.GetSaveQueue().PushFront(this);
+					PackageDatas.GetSaveQueue().AddFront(this);
 				}
 				else
 				{
-					PackageDatas.GetSaveQueue().PushBack(this);
+					PackageDatas.GetSaveQueue().Add(this);
 				}
 			}
 			break;
@@ -672,6 +673,12 @@ namespace Cook
 			SetIsPreloadAttempted(true);
 			return true;
 		}
+		if (GAllowCookedDataInEditorBuilds)
+		{
+			// Use of preloaded files is not yet implemented when GAllowCookedDataInEditorBuilds is on, see FLinkerLoad::CreateLoader
+			SetIsPreloadAttempted(true);
+			return true;
+		}
 		if (!PreloadableFile)
 		{
 			TStringBuilder<NAME_SIZE> FileNameString;
@@ -720,7 +727,7 @@ namespace Cook
 			check(PreloadableFile);
 			if (FPreloadableFile::UnRegister(PreloadableFile))
 			{
-				UE_LOG(LogCook, Warning, TEXT("PreloadableFile was created for %s but never used. This is wasteful and bad for cook performance."), *PackageName.ToString());
+				UE_LOG(LogCook, Display, TEXT("PreloadableFile was created for %s but never used. This is wasteful and bad for cook performance."), *PackageName.ToString());
 			}
 			PreloadableFile->ReleaseCache(); // ReleaseCache to conserve memory if the Linker still has a pointer to it
 		}
@@ -841,6 +848,12 @@ namespace Cook
 		return Package != nullptr || CachedObjectsInOuter.Num() > 0;
 	}
 
+	void FPackageData::RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap)
+	{
+		RemapArrayElements(RequestedPlatforms, Remap);
+		RemapArrayElements(CookedPlatforms, Remap);
+	}
+
 	bool FPackageData::IsSaveInvalidated() const
 	{
 		if (GetState() != EPackageState::Save)
@@ -934,6 +947,11 @@ namespace Cook
 
 		Object = nullptr;
 		bHasReleased = true;
+	}
+
+	void FPendingCookedPlatformData::RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap)
+	{
+		TargetPlatform = Remap[TargetPlatform];
 	}
 
 
@@ -1362,6 +1380,18 @@ namespace Cook
 		return PackageDatas.end();
 	}
 
+	void FPackageDatas::RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap)
+	{
+		for (FPackageData* PackageData : PackageDatas)
+		{
+			PackageData->RemapTargetPlatforms(Remap);
+		}
+		for (FPendingCookedPlatformData& CookedPlatformData : PendingCookedPlatformDatas)
+		{
+			CookedPlatformData.RemapTargetPlatforms(Remap);
+		}
+	}
+
 	void FRequestQueue::Empty()
 	{
 		NormalRequests.Empty();
@@ -1448,14 +1478,14 @@ namespace Cook
 		}
 	}
 
-	void FLoadPrepareQueue::PushBack(FPackageData* PackageData)
+	void FLoadPrepareQueue::Add(FPackageData* PackageData)
 	{
-		EntryQueue.PushBack(PackageData);
+		EntryQueue.Add(PackageData);
 	}
 
-	void FLoadPrepareQueue::PushFront(FPackageData* PackageData)
+	void FLoadPrepareQueue::AddFront(FPackageData* PackageData)
 	{
-		PreloadingQueue.PushFront(PackageData);
+		PreloadingQueue.AddFront(PackageData);
 	}
 
 	bool FLoadPrepareQueue::Contains(const FPackageData* PackageData) const

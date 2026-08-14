@@ -70,7 +70,7 @@ namespace GLTF
 		check(!Mesh.Name.IsEmpty());
 
 		const FString PackageName  = UPackageTools::SanitizePackageName(FPaths::Combine(ParentPackage->GetName(), Mesh.Name));
-		UPackage*     AssetPackage = CreatePackage(nullptr, *PackageName);
+		UPackage*     AssetPackage = CreatePackage(*PackageName);
 		UStaticMesh*  StaticMesh   = NewObject<UStaticMesh>(AssetPackage, *FPaths::GetBaseFilename(PackageName), Flags);
 
 		FStaticMeshSourceModel& SourceModel = StaticMesh->AddSourceModel();
@@ -98,7 +98,7 @@ namespace GLTF
 		{
 			const FPrimitive& Primitive = Mesh.Primitives[Index];
 			const FName SlotName(*FString::FromInt(Primitive.MaterialIndex));
-			const int32 MeshSlot = StaticMesh->StaticMaterials.Emplace(nullptr, SlotName, SlotName);
+			const int32 MeshSlot = StaticMesh->GetStaticMaterials().Emplace(nullptr, SlotName, SlotName);
 			StaticMesh->GetSectionInfoMap().Set(0, MeshSlot, FMeshSectionInfo(MeshSlot));
 		}
 

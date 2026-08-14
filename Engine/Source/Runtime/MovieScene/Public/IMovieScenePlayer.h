@@ -64,10 +64,14 @@ struct EMovieSceneCameraCutParams
 	/** Blending type to use to get to the new shot (only used when BlendTime is greater than 0) */
 	TOptional<EMovieSceneBuiltInEasing> BlendType;
 
+	/** When blending, whether to lock the previous camera */
+	bool bLockPreviousCamera = false;
+
 #if WITH_EDITOR
 	// Info for previewing shot blends in editor.
 	UObject* PreviousCameraObject = nullptr;
 	float PreviewBlendFactor = -1.f;
+	bool bCanBlend = false;
 #endif
 };
 

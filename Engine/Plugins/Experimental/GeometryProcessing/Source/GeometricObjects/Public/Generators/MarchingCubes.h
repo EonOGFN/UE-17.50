@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Async/ParallelFor.h"
+#include "Misc/ScopeLock.h"
 
 #include "Math/UnrealMathUtility.h"
 #include "MeshShapeGenerator.h"
@@ -831,7 +832,7 @@ protected:
 			{
 				for (int k = 0; k < RootModeSteps; ++k)
 				{
-					mu = (IsoValue - fa) / (fb - fa);
+					mu = FMathd::Clamp((IsoValue - fa) / (fb - fa), 0.0, 1.0);
 					PIso.X = a.X + mu * (b.X - a.X);
 					PIso.Y = a.Y + mu * (b.Y - a.Y);
 					PIso.Z = a.Z + mu * (b.Z - a.Z);
@@ -848,7 +849,7 @@ protected:
 			}
 
 			// final lerp
-			mu = (IsoValue - fa) / (fb - fa);
+			mu = FMathd::Clamp((IsoValue - fa) / (fb - fa), 0.0, 1.0);
 			PIso.X = a.X + mu * (b.X - a.X);
 			PIso.Y = a.Y + mu * (b.Y - a.Y);
 			PIso.Z = a.Z + mu * (b.Z - a.Z);

@@ -6,6 +6,7 @@
 namespace NetworkPredictionCVars
 {
 	NETSIM_DEVCVAR_SHIPCONST_INT(ForceReconcile, 0, "np.ForceReconcile", "Force a single reconcile");
+	NETSIM_DEVCVAR_SHIPCONST_INT(SkipReconcile, 0, "np.SkipReconcile", "Skip all reconciles");
 	NETSIM_DEVCVAR_SHIPCONST_INT(PrintReconciles, 0, "np.PrintReconciles", "Print reconciles to log");
 }
 
@@ -104,7 +105,7 @@ public:
 
 				if (FNetworkPredictionDriver<ModelDef>::ShouldReconcilePhysics(PhysicsFrame, TickState->PhysicsRewindData, InstanceData.Info.Driver, ClientRecvData.Physics))
 				{
-					UE_NP_TRACE_SHOULD_RECONCILE(ClientRecvData.TraceID); // TODO: need a way to trace physics state
+					UE_NP_TRACE_SHOULD_RECONCILE(ClientRecvData.TraceID);
 					bDoRollback = true;
 
 					if (NetworkPredictionCVars::PrintReconciles())
@@ -120,7 +121,7 @@ public:
 				}
 			}
 
-			if (bDoRollback || NetworkPredictionCVars::ForceReconcile() > 0)
+			if ((bDoRollback || NetworkPredictionCVars::ForceReconcile() > 0) && !NetworkPredictionCVars::SkipReconcile())
 			{
 				RollbackFrame = (RollbackFrame == INDEX_NONE) ? LocalFrame : FMath::Min(RollbackFrame, LocalFrame);
 			}

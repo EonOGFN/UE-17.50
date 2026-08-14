@@ -3,21 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/UnrealType.h"
 #include "Engine/UserDefinedStruct.h"
-#include "Templates/SharedPointer.h"
 #include "Misc/SecureHash.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/GCObject.h"
+#include "UObject/UnrealType.h"
+
 #include "NiagaraTypes.generated.h"
 
 class UNiagaraDataInterfaceBase;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogNiagara, Log, Verbose);
-
-// helper methods for basic struct definitions
-struct NIAGARA_API FNiagaraTypeUtilities
-{
-	static FString GetNamespaceStringForScriptParameterScope(const ENiagaraParameterScope& InScope);
-};
 
 // basic type struct definitions
 
@@ -467,14 +463,14 @@ public:
 	/**
 	Adds an string value to the hash.
 	*/
-	bool UpdateString(const TCHAR* InDebugName, const FString& InData)
+	bool UpdateString(const TCHAR* InDebugName, FStringView InData)
 	{
-		HashState.Update((const uint8 *)(*InData), sizeof(TCHAR)*InData.Len());
+		HashState.Update((const uint8 *)InData.GetData(), sizeof(TCHAR)*InData.Len());
 #if WITH_EDITORONLY_DATA
 		if (LogCompileIdGeneration != 0)
 		{
 			Values.Top().PropertyKeys.Push(InDebugName);
-			Values.Top().PropertyValues.Push(InData);
+			Values.Top().PropertyValues.Push(FString(InData));
 		}
 #endif
 		return true;
@@ -526,6 +522,12 @@ enum class ENiagaraParameterScope : uint32
 	None UMETA(Hidden),
 
 	Num UMETA(Hidden)
+};
+
+// helper methods for basic struct definitions
+struct NIAGARA_API FNiagaraTypeUtilities
+{
+	static FString GetNamespaceStringForScriptParameterScope(const ENiagaraParameterScope& InScope);
 };
 
 UENUM()
@@ -641,7 +643,7 @@ USTRUCT()
 struct NIAGARA_API FNiagaraVariableMetaData
 {
 	GENERATED_USTRUCT_BODY()
-public:
+
 	FNiagaraVariableMetaData()
 		: bAdvancedDisplay(false)
 		, EditorSortPriority(0)
@@ -655,7 +657,7 @@ public:
 		, bCreatedInSystemEditor(false)
 		, bUseLegacyNameString(false)
 	{};
-public:
+
 	UPROPERTY(EditAnywhere, Category = "Variable", meta = (MultiLine = true, SkipForCompileHash = "true"))
 	FText Description;
 
@@ -685,7 +687,8 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Variable", DisplayName = "Property Metadata", meta = (ToolTip = "Property Metadata", SkipForCompileHash = "true"))
 	TMap<FName, FString> PropertyMetaData;
 
-public:
+	UPROPERTY(EditAnywhere, Category = "Variable", meta = (ToolTip = "If set, this attribute is visually displayed as a child under the given parent attribute. Currently, only static switches are supported as parent attributes!", SkipForCompileHash = "true"))
+	FName ParentAttribute;
 
 	const FName& GetScopeName() const { return ScopeName; };
 	void SetScopeName(const FName& InScopeName) { ScopeName = InScopeName; };
@@ -719,6 +722,9 @@ public:
 	void SetIsUsingLegacyNameString(bool bInUseLegacyNameString) { bUseLegacyNameString = bInUseLegacyNameString; };
 
 	void CopyPerScriptMetaData(const FNiagaraVariableMetaData& OtherMetaData);
+
+	/** Copies all the properties that are marked as editable for the user (e.g. EditAnywhere). */
+	void CopyUserEditableMetaData(const FNiagaraVariableMetaData& OtherMetaData);
 
 private:
 	/** Defines the scope of a variable that is an input to a script. Used to lookup registered scope infos and resolve the actual ENiagaraParameterScope and Namespace string to use. */
@@ -992,6 +998,7 @@ public:
 	static const FNiagaraTypeDefinition& GetUObjectDef() { return UObjectDef; }
 	static const FNiagaraTypeDefinition& GetUMaterialDef() { return UMaterialDef; }
 	static const FNiagaraTypeDefinition& GetUTextureDef() { return UTextureDef; }
+	static const FNiagaraTypeDefinition& GetUTextureRenderTargetDef() { return UTextureRenderTargetDef; }
 
 	static const FNiagaraTypeDefinition& GetHalfDef() { return HalfDef; }
 	static const FNiagaraTypeDefinition& GetHalfVec2Def() { return HalfVec2Def; }
@@ -1065,6 +1072,7 @@ private:
 	static FNiagaraTypeDefinition UObjectDef;
 	static FNiagaraTypeDefinition UMaterialDef;
 	static FNiagaraTypeDefinition UTextureDef;
+	static FNiagaraTypeDefinition UTextureRenderTargetDef;
 
 	static FNiagaraTypeDefinition HalfDef;
 	static FNiagaraTypeDefinition HalfVec2Def;
@@ -1090,6 +1098,7 @@ private:
 	static UClass* UObjectClass;
 	static UClass* UMaterialClass;
 	static UClass* UTextureClass;
+	static UClass* UTextureRenderTargetClass;
 
 	static UEnum* SimulationTargetEnum;
 	static UEnum* ScriptUsageEnum;
@@ -1154,7 +1163,7 @@ FORCEINLINE uint32 GetTypeHash(const FNiagaraTypeDefinition& Type)
 * Used by UI to provide selection; new uniforms and variables
 * may be instanced using the types provided here
 */
-class NIAGARA_API FNiagaraTypeRegistry
+class NIAGARA_API FNiagaraTypeRegistry : public FGCObject
 {
 public:
 	enum
@@ -1166,43 +1175,45 @@ public:
 
 	static const RegisteredTypesArray& GetRegisteredTypes()
 	{
-		return RegisteredTypes;
+		return Get().RegisteredTypes;
 	}
 
 	static const TArray<FNiagaraTypeDefinition> &GetRegisteredParameterTypes()
 	{
-		return RegisteredParamTypes;
+		return Get().RegisteredParamTypes;
 	}
 
 	static const TArray<FNiagaraTypeDefinition> &GetRegisteredPayloadTypes()
 	{
-		return RegisteredPayloadTypes;
+		return Get().RegisteredPayloadTypes;
 	}
 
 	static const TArray<FNiagaraTypeDefinition>& GetUserDefinedTypes()
 	{
-		return RegisteredUserDefinedTypes;
+		return Get().RegisteredUserDefinedTypes;
 	}
 
 	static const TArray<FNiagaraTypeDefinition>& GetNumericTypes()
 	{ 
-		return RegisteredNumericTypes;
+		return Get().RegisteredNumericTypes;
 	}
 
 	static UNiagaraDataInterfaceBase* GetDefaultDataInterfaceByName(const FString& DIClassName);
 
 	static void ClearUserDefinedRegistry()
 	{
-		FRWScopeLock Lock(RegisteredTypesLock, FRWScopeLockType::SLT_Write);
+		FNiagaraTypeRegistry& Registry = Get();
 
-		for (const FNiagaraTypeDefinition& Def : RegisteredUserDefinedTypes)
+		FRWScopeLock Lock(Registry.RegisteredTypesLock, FRWScopeLockType::SLT_Write);
+
+		for (const FNiagaraTypeDefinition& Def : Registry.RegisteredUserDefinedTypes)
 		{
-			RegisteredPayloadTypes.Remove(Def);
-			RegisteredParamTypes.Remove(Def);
-			RegisteredNumericTypes.Remove(Def);
+			Registry.RegisteredPayloadTypes.Remove(Def);
+			Registry.RegisteredParamTypes.Remove(Def);
+			Registry.RegisteredNumericTypes.Remove(Def);
 		}
 
-		RegisteredUserDefinedTypes.Empty();
+		Registry.RegisteredUserDefinedTypes.Empty();
 
 		// note that we don't worry about cleaning up RegisteredTypes or RegisteredTypeIndexMap because we don't
 		// want to invalidate any indexes that are already stored in FNiagaraTypeDefinitionHandle.  If re-registered
@@ -1211,60 +1222,71 @@ public:
 
 	static void Register(const FNiagaraTypeDefinition &NewType, bool bCanBeParameter, bool bCanBePayload, bool bIsUserDefined)
 	{
-		FRWScopeLock Lock(RegisteredTypesLock, FRWScopeLockType::SLT_Write);
+		FNiagaraTypeRegistry& Registry = Get();
+
+		FRWScopeLock Lock(Registry.RegisteredTypesLock, FRWScopeLockType::SLT_Write);
 
 		//TODO: Make this a map of type to a more verbose set of metadata? Such as the hlsl defs, offset table for conversions etc.
-		RegisteredTypeIndexMap.Add(GetTypeHash(NewType), RegisteredTypes.AddUnique(NewType));
+		Registry.RegisteredTypeIndexMap.Add(GetTypeHash(NewType), Registry.RegisteredTypes.AddUnique(NewType));
 
 		if (bCanBeParameter)
 		{
-			RegisteredParamTypes.AddUnique(NewType);
+			Registry.RegisteredParamTypes.AddUnique(NewType);
 		}
 
 		if (bCanBePayload)
 		{
-			RegisteredPayloadTypes.AddUnique(NewType);
+			Registry.RegisteredPayloadTypes.AddUnique(NewType);
 		}
 
 		if (bIsUserDefined)
 		{
-			RegisteredUserDefinedTypes.AddUnique(NewType);
+			Registry.RegisteredUserDefinedTypes.AddUnique(NewType);
 		}
 
 		if (FNiagaraTypeDefinition::IsValidNumericInput(NewType))
 		{
-			RegisteredNumericTypes.AddUnique(NewType);
+			Registry.RegisteredNumericTypes.AddUnique(NewType);
 		}
 	}
 
 	static int32 RegisterIndexed(const FNiagaraTypeDefinition& NewType)
 	{
+		FNiagaraTypeRegistry& Registry = Get();
+
 		{
-			FReadScopeLock Lock(RegisteredTypesLock);
+			FReadScopeLock Lock(Registry.RegisteredTypesLock);
 			const uint32 TypeHash = GetTypeHash(NewType);
-			if (const int32* ExistingIndex = RegisteredTypeIndexMap.Find(TypeHash))
+			if (const int32* ExistingIndex = Registry.RegisteredTypeIndexMap.Find(TypeHash))
 			{
 				return *ExistingIndex;
 			}
 		}
 
-		FRWScopeLock Lock(RegisteredTypesLock, FRWScopeLockType::SLT_Write);
-		const int32 Index = RegisteredTypes.AddUnique(NewType);
-		RegisteredTypeIndexMap.Add(GetTypeHash(NewType), Index);
+		FRWScopeLock Lock(Registry.RegisteredTypesLock, FRWScopeLockType::SLT_Write);
+		const int32 Index = Registry.RegisteredTypes.AddUnique(NewType);
+		Registry.RegisteredTypeIndexMap.Add(GetTypeHash(NewType), Index);
 		return Index;
 	}
 
+	/** LazySingleton interface */
+	static FNiagaraTypeRegistry& Get();
+	static void TearDown();
+
+	/** FGCObject interface */
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const;
+
 private:
+	RegisteredTypesArray RegisteredTypes;
 
-	static RegisteredTypesArray RegisteredTypes;
+	TArray<FNiagaraTypeDefinition> RegisteredParamTypes;
+	TArray<FNiagaraTypeDefinition> RegisteredPayloadTypes;
+	TArray<FNiagaraTypeDefinition> RegisteredUserDefinedTypes;
+	TArray<FNiagaraTypeDefinition> RegisteredNumericTypes;
 
-	static TArray<FNiagaraTypeDefinition> RegisteredParamTypes;
-	static TArray<FNiagaraTypeDefinition> RegisteredPayloadTypes;
-	static TArray<FNiagaraTypeDefinition> RegisteredUserDefinedTypes;
-	static TArray<FNiagaraTypeDefinition> RegisteredNumericTypes;
-
-	static TMap<uint32, int32> RegisteredTypeIndexMap;
-	static FRWLock RegisteredTypesLock;
+	TMap<uint32, int32> RegisteredTypeIndexMap;
+	FRWLock RegisteredTypesLock;
 };
 
 USTRUCT()
@@ -1286,6 +1308,11 @@ struct FNiagaraTypeDefinitionHandle
 	bool operator!=(const FNiagaraTypeDefinitionHandle& Other) const
 	{
 		return RegisteredTypeIndex != Other.RegisteredTypeIndex;
+	}
+
+	bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+	{
+		return Resolve().AppendCompileHash(InVisitor);
 	}
 
 private:
@@ -1555,32 +1582,7 @@ struct FNiagaraVariable : public FNiagaraVariableBase
 		return Ret;
 	}
 
-	static FNiagaraVariable ResolveAliases(const FNiagaraVariable& InVar, const TMap<FString, FString>& InAliases, const TCHAR* InJoinSeparator = TEXT("."))
-	{
-		FNiagaraVariable OutVar = InVar;
-
-		FString OutVarStrName = InVar.GetName().ToString();
-		TArray<FString> SplitName;
-		OutVarStrName.ParseIntoArray(SplitName, TEXT("."));
-
-		for (int32 i = 0; i < SplitName.Num() - 1; i++)
-		{
-			TMap<FString, FString>::TConstIterator It = InAliases.CreateConstIterator();
-			while (It)
-			{
-				if (SplitName[i].Equals(It.Key()))
-				{
-					SplitName[i] = It.Value();
-				}
-				++It;
-			}
-		}
-
-		OutVarStrName = FString::Join(SplitName, InJoinSeparator);
-
-		OutVar.SetName(*OutVarStrName);
-		return OutVar;
-	}
+	static NIAGARA_API FNiagaraVariable ResolveAliases(const FNiagaraVariable& InVar, const TMap<FString, FString>& InAliases, const TMap<FString, FString>& InStartOnlyAliases = TMap<FString, FString>(), const TCHAR* InJoinSeparator = TEXT("."));
 
 	static int32 SearchArrayForPartialNameMatch(const TArray<FNiagaraVariable>& Variables, const FName& VariableName)
 	{
@@ -1650,6 +1652,7 @@ inline void FNiagaraVariable::SetValue<bool>(const bool& Data)
 
 // Any change to this structure, or it's GetVariables implementation will require a bump in the CustomNiagaraVersion so that we
 // properly rebuild the scripts
+// You must pad this struct and the results of GetVariables() to a 16 byte boundry.
 struct alignas(16) FNiagaraGlobalParameters
 {
 #if WITH_EDITOR
@@ -1660,10 +1663,16 @@ struct alignas(16) FNiagaraGlobalParameters
 	float EngineInvDeltaTime = 0.0f;
 	float EngineTime = 0.0f;
 	float EngineRealTime = 0.0f;
+	int32 QualityLevel = 0;
+
+	int32 _Pad0;
+	int32 _Pad1;
+	int32 _Pad2;
 };
 
 // Any change to this structure, or it's GetVariables implementation will require a bump in the CustomNiagaraVersion so that we
 // properly rebuild the scripts
+// You must pad this struct and the results of GetVariables() to a 16 byte boundry.
 struct alignas(16) FNiagaraSystemParameters
 {
 #if WITH_EDITOR
@@ -1678,10 +1687,16 @@ struct alignas(16) FNiagaraSystemParameters
 	int32 EngineTickCount = 0;
 	int32 EngineEmitterCount = 0;
 	int32 EngineAliveEmitterCount = 0;
+	int32 SignificanceIndex = 0;
+
+	int32 _Pad0;
+	int32 _Pad1;
+	int32 _Pad2;
 };
 
 // Any change to this structure, or it's GetVariables implementation will require a bump in the CustomNiagaraVersion so that we
 // properly rebuild the scripts
+// You must pad this struct and the results of GetVariables() to a 16 byte boundry.
 struct alignas(16) FNiagaraOwnerParameters
 {
 #if WITH_EDITOR
@@ -1705,6 +1720,7 @@ struct alignas(16) FNiagaraOwnerParameters
 
 // Any change to this structure, or it's GetVariables implementation will require a bump in the CustomNiagaraVersion so that we
 // properly rebuild the scripts
+// You must pad this struct and the results of GetVariables() to a 16 byte boundry.
 struct alignas(16) FNiagaraEmitterParameters
 {
 #if WITH_EDITOR
@@ -1716,9 +1732,9 @@ struct alignas(16) FNiagaraEmitterParameters
 	float EmitterSpawnCountScale = 1.0f;
 	float EmitterAge = 0.0f;
 	int32 EmitterRandomSeed = 0;
+	int32 EmitterInstanceSeed = 0;
 
 	// todo - what else should be inserted here?  we could put an array of spawninfos/interp spawn values
 	int32 _Pad0;
 	int32 _Pad1;
-	int32 _Pad2;
 };

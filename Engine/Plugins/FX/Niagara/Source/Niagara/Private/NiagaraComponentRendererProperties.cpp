@@ -6,12 +6,14 @@
 #include "NiagaraRendererComponents.h"
 #include "Modules/ModuleManager.h"
 #if WITH_EDITOR
+#include "Editor.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
 #include "Styling/SlateBrush.h"
 #include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Editor.h"
 #endif
 #include "NiagaraSettings.h"
 
@@ -104,14 +106,29 @@ FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFRotatorDef()
 TArray<TWeakObjectPtr<UNiagaraComponentRendererProperties>> UNiagaraComponentRendererProperties::ComponentRendererPropertiesToDeferredInit;
 
 UNiagaraComponentRendererProperties::UNiagaraComponentRendererProperties()
-	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true)
+	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true), bOnlyCreateComponentsOnParticleSpawn(true)
 #if WITH_EDITORONLY_DATA
 	, bVisualizeComponents(true)
 #endif
 	, TemplateComponent(nullptr)
 {
+#if WITH_EDITORONLY_DATA
+	if (GEditor)
+	{
+		GEditor->OnObjectsReplaced().AddUObject(this, &UNiagaraComponentRendererProperties::OnObjectsReplacedCallback);
+	}
+#endif
 }
 
+UNiagaraComponentRendererProperties::~UNiagaraComponentRendererProperties()
+{
+#if WITH_EDITORONLY_DATA
+	if (GEditor)
+	{
+		GEditor->OnObjectsReplaced().RemoveAll(this);
+	}
+#endif
+}
 
 void UNiagaraComponentRendererProperties::PostLoad()
 {
@@ -128,9 +145,8 @@ void UNiagaraComponentRendererProperties::PostLoad()
 }
 
 
-void UNiagaraComponentRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode)
+void UNiagaraComponentRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)
 {
-	Super::UpdateSourceModeDerivates(InSourceMode);
 	UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>();
 	if (SrcEmitter)
 	{
@@ -141,6 +157,7 @@ void UNiagaraComponentRendererProperties::UpdateSourceModeDerivates(ENiagaraRend
 		}
 	}
 
+	Super::UpdateSourceModeDerivates(InSourceMode);
 }
 
 void UNiagaraComponentRendererProperties::PostInitProperties()
@@ -168,18 +185,78 @@ void UNiagaraComponentRendererProperties::CacheFromCompiledData(const FNiagaraDa
 	UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode::Particles);
 }
 
+void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
+{
+	SetterFunctionMapping.Empty();
+	for (FNiagaraComponentPropertyBinding& PropertyBinding : PropertyBindings)
+	{
+		PropertyBinding.SetterFunction = nullptr;
+		if (!TemplateComponent || SetterFunctionMapping.Contains(PropertyBinding.PropertyName))
+		{
+			continue;
+		}
+		UFunction* SetterFunction = nullptr;
+
+		// we first check if the property has some metadata that explicitly mentions the setter to use
+		if (!PropertyBinding.MetadataSetterName.IsNone())
+		{
+			SetterFunction = TemplateComponent->FindFunction(PropertyBinding.MetadataSetterName);
+		}
+
+		if (!SetterFunction)
+		{
+			// the setter was not specified, so we try to find one that fits the name
+			FString PropertyName = PropertyBinding.PropertyName.ToString();
+			if (PropertyBinding.PropertyType == FNiagaraTypeDefinition::GetBoolDef())
+			{
+				PropertyName.RemoveFromStart("b", ESearchCase::CaseSensitive);
+			}
+			for (const FString& Prefix : FNiagaraRendererComponents::SetterPrefixes)
+			{
+				FName SetterFunctionName = FName(Prefix + PropertyName);
+				SetterFunction = TemplateComponent->FindFunction(SetterFunctionName);
+				if (SetterFunction)
+				{
+					break;
+				}
+			}
+		}
+
+		FNiagaraPropertySetter Setter;
+		Setter.Function = SetterFunction;
+
+		// Okay, so there is a special case where the *property* of an object has one type, but the *setter* has another type
+		// that either doesn't need to be converted (e.g. the color property on a light component) or doesn't fit the converted value.
+		// If we detect such a case we adapt the binding to either ignore the conversion or we discard the setter completely.
+		if (SetterFunction)
+		{
+			for (FProperty* Property = SetterFunction->PropertyLink; Property; Property = Property->PropertyLinkNext)
+			{
+				if (Property->IsInContainer(SetterFunction->ParmsSize) && Property->HasAnyPropertyFlags(CPF_Parm) && !Property->HasAnyPropertyFlags(CPF_ReturnParm))
+				{
+					FNiagaraTypeDefinition FieldType = UNiagaraComponentRendererProperties::ToNiagaraType(Property);
+					if (FieldType != PropertyBinding.PropertyType && FieldType == PropertyBinding.AttributeBinding.GetType())
+					{
+						// we can use the original Niagara value with the setter instead of converting it
+						Setter.bIgnoreConversion = true;
+					} else if (FieldType != PropertyBinding.PropertyType)
+					{
+						// setter is completely unusable
+						Setter.Function = nullptr;
+					}
+					break;
+				}
+			}
+		}
+		SetterFunctionMapping.Add(PropertyBinding.PropertyName, Setter);
+	}
+}
+
 void UNiagaraComponentRendererProperties::PostDuplicate(bool bDuplicateForPIE)
 {
-	if (ComponentType)
-	{
-		// sharing the same template component would mean changes in one emitter would be reflected in the other emitter,
-		// so we create a new template object instead
-		CreateTemplateComponent();
-	}
-	else
-	{
-		TemplateComponent = nullptr;
-	}
+	// sharing the same template component would mean changes in one emitter would be reflected in the other emitter,
+	// so we create a new template object instead
+	TemplateComponent = DuplicateObject(TemplateComponent, this);
 }
 
 void UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup()
@@ -201,6 +278,7 @@ void UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup()
 
 FNiagaraRenderer* UNiagaraComponentRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
 {
+	UpdateSetterFunctions();
 	EmitterPtr = Emitter->GetCachedEmitter();
 
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererComponents(FeatureLevel, this, Emitter);
@@ -210,7 +288,7 @@ FNiagaraRenderer* UNiagaraComponentRendererProperties::CreateEmitterRenderer(ERH
 
 void UNiagaraComponentRendererProperties::CreateTemplateComponent()
 {
-	TemplateComponent = NewObject<USceneComponent>(this, ComponentType, NAME_None, RF_ArchetypeObject | RF_Public);
+	TemplateComponent = NewObject<USceneComponent>(this, ComponentType, NAME_None, RF_ArchetypeObject);
 	TemplateComponent->SetVisibility(false);
 	TemplateComponent->SetAutoActivate(false);
 	TemplateComponent->SetComponentTickEnabled(false);
@@ -218,6 +296,32 @@ void UNiagaraComponentRendererProperties::CreateTemplateComponent()
 	// set some defaults on the component
 	bool IsWorldSpace = EmitterPtr ? !EmitterPtr->bLocalSpace : true;
 	TemplateComponent->SetAbsolute(IsWorldSpace, IsWorldSpace, IsWorldSpace);
+}
+
+void UNiagaraComponentRendererProperties::OnObjectsReplacedCallback(const TMap<UObject*, UObject*>& ReplacementsMap)
+{
+	// When a custom component class is recompiled in the editor, we need to switch to the new template component object
+	if (TemplateComponent)
+	{
+		UObject* const* Replacement = ReplacementsMap.Find(TemplateComponent);
+		if (Replacement)
+		{
+			TemplateComponent = Cast<USceneComponent>(*Replacement);
+			UpdateSetterFunctions();
+		}		
+	}
+}
+
+bool UNiagaraComponentRendererProperties::HasPropertyBinding(FName PropertyName) const
+{
+	for (const FNiagaraComponentPropertyBinding& Binding : PropertyBindings)
+	{
+		if (Binding.PropertyName == PropertyName)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 #if WITH_EDITORONLY_DATA
@@ -269,15 +373,15 @@ void UNiagaraComponentRendererProperties::GetRendererTooltipWidgets(const FNiaga
 	OutWidgets.Add(Tooltip);
 }
 
-void UNiagaraComponentRendererProperties::GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const
+void UNiagaraComponentRendererProperties::GetRendererFeedback(UNiagaraEmitter* InEmitter,	TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings,	TArray<FNiagaraRendererFeedback>& OutInfo) const
 {
-	Super::GetRendererFeedback(InEmitter, OutErrors, OutWarnings, OutInfo);
-
-	OutInfo.Add(FText::FromString(TEXT("The component renderer is still a very experimental feature that offers great flexibility, \nbut is *not* optimized for performance or safety. \nWith great power comes great responsibility.")));
+	OutInfo.Add(FNiagaraRendererFeedback(FText::FromString(TEXT("The component renderer is still a very experimental feature that offers great flexibility, \nbut is *not* optimized for performance or safety. \nWith great power comes great responsibility."))));
 
 	if (ComponentType && !UNiagaraComponent::StaticClass()->IsChildOf(ComponentType->ClassWithin))
 	{
-		OutErrors.Add(FText::Format(LOCTEXT("NiagaraClassWithinComponentError", "The selected component type is not valid because it can only be attached to an object of type {0}."), FText::FromString(ComponentType->ClassWithin->GetName())));
+		FText ErrorDescription = FText::Format(LOCTEXT("NiagaraClassWithinComponentError", "The selected component type is not valid because it can only be attached to an object of type {0}."), FText::FromString(ComponentType->ClassWithin->GetName()));
+		FText ErrorSummary = LOCTEXT("NiagaraClassWithinComponentErrorSummary", "Invalid component type selected!");
+		OutErrors.Add(FNiagaraRendererFeedback(ErrorDescription, ErrorSummary));
 	}
 
 	if (InEmitter && TemplateComponent)
@@ -296,17 +400,27 @@ void UNiagaraComponentRendererProperties::GetRendererFeedback(const UNiagaraEmit
 		}
 
 		bool IsWorldSpace = !InEmitter->bLocalSpace;
-		if (TemplateComponent->IsUsingAbsoluteLocation() != IsWorldSpace)
+		FNiagaraRendererFeedbackFix LocalspaceFix = FNiagaraRendererFeedbackFix::CreateLambda([InEmitter]() {	InEmitter->bLocalSpace = !InEmitter->bLocalSpace; });
+		if (TemplateComponent->IsUsingAbsoluteLocation() != IsWorldSpace && !HasPropertyBinding(FName("bAbsoluteLocation")))
 		{
-			OutWarnings.Add(FText::FromString(TEXT("The component location is configured to use a different localspace setting than the emitter.")));
+			FText ErrorDescription = LOCTEXT("NiagaraComponentLocalspaceLocationWarning", "The component location is configured to use a different localspace setting than the emitter.");
+			FText ErrorSummary = LOCTEXT("NiagaraComponentLocalspaceLocationWarningSummary", "Component location and emitter localspace different!");
+			FText FixText = LOCTEXT("NiagaraComponentLocalspaceLocationWarningFix", "Change emitter localspace setting");
+			OutWarnings.Add(FNiagaraRendererFeedback(ErrorDescription, ErrorSummary, FixText, LocalspaceFix, true));
 		}
-		if (TemplateComponent->IsUsingAbsoluteRotation() != IsWorldSpace)
+		if (TemplateComponent->IsUsingAbsoluteRotation() != IsWorldSpace && !HasPropertyBinding(FName("bAbsoluteRotation")))
 		{
-			OutWarnings.Add(FText::FromString(TEXT("The component rotation is configured to use a different localspace setting than the emitter.")));
+			FText ErrorDescription = LOCTEXT("NiagaraComponentLocalspaceRotationWarning", "The component rotation is configured to use a different localspace setting than the emitter.");
+			FText ErrorSummary = LOCTEXT("NiagaraComponentLocalspaceRotationWarningSummary", "Component rotation and emitter localspace different!");
+			FText FixText = LOCTEXT("NiagaraComponentLocalspaceRotationWarningFix", "Change emitter localspace setting");
+			OutWarnings.Add(FNiagaraRendererFeedback(ErrorDescription, ErrorSummary, FixText, LocalspaceFix, true));
 		}
-		if (TemplateComponent->IsUsingAbsoluteScale() != IsWorldSpace)
+		if (TemplateComponent->IsUsingAbsoluteScale() != IsWorldSpace && !HasPropertyBinding(FName("bAbsoluteScale")))
 		{
-			OutWarnings.Add(FText::FromString(TEXT("The component scale is configured to use a different localspace setting than the emitter.")));
+			FText ErrorDescription = LOCTEXT("NiagaraComponentLocalspaceScaleWarning", "The component scale is configured to use a different localspace setting than the emitter.");
+			FText ErrorSummary = LOCTEXT("NiagaraComponentLocalspaceScaleWarningSummary", "Component scale and emitter localspace different!");
+			FText FixText = LOCTEXT("NiagaraComponentLocalspaceScaleWarningFix", "Change emitter localspace setting");
+			OutWarnings.Add(FNiagaraRendererFeedback(ErrorDescription, ErrorSummary, FixText, LocalspaceFix, true));
 		}
 	}
 

@@ -12,6 +12,7 @@
 #include "Serialization/BitWriter.h"
 #include "Misc/NetworkGuid.h"
 #include "GameFramework/OnlineReplStructs.h"
+#include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "Engine/NetDriver.h"
 #include "Net/DataBunch.h"
 #include "Net/NetPacketNotify.h"
@@ -26,6 +27,7 @@
 #include "Net/Common/Packets/PacketTraits.h"
 #include "Net/Core/Misc/ResizableCircularQueue.h"
 #include "Net/NetAnalyticsTypes.h"
+#include "Net/TrafficControl.h"
 
 #include "NetConnection.generated.h"
 
@@ -45,6 +47,7 @@ namespace NetConnectionHelper
 	constexpr int32 NumBitsForJitterClockTimeInHeader = 10;
 }
 
+extern ENGINE_API TAutoConsoleVariable<int32> CVarNetEnableCongestionControl;
 
 /*-----------------------------------------------------------------------------
 	Types.
@@ -231,6 +234,13 @@ struct FDelayedIncomingPacket
 };
 
 #endif //#if DO_ENABLE_NET_TEST
+
+struct FChannelCloseInfo
+{
+	uint32 Id;
+	EChannelCloseReason CloseReason;
+};
+typedef TArray<FChannelCloseInfo, TInlineAllocator<8>> FChannelsToClose;
 
 /** Record of channels with data written into each outgoing packet. */
 struct FWrittenChannelsRecord
@@ -458,14 +468,6 @@ public:
 
 	/** Average lag seen during the last StatPeriod */
 	float AvgLag;
-
-private:
-	// BestLag variable is deprecated. Use AvgLag instead
-	float			BestLag;
-	// BestLagAcc variable is deprecated. Use LagAcc instead
-	double			BestLagAcc;
-
-public:
 
 	/** Total accumulated lag values during the current StatPeriod */
 	double			LagAcc;
@@ -731,9 +733,6 @@ public:
 	/** Called by PlayerController to tell connection about client level visiblity change */
 	ENGINE_API void UpdateLevelVisibility(const struct FUpdateLevelVisibilityLevelInfo& LevelVisibility);
 	
-	UE_DEPRECATED(4.24, "This method will be removed. Use UpdateLevelVisibility that takes an FUpdateLevelVisibilityLevelInfo")
-	ENGINE_API void UpdateLevelVisibility(const FName& PackageName, bool bIsVisible);
-
 #if DO_ENABLE_NET_TEST
 
 	/** Packet settings for testing lag, net errors, etc */
@@ -878,7 +877,7 @@ public:
 	ENGINE_API virtual void Tick(float DeltaSeconds);
 
 	/** Return whether this channel is ready for sending. */
-	ENGINE_API virtual int32 IsNetReady( bool Saturate );
+	ENGINE_API virtual int32 IsNetReady(bool Saturate);
 
 	/** 
 	 * Handle the player controller client
@@ -1201,6 +1200,22 @@ public:
 	 */
 	void SetIgnoreActorBunches(bool bInIgnoreActorBunches, TSet<FNetworkGUID>&& InIgnoredBunchGuids);
 
+	/**
+	 * Sets whether or not we should track released channel indices, see also SetIgnoreReservedChannels
+	 * Should only be used with InternalAck.
+	 */
+	void SetReserveDestroyedChannels(bool bInReserveChannels);
+
+	bool IsReservingDestroyedChannels() const { return bReserveDestroyedChannels; }
+
+	void AddReservedChannel(int32 ChIndex) { ReservedChannels.Add(ChIndex); }
+
+	/**
+	 * Sets whether or not GetFreeChannelIndex should ignore reserved channels
+	 * Should only be used with InternalAck.
+	 */
+	void SetIgnoreReservedChannels(bool bInIgnoreReservedChannels);
+
 	/** Returns the OutgoingBunches array, only to be used by UChannel::SendBunch */
 	TArray<FOutBunch *>& GetOutgoingBunches() { return OutgoingBunches; }
 
@@ -1302,6 +1317,8 @@ public:
 	/** Called when owning network driver receives NotifyActorDestroyed. */
 	ENGINE_API virtual void NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel = false);
 
+	ENGINE_API virtual void NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason);
+
 protected:
 
 	bool GetPendingCloseDueToSocketSendFailure() const
@@ -1312,6 +1329,9 @@ protected:
 	ENGINE_API void SetPendingCloseDueToSocketSendFailure();
 
 	void CleanupDormantActorState();
+
+	/** During cleanup this will destroy the actor owned by this connection (generally a PlayerController) */
+	ENGINE_API virtual void DestroyOwningActor();
 
 	/** Called internally to destroy an actor during replay fast-forward when the actor channel index will be recycled */
 	ENGINE_API virtual void DestroyIgnoredActor(AActor* Actor);
@@ -1336,7 +1356,15 @@ private:
 	FName PlayerOnlinePlatformName;
 
 	/** This is an acceleration set that is derived from ClientWorldPackageName and ClientVisibleLevelNames. We use this to quickly test an AActor*'s visibility while replicating. */
-	mutable TMap<UObject*, bool> ClientVisibileActorOuters;
+	mutable TMap<UObject*, bool> ClientVisibleActorOuters;
+
+	/** This is used to capture visibility updates while the server is in transition and deffer the update until the server has completed the transition */
+	TMap<FName, FUpdateLevelVisibilityLevelInfo> PendingUpdateLevelVisibility;
+
+private:
+
+	/** Called by PlayerController to tell connection about client level visibility change */
+	void UpdateLevelVisibilityInternal(const struct FUpdateLevelVisibilityLevelInfo& LevelVisibility);
 
 	/** Called internally to update cached acceleration map */
 	bool UpdateCachedLevelVisibility(ULevel* Level) const;
@@ -1370,7 +1398,7 @@ private:
 	bool ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPayload);
 
 	/** Packet was acknowledged as delivered */
-	void ReceivedAck(int32 AckPacketId);
+	void ReceivedAck(int32 AckPacketId, FChannelsToClose& OutChannelsToClose);
 
 	/** Calculate the average jitter while adding the new packet's jitter value */
 	void ProcessJitter(uint32 PacketJitterClockTimeMS);
@@ -1411,6 +1439,12 @@ private:
 	TSet<int32> IgnoredBunchChannels;
 
 	bool bIgnoreActorBunches;
+
+	/** Set of channel index values to reserve so GetFreeChannelIndex won't use them */
+	TSet<int32> ReservedChannels;
+
+	bool bReserveDestroyedChannels;
+	bool bIgnoreReservedChannels;
 
 	/** This is only used in UChannel::SendBunch. It's a member so that we can preserve the allocation between calls, as an optimization, and in a thread-safe way to be compatible with demo.ClientRecordAsyncEndOfFrame */
 	TArray<FOutBunch*> OutgoingBunches;
@@ -1492,6 +1526,9 @@ public:
 
 	bool GetAutoFlush() const { return bAutoFlush; }
 	void SetAutoFlush(bool bValue) { bAutoFlush = bValue; }
+
+protected:
+	TOptional<FNetworkCongestionControl> NetworkCongestionControl;
 };
 
 struct FScopedRepContext
@@ -1611,6 +1648,8 @@ public:
 	virtual FString LowLevelGetRemoteAddress(bool bAppendPort=false) override { return FString(); }
 	virtual bool ClientHasInitializedLevelFor(const AActor* TestActor) const { return true; }
 
+	virtual void DestroyOwningActor() override { /* Don't destroy the OwningActor since we follow a real PlayerController*/ }
+
 	virtual TSharedPtr<const FInternetAddr> GetRemoteAddr() override { return nullptr; }
 };
 
@@ -1621,5 +1660,3 @@ public:
 	inline FNetTraceCollector* UNetConnection::GetInTraceCollector() const { return nullptr; }
 	inline FNetTraceCollector* UNetConnection::GetOutTraceCollector() const { return nullptr; }
 #endif
-
-

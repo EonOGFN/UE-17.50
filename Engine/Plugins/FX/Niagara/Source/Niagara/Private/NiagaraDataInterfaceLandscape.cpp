@@ -99,14 +99,14 @@ void UNiagaraDataInterfaceLandscape::GetFunctions(TArray<FNiagaraFunctionSignatu
 // #todo(dmp): this is gpu only for now
 void UNiagaraDataInterfaceLandscape::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
 {
-	if (BindingInfo.Name == GetNumCellsName)
-	{
-		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceLandscape::EmptyVMFunction);
-	}
-	else if (BindingInfo.Name == GetHeightName)
-	{
-		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceLandscape::EmptyVMFunction);
-	}
+	//if (BindingInfo.Name == GetNumCellsName)
+	//{
+	//	OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceLandscape::EmptyVMFunction);
+	//}
+	//else if (BindingInfo.Name == GetHeightName)
+	//{
+	//	OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceLandscape::EmptyVMFunction);
+	//}
 }
 
 bool UNiagaraDataInterfaceLandscape::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
@@ -273,15 +273,6 @@ public:
 		LandscapeTextureParam.Bind(ParameterMap, *TexName);
 		SamplerParam.Bind(ParameterMap, *SampleName);
 		
-		if (!LandscapeTextureParam.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_Landscape Landscape Texture %s. Was it optimized out?"), *TexName)
-		}
-
-		if (!SamplerParam.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_Landscape Sampler %s. Was it optimized out?"), *SampleName)
-		}
 
 		NumCells.Bind(ParameterMap, *(UNiagaraDataInterfaceLandscape::NumCellsBaseName + ParameterInfo.DataInterfaceHLSLSymbol));
 

@@ -344,7 +344,7 @@ bool CalculatePropertyDef(PyTypeObject* InPyType, FPropertyDef& OutPropertyDef)
 
 	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyLong_Type) == 1)
 	{
-		OutPropertyDef.PropertyClass = FInt64Property::StaticClass();
+		OutPropertyDef.PropertyClass = FIntProperty::StaticClass();
 		return true;
 	}
 
@@ -746,7 +746,7 @@ UObject* NewObject(UClass* InObjClass, UObject* InObjectOuter, const FName InObj
 			return nullptr;
 		}
 
-		UObject* ObjectInstance = ::NewObject<UObject>(InObjectOuter, InObjClass, InObjectName);
+		UObject* ObjectInstance = ::NewObject<UObject>(InObjectOuter, InObjClass, InObjectName, RF_Transactional);
 		if (!ObjectInstance)
 		{
 			SetPythonError(PyExc_Exception, InErrorCtxt, TEXT("NewObject returned a null instance"));
@@ -989,6 +989,33 @@ bool IsModuleImported(const TCHAR* InModuleName, PyObject** OutPyModule)
 	}
 
 	return false;
+}
+
+FString GetInterpreterExecutablePath(bool* OutIsEnginePython)
+{
+	// Build the full Python directory (UE_PYTHON_DIR may be relative to UE engine directory for portability)
+	FString PythonPath = UTF8_TO_TCHAR(UE_PYTHON_DIR);
+	
+	if (OutIsEnginePython)
+	{
+		*OutIsEnginePython = PythonPath.Contains(TEXT("{ENGINE_DIR}"), ESearchCase::CaseSensitive);
+	}
+	PythonPath.ReplaceInline(TEXT("{ENGINE_DIR}"), *FPaths::EngineDir(), ESearchCase::CaseSensitive);
+
+	FPaths::NormalizeDirectoryName(PythonPath);
+	FPaths::RemoveDuplicateSlashes(PythonPath);
+
+#if PLATFORM_WINDOWS
+	PythonPath /= TEXT("python.exe");
+#elif PLATFORM_MAC || PLATFORM_LINUX
+	PythonPath /= TEXT("bin/python");
+#else
+	static_assert(false, "Python not supported on this platform!");
+#endif
+
+	PythonPath = FPaths::ConvertRelativePathToFull(PythonPath);
+
+	return PythonPath;
 }
 
 void AddSystemPath(const FString& InPath)

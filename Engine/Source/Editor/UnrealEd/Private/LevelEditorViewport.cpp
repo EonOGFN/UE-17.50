@@ -90,6 +90,8 @@ DEFINE_LOG_CATEGORY(LogEditorViewport);
 
 static const float MIN_ACTOR_BOUNDS_EXTENT	= 1.0f;
 
+const FLevelViewportActorLock FLevelViewportActorLock::None(nullptr);
+
 TArray< TWeakObjectPtr< AActor > > FLevelEditorViewportClient::DropPreviewActors;
 TMap< TObjectKey< AActor >, TWeakObjectPtr< UActorComponent > > FLevelEditorViewportClient::ViewComponentForActorCache;
 
@@ -570,7 +572,7 @@ UObject* FLevelEditorViewportClient::GetOrCreateMaterialFromTexture( UTexture* U
 	FString MaterialFullName = TextureShortName + "_Mat";
 	FString NewPackageName = FPackageName::GetLongPackagePath( UnrealTexture->GetOutermost()->GetName() ) + TEXT( "/" ) + MaterialFullName;
 	NewPackageName = UPackageTools::SanitizePackageName( NewPackageName );
-	UPackage* Package = CreatePackage( NULL, *NewPackageName );
+	UPackage* Package = CreatePackage( *NewPackageName );
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>( TEXT( "AssetRegistry" ) );
 
@@ -1793,8 +1795,6 @@ FLevelEditorViewportClient::FLevelEditorViewportClient(const TSharedPtr<SLevelVi
 	, DropPreviewMouseX(0)
 	, DropPreviewMouseY(0)
 	, bWasControlledByOtherViewport(false)
-	, ActorLockedByMatinee(nullptr)
-	, ActorLockedToCamera(nullptr)
 	, bEditorCameraCut(false)
 	, bWasEditorCameraCut(false)
 	, bApplyCameraSpeedScaleByDistance(true)
@@ -1935,7 +1935,7 @@ FSceneView* FLevelEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFami
 
 	FSceneView* View = FEditorViewportClient::CalcSceneView(ViewFamily, StereoPass);
 
-	View->ViewActor = ActorLockedByMatinee.IsValid() ? ActorLockedByMatinee.Get() : ActorLockedToCamera.Get();
+	View->ViewActor = ActorLocks.GetLock().GetLockedActor();
 	View->SpriteCategoryVisibility = SpriteCategoryVisibility;
 	View->bCameraCut = bEditorCameraCut;
 	View->bHasSelectedComponents = GEditor->GetSelectedComponentCount() > 0;
@@ -2258,12 +2258,14 @@ void FLevelEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* HitPr
 				const bool bWasDoubleClick = (Click.GetEvent() == IE_DoubleClick);
 
 				const bool bSelectComponent = bActorAlreadySelectedExclusively && bActorIsBlueprintable && (bComponentAlreadySelected != bWasDoubleClick);
+				bool bComponentSelected = false;
 
 				if (bSelectComponent)
 				{
-					LevelViewportClickHandlers::ClickComponent(this, ActorHitProxy, Click);
+					bComponentSelected = LevelViewportClickHandlers::ClickComponent(this, ActorHitProxy, Click);
 				}
-				else
+				
+				if (!bComponentSelected)
 				{
 					LevelViewportClickHandlers::ClickActor(this, ConsideredActor, Click, true);
 				}
@@ -2359,17 +2361,19 @@ void FLevelEditorViewportClient::Tick(float DeltaTime)
 void FLevelEditorViewportClient::UpdateViewForLockedActor(float DeltaTime)
 {
 	// We can't be locked to a matinee actor if this viewport doesn't allow matinee control
-	if ( !bAllowCinematicControl && ActorLockedByMatinee.IsValid() )
+	if (!bAllowCinematicControl && ActorLocks.CinematicActorLock.HasValidLockedActor())
 	{
-		ActorLockedByMatinee = nullptr;
+		ActorLocks.CinematicActorLock = FLevelViewportActorLock::None;
 	}
 
 	bUseControllingActorViewInfo = false;
 	ControllingActorViewInfo = FMinimalViewInfo();
+	ControllingActorAspectRatioAxisConstraint.Reset();
 	ControllingActorExtraPostProcessBlends.Empty();
 	ControllingActorExtraPostProcessBlendWeights.Empty();
 
-	AActor* Actor = ActorLockedByMatinee.IsValid() ? ActorLockedByMatinee.Get() : ActorLockedToCamera.Get();
+	const FLevelViewportActorLock& ActiveLock = ActorLocks.GetLock();
+	AActor* Actor = ActiveLock.GetLockedActor();
 	if( Actor != NULL )
 	{
 		// Check if the viewport is transitioning
@@ -2404,6 +2408,9 @@ void FLevelEditorViewportClient::UpdateViewForLockedActor(float DeltaTime)
 						{
 							CameraComponent->GetExtraPostProcessBlends(ControllingActorExtraPostProcessBlends, ControllingActorExtraPostProcessBlendWeights);
 						}
+
+						// Axis constraint for aspect ratio
+						ControllingActorAspectRatioAxisConstraint = ActiveLock.AspectRatioAxisConstraint;
 						
 						// Post processing is handled by OverridePostProcessingSettings
 						ViewFOV = ControllingActorViewInfo.FOV;
@@ -3953,20 +3960,30 @@ UActorComponent* FLevelEditorViewportClient::FindViewComponentForActor(AActor co
 
 void FLevelEditorViewportClient::SetActorLock(AActor* Actor)
 {
-	if (ActorLockedToCamera != Actor)
-	{
-		SetIsCameraCut();
-	}
-	ActorLockedToCamera = Actor;
+	SetActorLock(FLevelViewportActorLock(Actor));
 }
 
-void FLevelEditorViewportClient::SetMatineeActorLock(AActor* Actor)
+void FLevelEditorViewportClient::SetActorLock(const FLevelViewportActorLock& InActorLock)
 {
-	if (ActorLockedByMatinee != Actor)
+	if (ActorLocks.ActorLock.LockedActor != InActorLock.LockedActor)
 	{
 		SetIsCameraCut();
 	}
-	ActorLockedByMatinee = Actor;
+	ActorLocks.ActorLock = InActorLock;
+}
+
+void FLevelEditorViewportClient::SetCinematicActorLock(AActor* Actor)
+{
+	SetCinematicActorLock(FLevelViewportActorLock(Actor));
+}
+
+void FLevelEditorViewportClient::SetCinematicActorLock(const FLevelViewportActorLock& InActorLock)
+{
+	if (ActorLocks.CinematicActorLock.LockedActor != InActorLock.LockedActor)
+	{
+		SetIsCameraCut();
+	}
+	ActorLocks.CinematicActorLock = InActorLock;
 }
 
 bool FLevelEditorViewportClient::IsActorLocked(const TWeakObjectPtr<const AActor> InActor) const
@@ -4433,6 +4450,10 @@ void FLevelEditorViewportClient::MouseMove(FViewport* InViewport, int32 x, int32
 			LightRotation = FQuat(UpVector, float(mouseDeltaX)*0.01f) * LightRotation;
 			// Light Zenith rotation (pitch)
 			FVector PitchRotationAxis = FVector::CrossProduct(LightRotation.GetForwardVector(), UpVector);
+			if (FMath::Abs(FVector::DotProduct(LightRotation.GetForwardVector(), UpVector)) > (1.0f - KINDA_SMALL_NUMBER))
+			{
+				PitchRotationAxis = FVector::CrossProduct(LightRotation.GetForwardVector(), FVector(1, 0, 0));
+			}
 			PitchRotationAxis.Normalize();
 			LightRotation = FQuat(PitchRotationAxis, float(mouseDeltaY)*0.01f) * LightRotation;
 
@@ -4840,8 +4861,6 @@ void FLevelEditorViewportClient::DrawBrushDetails(const FSceneView* View, FPrimi
 	{
 		// Draw translucent polygons on brushes and volumes
 
-		PDI->SetHitProxy(nullptr);
-
 		for (TActorIterator<ABrush> It(GetWorld()); It; ++It)
 		{
 			ABrush* Brush = *It;
@@ -4883,7 +4902,7 @@ void FLevelEditorViewportClient::DrawBrushDetails(const FSceneView* View, FPrimi
 				PDI->RegisterDynamicResource(MaterialProxy);
 
 				// Flush the mesh triangles.
-				MeshBuilder.Draw(PDI, Brush->ActorToWorld().ToMatrixWithScale(), MaterialProxy, SDPG_World);
+				MeshBuilder.Draw(PDI, Brush->ActorToWorld().ToMatrixWithScale(), MaterialProxy, SDPG_World, false, true, FHitProxyId::InvisibleHitProxyId);
 			}
 		}
 	}
@@ -5085,7 +5104,7 @@ void FLevelEditorViewportClient::CopyLayoutFromViewport( const FLevelEditorViewp
 	ViewFOV = InViewport.ViewFOV;
 	ViewportType = InViewport.ViewportType;
 	SetOrthoZoom( InViewport.GetOrthoZoom() );
-	ActorLockedToCamera = InViewport.ActorLockedToCamera;
+	ActorLocks = InViewport.ActorLocks;
 	bAllowCinematicControl = InViewport.bAllowCinematicControl;
 }
 

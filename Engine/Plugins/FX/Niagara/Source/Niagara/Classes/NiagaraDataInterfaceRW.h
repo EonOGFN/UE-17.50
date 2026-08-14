@@ -6,33 +6,6 @@
 
 class FNiagaraSystemInstance;
 
-// Global HLSL variable base names, used by HLSL.
-extern NIAGARA_API const FString NumCellsName;
-extern NIAGARA_API const FString CellSizeName;
-extern NIAGARA_API const FString WorldBBoxSizeName;
-
-extern NIAGARA_API const FString NumCellsName;
-extern NIAGARA_API const FString CellSizeName;
-
-// Global VM function names, also used by the shaders code generation methods.
-extern NIAGARA_API const FName NumCellsFunctionName;
-extern NIAGARA_API const FName CellSizeFunctionName;
-
-extern NIAGARA_API const FName WorldBBoxSizeFunctionName;
-
-extern NIAGARA_API const FName SimulationToUnitFunctionName;
-extern NIAGARA_API const FName UnitToSimulationFunctionName;
-extern NIAGARA_API const FName UnitToIndexFunctionName;
-extern NIAGARA_API const FName IndexToUnitFunctionName;
-
-extern NIAGARA_API const FName IndexToUnitStaggeredXFunctionName;
-extern NIAGARA_API const FName IndexToUnitStaggeredYFunctionName;
-
-extern NIAGARA_API const FName IndexToLinearFunctionName;
-extern NIAGARA_API const FName LinearToIndexFunctionName;
-
-extern NIAGARA_API const FName ExecutionIndexToGridIndexFunctionName;
-extern NIAGARA_API const FName ExecutionIndexToUnitFunctionName;
 UENUM()
 enum class ESetResolutionMethod
 {
@@ -41,32 +14,63 @@ enum class ESetResolutionMethod
 	CellSize
 };
 
-
 // #todo(dmp): some of the stuff we'd expect to see here is on FNiagaraDataInterfaceProxy - refactor?
 struct FNiagaraDataInterfaceProxyRW : public FNiagaraDataInterfaceProxy
 {
 public:
-
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override { check(false); }
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
-	{
-		return 0;
-	}	
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }	
+
+	// Get the element count for this instance
+	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const = 0;
+
+	// For data interfaces that support iteration on the GPU we need to be able to get the 'real' element count as known only by the GPU
+	// The dispatch will use the CPU count, which is potentially an over-estimation, and the value inside the buffer will be used to clip instances that are not valid
+	virtual uint32 GetGPUInstanceCountOffset(FNiagaraSystemInstanceID SystemInstanceID) const { return INDEX_NONE; }
 
 	virtual void ClearBuffers(FRHICommandList& RHICmdList) {}
-};
 
+	virtual FNiagaraDataInterfaceProxyRW* AsIterationProxy() override { return this; }
+};
 
 UCLASS(abstract, EditInlineNew)
 class NIAGARA_API UNiagaraDataInterfaceRWBase : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()
+public:
+	// Global HLSL variable base names, used by HLSL.
+	static const FString NumAttributesName;
+	static const FString NumCellsName;
+	static const FString UnitToUVName;
+	static const FString CellSizeName;
+	static const FString WorldBBoxSizeName;
+
+	// Global VM function names, also used by the shaders code generation methods.
+	static const FName NumCellsFunctionName;
+	static const FName CellSizeFunctionName;
+
+	static const FName WorldBBoxSizeFunctionName;
+
+	static const FName SimulationToUnitFunctionName;
+	static const FName UnitToSimulationFunctionName;
+	static const FName UnitToIndexFunctionName;
+	static const FName UnitToFloatIndexFunctionName;
+	static const FName IndexToUnitFunctionName;
+
+	static const FName IndexToUnitStaggeredXFunctionName;
+	static const FName IndexToUnitStaggeredYFunctionName;
+
+	static const FName IndexToLinearFunctionName;
+	static const FName LinearToIndexFunctionName;
+
+	static const FName ExecutionIndexToGridIndexFunctionName;
+	static const FName ExecutionIndexToUnitFunctionName;
 
 public:
-	UPROPERTY(EditAnywhere, Category = "RW")
+	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
 	TSet<int> OutputShaderStages;
 
-	UPROPERTY(EditAnywhere, Category = "RW")
+	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
 	TSet<int> IterationShaderStages;
 
 public:
@@ -114,9 +118,6 @@ public:
 	}
 #endif
 
-	void EmptyVMFunction(FVectorVMContext& Context) {}
-
-
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;	
 };
@@ -128,18 +129,23 @@ class NIAGARA_API UNiagaraDataInterfaceGrid3D : public UNiagaraDataInterfaceRWBa
 	GENERATED_UCLASS_BODY()
 
 public:
+	// Number of cells
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	FIntVector NumCells;
 
+	// World space size of a cell
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	float CellSize;
 
+	// Number of cells on the longest axis
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	int32 NumCellsMaxAxis;
 
+	// Method for setting the grid resolution
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	ESetResolutionMethod SetResolutionMethod;
 	
+	// World size of the grid
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	FVector WorldBBoxSize;
 
@@ -192,23 +198,28 @@ class NIAGARA_API UNiagaraDataInterfaceGrid2D : public UNiagaraDataInterfaceRWBa
 	GENERATED_UCLASS_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "!SetGridFromMaxAxis"))
+	// Number of cells in X
+	UPROPERTY(EditAnywhere, Category = "Grid")
 	int32 NumCellsX;
 
-	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "!SetGridFromMaxAxis"))
+	// Number of cells in Y
+	UPROPERTY(EditAnywhere, Category = "Grid")
 	int32 NumCellsY;
 	
-	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "SetGridFromMaxAxis"))
+	// Number of cells on the longest axis
+	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
 	int32 NumCellsMaxAxis;
 
-	// #todo(dmp): maybe this should be on child classes since not all grids have arbitrary numbers of attributes
+	// Number of Attributes
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	int32 NumAttributes;
 
-	UPROPERTY(EditAnywhere, Category = "Grid")
+	// Set grid resolution according to longest axis
+	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
 	bool SetGridFromMaxAxis;	
 
-	UPROPERTY(EditAnywhere, Category = "Grid")
+	// World size of the grid
+	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
 	FVector2D WorldBBoxSize;
 
 
@@ -223,6 +234,10 @@ public:
 	// GPU sim functionality
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
+
+#if WITH_EDITOR		
+	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors) override;
+#endif
 	//~ UNiagaraDataInterface interface END
 
 

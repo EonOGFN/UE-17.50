@@ -639,8 +639,7 @@ FAutoConsoleTaskPriority CPrio_FCompilePipelineStateTask(
 	TEXT("Task and thread priority for FCompilePipelineStateTask."),
 	ENamedThreads::HighThreadPriority,		// if we have high priority task threads, then use them...
 	ENamedThreads::NormalTaskPriority,		// .. at normal task priority
-	ENamedThreads::HighTaskPriority,		// if we don't have hi pri threads, then use normal priority threads at high task priority instead
-	EPowerSavingEligibility::NotEligible	// Not eligible for downgrade when power saving is requested.
+	ENamedThreads::HighTaskPriority		// if we don't have hi pri threads, then use normal priority threads at high task priority instead
 );
 #if RHI_RAYTRACING
 
@@ -1161,7 +1160,10 @@ public:
 
 	ENamedThreads::Type GetDesiredThread()
 	{
-		return bBackgroundTask ? ENamedThreads::AnyBackgroundThreadNormalTask : CPrio_FCompilePipelineStateTask.Get();
+		// NOTE: RT PSO compilation internally spawns high-priority shader compilation tasks and waits on them.
+		// FCompileRayTracingPipelineStateTask itself must run at lower priority to prevent deadlocks when
+		// there are multiple RTPSO tasks that all wait on compilation via WaitUntilTasksComplete().
+		return bBackgroundTask ? ENamedThreads::AnyBackgroundThreadNormalTask : ENamedThreads::AnyNormalThreadNormalTask;
 	}
 
 private:
@@ -1330,6 +1332,8 @@ FRHIComputePipelineState* ExecuteSetComputePipelineState(FComputePipelineState* 
 FGraphicsPipelineState* PipelineStateCache::GetAndOrCreateGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& OriginalInitializer, EApplyRendertargetOption ApplyFlags)
 {
 	LLM_SCOPE(ELLMTag::PSO);
+
+	checkf(OriginalInitializer.BoundShaderState.VertexShaderRHI, TEXT("GraphicsPipelineState must include a vertex shader"));
 
 	FGraphicsPipelineStateInitializer NewInitializer;
 	const FGraphicsPipelineStateInitializer* Initializer = &OriginalInitializer;

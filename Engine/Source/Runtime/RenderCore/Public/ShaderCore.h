@@ -107,16 +107,27 @@ extern RENDERCORE_API bool ShouldExportShaderDebugInfo(EShaderPlatform Platform)
 
 struct FShaderTarget
 {
-	uint32 Frequency : SF_NumBits;
-	uint32 Platform : SP_NumBits;
+	// The rest of uint32 holding the bitfields can be left unitialized. Union with a uint32 serves to prevent that to be able to set the whole uint32 value
+	union
+	{
+		uint32 Packed;
+		struct
+		{
+			uint32 Frequency : SF_NumBits;
+			uint32 Platform : SP_NumBits;
+		};
+	};
 
 	FShaderTarget()
+		: Packed(0)
 	{}
 
 	FShaderTarget(EShaderFrequency InFrequency,EShaderPlatform InPlatform)
-	:	Frequency(InFrequency)
-	,	Platform(InPlatform)
-	{}
+	:	Packed(0)
+	{
+		Frequency = InFrequency;
+		Platform = InPlatform;
+	}
 
 	friend bool operator==(const FShaderTarget& X, const FShaderTarget& Y)
 	{
@@ -130,6 +141,7 @@ struct FShaderTarget
 		Ar << TargetFrequency << TargetPlatform;
 		if (Ar.IsLoading())
 		{
+			Target.Packed = 0;
 			Target.Frequency = TargetFrequency;
 			Target.Platform = TargetPlatform;
 		}
@@ -216,7 +228,7 @@ public:
 	/** Checks that all parameters are bound and asserts if any aren't in a debug build
 	* @param InVertexFactoryType can be 0
 	*/
-	RENDERCORE_API void VerifyBindingsAreComplete(const TCHAR* ShaderTypeName, FShaderTarget Target, class FVertexFactoryType* InVertexFactoryType) const;
+	RENDERCORE_API void VerifyBindingsAreComplete(const TCHAR* ShaderTypeName, FShaderTarget Target, const class FVertexFactoryType* InVertexFactoryType) const;
 
 	/** Updates the hash state with the contents of this parameter map. */
 	void UpdateHash(FSHA1& HashState) const;
@@ -258,21 +270,37 @@ public:
 		Definitions.Add(Name, Value);
 	}
 
-	/**
-	 * Works for uint32 and bool
-	 * e.g. OutEnvironment.SetDefine(TEXT("REALLY"), bReally);
-	 * e.g. OutEnvironment.SetDefine(TEXT("NUM_SAMPLES"), NumSamples);
-	 */
+	void SetDefine(const TCHAR* Name, const FString& Value)
+	{
+		Definitions.Add(Name, Value);
+	}
+
+	void SetDefine(const TCHAR* Name, bool Value)
+	{
+		Definitions.Add(Name, Value ? TEXT("1") : TEXT("0"));
+	}
+
 	void SetDefine(const TCHAR* Name, uint32 Value)
 	{
 		// can be optimized
-		Definitions.Add(Name, *FString::Printf(TEXT("%u"), Value));
+		switch (Value)
+		{
+		// Avoid Printf for common cases
+		case 0u: Definitions.Add(Name, TEXT("0")); break;
+		case 1u: Definitions.Add(Name, TEXT("1")); break;
+		default: Definitions.Add(Name, FString::Printf(TEXT("%u"), Value)); break;
+		}
 	}
 
 	void SetDefine(const TCHAR* Name, int32 Value)
 	{
 		// can be optimized
-		Definitions.Add(Name, *FString::Printf(TEXT("%d"), Value));
+		switch (Value)
+		{
+		case 0: Definitions.Add(Name, TEXT("0")); break;
+		case 1: Definitions.Add(Name, TEXT("1")); break;
+		default: Definitions.Add(Name, FString::Printf(TEXT("%d"), Value));
+		}
 	}
 
 	/**
@@ -281,7 +309,7 @@ public:
 	void SetFloatDefine(const TCHAR* Name, float Value)
 	{
 		// can be optimized
-		Definitions.Add(Name, *FString::Printf(TEXT("%f"), Value));
+		Definitions.Add(Name, FString::Printf(TEXT("%f"), Value));
 	}
 
 	const TMap<FString,FString>& GetDefinitionMap() const
@@ -366,14 +394,16 @@ inline FArchive& operator<<(FArchive& Ar, FResourceTableEntry& Entry)
 	return Ar;
 }
 
+using FThreadSafeSharedStringPtr = TSharedPtr<FString, ESPMode::ThreadSafe>;
+
 /** The environment used to compile a shader. */
-struct FShaderCompilerEnvironment : public FRefCountedObject
+struct FShaderCompilerEnvironment
 {
 	// Map of the virtual file path -> content.
 	// The virtual file paths are the ones that USF files query through the #include "<The Virtual Path of the file>"
 	TMap<FString,FString> IncludeVirtualPathToContentsMap;
 	
-	TMap<FString,TSharedPtr<FString>> IncludeVirtualPathToExternalContentsMap;
+	TMap<FString, FThreadSafeSharedStringPtr> IncludeVirtualPathToExternalContentsMap;
 
 	TArray<uint32> CompilerFlags;
 	TMap<uint32,uint8> RenderTargetOutputFormatsMap;
@@ -398,6 +428,10 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 	{
 	}
 
+	// Used as a baseclasss, make sure we're not incorrectly destroyed through a baseclass pointer
+	// This will be expensive to destroy anyway, additional vcall overhead should be small
+	virtual ~FShaderCompilerEnvironment() = default;
+
 	/**
 	 * Works for TCHAR
 	 * e.g. SetDefine(TEXT("NAME"), TEXT("Test"));
@@ -405,9 +439,10 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 	 * e.g. SetDefine(TEXT("DOIT"), true);
 	 */
 	void SetDefine(const TCHAR* Name, const TCHAR* Value)	{ Definitions.SetDefine(Name, Value); }
+	void SetDefine(const TCHAR* Name, const FString& Value) { Definitions.SetDefine(Name, Value); }
 	void SetDefine(const TCHAR* Name, uint32 Value)			{ Definitions.SetDefine(Name, Value); }
 	void SetDefine(const TCHAR* Name, int32 Value)			{ Definitions.SetDefine(Name, Value); }
-	void SetDefine(const TCHAR* Name, bool Value)			{ Definitions.SetDefine(Name, (uint32)Value); }
+	void SetDefine(const TCHAR* Name, bool Value)			{ Definitions.SetDefine(Name, Value); }
 	void SetDefine(const TCHAR* Name, float Value)			{ Definitions.SetFloatDefine(Name, Value); }
 
 	const TMap<FString,FString>& GetDefinitions() const
@@ -472,6 +507,11 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 private:
 
 	FShaderCompilerDefinitions Definitions;
+};
+
+struct FSharedShaderCompilerEnvironment final : public FShaderCompilerEnvironment, public FRefCountBase
+{
+	virtual ~FSharedShaderCompilerEnvironment() = default;
 };
 
 // if this changes you need to make sure all shaders get invalidated
@@ -781,6 +821,12 @@ public:
 };
 
 /**
+* Convert the virtual shader path to an actual file system path.
+* CompileErrors output array is optional.
+*/
+extern RENDERCORE_API FString GetShaderSourceFilePath(const FString& VirtualFilePath, TArray<struct FShaderCompilerError>* CompileErrors = nullptr);
+
+/**
  * Converts an absolute or relative shader filename to a filename relative to
  * the shader directory.
  * @param InFilename - The shader filename.
@@ -824,7 +870,7 @@ extern RENDERCORE_API void VerifyShaderSourceFiles(EShaderPlatform ShaderPlatfor
 struct FCachedUniformBufferDeclaration
 {
 	// Using SharedPtr so we can hand off lifetime ownership to FShaderCompilerEnvironment::IncludeVirtualPathToExternalContentsMap when invalidating this cache
-	TSharedPtr<FString> Declaration;
+	FThreadSafeSharedStringPtr Declaration;
 };
 
 /** Parses the given source file and its includes for references of uniform buffers, which are then stored in UniformBufferEntries. */
@@ -853,6 +899,9 @@ extern RENDERCORE_API void ResetAllShaderSourceDirectoryMappings();
  * @param RealShaderDirectory FPlatformProcess::BaseDir() relative path of the directory map.
  */
 extern RENDERCORE_API void AddShaderSourceDirectoryMapping(const FString& VirtualShaderDirectory, const FString& RealShaderDirectory);
+
+extern RENDERCORE_API void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString VirtualFilePath, EShaderPlatform ShaderPlatform);
+extern RENDERCORE_API void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShaderPlatform ShaderPlatform);
 
 /** Validates that the uniform buffer at the requested static slot. */
 extern RENDERCORE_API void ValidateStaticUniformBuffer(FRHIUniformBuffer* UniformBuffer, FUniformBufferStaticSlot Slot, uint32 ExpectedHash);

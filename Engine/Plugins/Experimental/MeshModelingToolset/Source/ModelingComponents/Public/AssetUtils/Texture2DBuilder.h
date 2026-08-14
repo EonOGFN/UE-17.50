@@ -5,6 +5,7 @@
 #include "MathUtil.h"
 #include "VectorTypes.h"
 #include "Image/ImageDimensions.h"
+#include "Image/ImageBuilder.h"
 #include "Engine/Classes/Engine/Texture2D.h"
 
 
@@ -86,7 +87,9 @@ public:
 			RawTexture2D->SRGB = false;
 			RawTexture2D->LODGroup = TEXTUREGROUP_WorldNormalMap;
 			//RawTexture2D->bFlipGreenChannel = true;
+#if WITH_EDITOR
 			RawTexture2D->MipGenSettings = TMGS_NoMipmaps;
+#endif
 			RawTexture2D->UpdateResource();
 		}
 
@@ -146,7 +149,6 @@ public:
 		return IsEditable();
 	}
 
-
 	/** @return true if the texture data is currently locked and editable */
 	bool IsEditable() const
 	{
@@ -185,6 +187,8 @@ public:
 	 */
 	void UpdateSourceData()
 	{
+		// source data only exists in Editor
+#if WITH_EDITOR
 		check(RawTexture2D);
 
 		bool bIsEditable = IsEditable();
@@ -210,6 +214,18 @@ public:
 		{
 			RawTexture2D->PlatformData->Mips[0].BulkData.Unlock();
 		}
+#endif
+	}
+
+
+	void Cancel()
+	{
+		bool bIsEditable = IsEditable();
+		if (bIsEditable)
+		{
+			RawTexture2D->PlatformData->Mips[0].BulkData.Unlock();
+			CurrentMipData = nullptr;
+		}
 	}
 
 
@@ -228,6 +244,23 @@ public:
 			}
 		}
 	}
+
+
+	/**
+	 * Clear all texels in the current Mip to the given ClearColor
+	 */
+	void Clear(const FColor& ClearColor)
+	{
+		check(IsEditable());
+		if (IsEditable())
+		{
+			for (int64 k = 0; k < Dimensions.Num(); ++k)
+			{
+				CurrentMipData[k] = ClearColor;
+			}
+		}
+	}
+
 
 
 	/**
@@ -291,6 +324,73 @@ public:
 		checkSlow(IsEditable());
 		CurrentMipData[ToLinearIndex] = CurrentMipData[FromLinearIndex];
 	}
+
+
+	/**
+	 * populate texel values from floating-point SourceImage
+	 */
+	bool Copy(const TImageBuilder<FVector3f>& SourceImage, const bool bSRGB = false)
+	{
+		if (ensure(SourceImage.GetDimensions() == Dimensions) == false)
+		{
+			return false;
+		}
+		int64 Num = Dimensions.Num();
+		for (int32 i = 0; i < Num; ++i)
+		{
+			FVector3f Pixel = SourceImage.GetPixel(i);
+			Pixel.X = FMathf::Clamp(Pixel.X, 0.0, 1.0);
+			Pixel.Y = FMathf::Clamp(Pixel.Y, 0.0, 1.0);
+			Pixel.Z = FMathf::Clamp(Pixel.Z, 0.0, 1.0);
+			FColor Texel = ((FLinearColor)Pixel).ToFColor(bSRGB);
+			SetTexel(i, Texel);
+		}
+		return true;
+	}
+
+	/**
+	 * populate texel values from floating-point SourceImage
+	 */
+	bool Copy(const TImageBuilder<FVector4f>& SourceImage, const bool bSRGB = false)
+	{
+		if (ensure(SourceImage.GetDimensions() == Dimensions) == false)
+		{
+			return false;
+		}
+		int64 Num = Dimensions.Num();
+		for (int32 i = 0; i < Num; ++i)
+		{
+			FVector4f Pixel = SourceImage.GetPixel(i);
+			Pixel.X = FMathf::Clamp(Pixel.X, 0.0, 1.0);
+			Pixel.Y = FMathf::Clamp(Pixel.Y, 0.0, 1.0);
+			Pixel.Z = FMathf::Clamp(Pixel.Z, 0.0, 1.0);
+			Pixel.W = FMathf::Clamp(Pixel.W, 0.0, 1.0);
+			FColor Texel = ((FLinearColor)Pixel).ToFColor(bSRGB);
+			SetTexel(i, Texel);
+		}
+		return true;
+	}
+
+
+	/**
+	 * copy existing texel values to floating-point DestImage
+	 */
+	bool CopyTo(TImageBuilder<FVector4f>& DestImage) const
+	{
+		if (ensure(DestImage.GetDimensions() == Dimensions) == false)
+		{
+			return false;
+		}
+		int64 Num = Dimensions.Num();
+		for (int32 i = 0; i < Num; ++i)
+		{
+			FColor ByteColor = GetTexel(i);
+			FLinearColor FloatColor(ByteColor);
+			DestImage.SetPixel(i, FVector4f(FloatColor));
+		}
+		return true;
+	}
+
 
 
 	/**

@@ -13,7 +13,9 @@
 #include "Logging/TokenizedMessage.h"
 #include "Stats/StatsHierarchical.h"
 #include "Animation/AnimTrace.h"
+#include "Animation/AnimationPoseData.h"
 #include "UObject/FieldPath.h"
+#include "CustomAttributesRuntime.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
@@ -31,7 +33,7 @@ class UAnimInstance;
 struct FAnimInstanceProxy;
 struct FAnimNode_Base;
 class UProperty;
-class IPropertyAccess;
+struct FPropertyAccessLibrary;
 
 /**
  * Utility container for tracking a stack of ancestor nodes by node type during graph traversal
@@ -365,9 +367,10 @@ public:
 struct FPoseContext : public FAnimationBaseContext
 {
 public:
-	/* These Pose/Curve is stack allocator. You should not use it outside of stack. */
+	/* These Pose/Curve/Attributes are allocated using MemStack. You should not use it outside of stack. */
 	FCompactPose	Pose;
 	FBlendedCurve	Curve;
+	FStackCustomAttributes CustomAttributes;
 
 public:
 	// This constructor allocates a new uninitialized pose for the specified anim instance
@@ -446,6 +449,7 @@ public:
 
 		Pose = Other.Pose;
 		Curve = Other.Curve;
+		CustomAttributes = Other.CustomAttributes;
 		bExpectsAdditivePose = Other.bExpectsAdditivePose;
 		return *this;
 	}
@@ -466,6 +470,7 @@ struct FComponentSpacePoseContext : public FAnimationBaseContext
 public:
 	FCSPose<FCompactPose>	Pose;
 	FBlendedCurve			Curve;
+	FStackCustomAttributes CustomAttributes;
 
 public:
 	// This constructor allocates a new uninitialized pose for the specified anim instance
@@ -747,7 +752,7 @@ struct ENGINE_API FExposedValueHandler
 		: BoundFunction(NAME_None)
 		, Function(nullptr)
 		, ValueHandlerNodeProperty(nullptr)
-		, PropertyAccess(nullptr)
+		, PropertyAccessLibrary(nullptr)
 		, bInitialized(false)
 	{
 	}
@@ -770,8 +775,8 @@ struct ENGINE_API FExposedValueHandler
 	UPROPERTY()
 	TFieldPath<FStructProperty> ValueHandlerNodeProperty;
 
-	// Cached property access system ptr
-	IPropertyAccess* PropertyAccess;
+	// Cached property access library ptr
+	const FPropertyAccessLibrary* PropertyAccessLibrary;
 
 	// Prevent multiple initialization
 	bool bInitialized;
@@ -785,7 +790,7 @@ struct ENGINE_API FExposedValueHandler
 	static void ClassInitialization(TArray<FExposedValueHandler>& Handlers, UObject* ClassDefaultObject);
 
 	// Bind copy records and cache UFunction if necessary
-	void Initialize(UClass* InClass, IPropertyAccess* InPropertyAccess);
+	void Initialize(UClass* InClass, const FPropertyAccessLibrary& InPropertyAccessLibrary);
 
 	// Execute the function and copy records
 	void Execute(const FAnimationBaseContext& Context) const;

@@ -80,9 +80,29 @@ bool FComponentVisualizerManager::HandleProxyForComponentVis(FEditorViewportClie
 			}
 		}
 	}
-	else
+
+	// DO NOT call ClearActiveComponentVis() here. If a new actor is being selected, ClearActiveComponentVis() 
+	// will eventually be called by UUnrealEdEngine::NoteSelectionChange().  If it were called here, 
+	// it would be prior to the selection transaction and thus the previous state of the component visualizer 
+	// would not be captured for undo/redo.
+
+	return false;
+}
+
+bool FComponentVisualizerManager::SetActiveComponentVis(FEditorViewportClient* InViewportClient, TSharedPtr<FComponentVisualizer>& InVisualizer)
+{
+	if (InViewportClient && InVisualizer.IsValid())
 	{
-		ClearActiveComponentVis();
+		// call EndEditing on any currently edited visualizer, if we are going to change it
+		TSharedPtr<FComponentVisualizer> EditedVisualizer = EditedVisualizerPtr.Pin();
+		if (EditedVisualizer.IsValid() && InVisualizer.Get() != EditedVisualizer.Get())
+		{
+			EditedVisualizer->EndEditing();
+		}
+
+		EditedVisualizerPtr = InVisualizer;
+		EditedVisualizerViewportClient = InViewportClient;
+		return true;
 	}
 
 	return false;

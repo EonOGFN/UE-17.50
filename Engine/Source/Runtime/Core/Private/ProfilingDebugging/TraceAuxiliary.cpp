@@ -19,6 +19,7 @@
 #include "Misc/CString.h"
 #include "Misc/DateTime.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "ProfilingDebugging/CountersTrace.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ProfilingDebugging/PlatformFileTrace.h"
@@ -134,7 +135,7 @@ void FTraceAuxiliaryImpl::AddChannel(const TCHAR* Name)
 bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter)
 {
 	// Connect/write to file. But only if we're not already sending/writing
-	bool bConnected = (State >= EState::Tracing);
+	bool bConnected = Trace::IsTracing();
 	if (!bConnected)
 	{
 		if (Type == ETraceConnectType::Network)
@@ -384,17 +385,18 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	// Initialize Trace
 	Trace::FInitializeDesc Desc;
 	Desc.bUseWorkerThread = FPlatformProcess::SupportsMultithreading();
-
-	FString Parameter;
-	if (FParse::Value(CommandLine, TEXT("-tracememmb="), Parameter))
-	{
-		Desc.MaxMemoryHintMb = uint32(FCString::Strtoi(*Parameter, nullptr, 10));
-	}
 	Trace::Initialize(Desc);
 
 	FCoreDelegates::OnEndFrame.AddStatic(Trace::Update);
+	FModuleManager::Get().OnModulesChanged().AddLambda([](FName Name, EModuleChangeReason Reason){
+		if (Reason == EModuleChangeReason::ModuleLoaded)
+		{
+			EnableChannels();
+		}
+	});
 
 	// Extract an explicit channel set from the command line.
+	FString Parameter;
 	if (FParse::Value(CommandLine, TEXT("-trace="), Parameter, false))
 	{
 		GTraceAuxiliary.AddChannels(*Parameter);
@@ -415,10 +417,8 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 		GTraceAuxiliary.Connect(ETraceConnectType::File, nullptr);
 	}
 
-	// Insights' instrumentation.
-	TRACE_CPUPROFILER_INIT(CommandLine);
-	TRACE_PLATFORMFILE_INIT(CommandLine);
-	TRACE_COUNTERS_INIT(CommandLine);
+	Trace::ThreadRegister(TEXT("GameThread"), FPlatformTLS::GetCurrentThreadId(), -1);
+
 #endif
 }
 

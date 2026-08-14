@@ -57,9 +57,7 @@ protected:
 
 	TDepthOnlyVS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) :
 		FMeshMaterialShader(Initializer)
-	{
-		BindSceneTextureUniformBufferDependentOnShadingPath(Initializer, PassUniformBuffer);
-	}
+	{}
 
 public:
 
@@ -166,7 +164,6 @@ public:
 		FMeshMaterialShader(Initializer)
 	{
 		MobileColorValue.Bind(Initializer.ParameterMap, TEXT("MobileColorValue"));
-		BindSceneTextureUniformBufferDependentOnShadingPath(Initializer, PassUniformBuffer);
 	}
 
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -176,15 +173,13 @@ public:
 		OutEnvironment.SetDefine(TEXT("ALLOW_DEBUG_VIEW_MODES"), AllowDebugViewmodes(Parameters.Platform));
 		if (IsMobilePlatform(Parameters.Platform))
 		{
-			// No access to scene textures during depth rendering on mobile
-			OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1u);
-
 			OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_COLOR_VALUE"), bUsesMobileColorValue ? 1u : 0u);
 		}
 		else
 		{
 			OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_COLOR_VALUE"), 0u);
 		}
+		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1u);
 	}
 
 	FDepthOnlyPS() {}
@@ -208,7 +203,7 @@ public:
 };
 
 template <bool bPositionOnly, bool bUsesMobileColorValue>
-void GetDepthPassShaders(
+bool GetDepthPassShaders(
 	const FMaterial& Material,
 	FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
@@ -235,9 +230,11 @@ public:
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
 
 private:
+
+	bool TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy& MaterialRenderProxy, const FMaterial& Material);
 	
 	template<bool bPositionOnly>
-	void Process(
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,

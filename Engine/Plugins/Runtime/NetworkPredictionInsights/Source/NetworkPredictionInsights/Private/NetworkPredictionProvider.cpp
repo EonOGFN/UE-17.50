@@ -4,6 +4,8 @@
 
 FName FNetworkPredictionProvider::ProviderName("NetworkPredictionProvider");
 
+DEFINE_LOG_CATEGORY_STATIC(LogNetworkPredictionTraceProvider, Log, All);
+
 // -----------------------------------------------------------------------------
 
 FNetworkPredictionProvider::FNetworkPredictionProvider(Trace::IAnalysisSession& InSession)
@@ -29,7 +31,7 @@ FSimulationData::FConst& FNetworkPredictionProvider::WriteSimulationCreated(int3
 
 void FNetworkPredictionProvider::WriteSimulationTick(int32 TraceID, FSimulationData::FTick&& InTick)
 {
-	FSimulationData& SimulationData = FindOrAdd(TraceID).Get();
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
 
 	SimulationData.Analysis.PendingUserStateSource = ENP_UserStateSource::SimTick;
 	SimulationData.Analysis.PendingCommitUserStates.Reset();
@@ -54,6 +56,14 @@ void FNetworkPredictionProvider::WriteSimulationTick(int32 TraceID, FSimulationD
 	// Add it to the list
 	FSimulationData::FTick& NewTick = SimulationData.Ticks.PushBack();
 	NewTick = MoveTemp(InTick);
+
+	NewTick.NumBufferedInputCmds = SimulationData.Analysis.NumBufferedInputCmds;
+	NewTick.bInputFault = SimulationData.Analysis.bInputFault;
+	NewTick.ReconcileStr = SimulationData.Analysis.PendingReconcileStr;
+	NewTick.bReconcileDueToOffsetChange = SimulationData.Analysis.bLocalFrameOffsetChanged;
+	NewTick.LocalOffsetFrame = SimulationData.Analysis.LocalFrameOffset;
+	SimulationData.Analysis.PendingReconcileStr = nullptr;
+	SimulationData.Analysis.bLocalFrameOffsetChanged = false;
 
 	// Repredict if we've already simulated past this time before
 	if (NewTick.StartMS < SimulationData.Analysis.MaxTickSimTimeMS)
@@ -127,18 +137,11 @@ void FNetworkPredictionProvider::WriteSimulationTick(int32 TraceID, FSimulationD
 	}
 }
 
-FSimulationData::FEngineFrame& FNetworkPredictionProvider::WriteSimulationEOF(uint32 SimulationId)
-{
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
-	FSimulationData::FEngineFrame& NewEOF = SimulationData.EOFState.PushBack();
-	NewEOF.SystemFaults = MoveTemp(SimulationData.Analysis.PendingSystemFaults);
-	return NewEOF;
-}
-
 void FNetworkPredictionProvider::WriteNetRecv(int32 TraceID, FSimulationData::FNetSerializeRecv&& InNetRecv)
 {
 	ensure(TraceID > 0);
-	FSimulationData& SimulationData = FindOrAdd(TraceID).Get();
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
 
 	SimulationData.Analysis.PendingUserStateSource = ENP_UserStateSource::NetRecv;
 	SimulationData.Analysis.PendingCommitUserStates.Reset();
@@ -203,7 +206,8 @@ void FNetworkPredictionProvider::WriteNetRecv(int32 TraceID, FSimulationData::FN
 
 void FNetworkPredictionProvider::WriteNetCommit(uint32 SimulationId)
 {
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
 
 	// Mark pending user states committed
 	for (FSimulationData::FUserState* UserState : SimulationData.Analysis.PendingCommitUserStates)
@@ -241,7 +245,8 @@ void FNetworkPredictionProvider::WriteNetCommit(uint32 SimulationId)
 
 void FNetworkPredictionProvider::WriteSystemFault(uint32 SimulationId, uint64 EngineFrameNumber, const TCHAR* Fmt)
 {
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
 	
 	// This is akwward to trace. Should refactor some of this so it can be easily known if this happened within a
 	// NetRecv or SimTick scope.
@@ -258,34 +263,56 @@ void FNetworkPredictionProvider::WriteSystemFault(uint32 SimulationId, uint64 En
 void FNetworkPredictionProvider::WriteOOBStateMod(uint32 SimulationId)
 {
 	// Signals that the next user states traced will be OOB mods
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
 	SimulationData.Analysis.PendingCommitUserStates.Reset();
 	SimulationData.Analysis.PendingUserStateSource = ENP_UserStateSource::OOB;
 }
 
 void FNetworkPredictionProvider::WriteOOBStateModStr(uint32 SimulationId, const TCHAR* Fmt)
 {
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
 	SimulationData.Analysis.PendingOOBStr = Fmt;
 }
 
 void FNetworkPredictionProvider::WriteProduceInput(uint32 SimulationId)
 {
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
 	SimulationData.Analysis.PendingCommitUserStates.Reset();
 	SimulationData.Analysis.PendingUserStateSource = ENP_UserStateSource::ProduceInput;
 }
 
+void FNetworkPredictionProvider::WriteBufferedInput(uint32 SimulationId, int32 NumBufferedInputCmds, bool bFault)
+{
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
+	SimulationData.Analysis.NumBufferedInputCmds = NumBufferedInputCmds;
+	SimulationData.Analysis.bInputFault = bFault;
+}
+
 void FNetworkPredictionProvider::WriteSynthInput(uint32 SimulationId)
 {
-	FSimulationData& SimulationData = FindOrAdd(SimulationId).Get();
+	FSimulationData& SimulationData = FindChecked(SimulationId).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
 	SimulationData.Analysis.PendingCommitUserStates.Reset();
 	SimulationData.Analysis.PendingUserStateSource = ENP_UserStateSource::SynthInput;
 }
 
 void FNetworkPredictionProvider::WriteSimulationConfig(int32 TraceID, uint64 EngineFrame, ENP_NetRole NetRole, bool bHasNetConnection, ENP_TickingPolicy TickingPolicy, ENP_NetworkLOD NetworkLOD, int32 ServiceMask)
 {
-	auto& SparseData = FindOrAdd(TraceID)->SparseData.Write(EngineFrame);
+	ensureMsgf(NetRole != ENP_NetRole::None, TEXT("NetRole was traced as None for Sim %d"), TraceID);
+
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
+	auto& SparseData = SimulationData.SparseData.Write(EngineFrame);
 	SparseData->NetRole = NetRole;
 	SparseData->bHasNetConnection = bHasNetConnection;
 	SparseData->TickingPolicy = TickingPolicy;
@@ -297,7 +324,9 @@ void FNetworkPredictionProvider::WriteUserState(int32 TraceID, int32 Frame, uint
 {
 	ensure(Frame >= 0);
 
-	FSimulationData& SimulationData = FindOrAdd(TraceID).Get();
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
 	ensure(SimulationData.Analysis.PendingUserStateSource != ENP_UserStateSource::Unknown);
 
 	FSimulationData::FUserState& NewUserState = SimulationData.UserData.Store[(int32)Type].Push(Frame, EngineFrame);
@@ -320,6 +349,32 @@ void FNetworkPredictionProvider::WritePIEStart()
 	PIESessionCounter++;
 }
 
+void FNetworkPredictionProvider::WriteReconcile(int32 TraceID, int32 LocalFrameOffset, bool bLocalOffsetFrameChanged)
+{
+	ensure(TraceID > 0);
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
+	SimulationData.Analysis.LocalFrameOffset = LocalFrameOffset;
+	SimulationData.Analysis.bLocalFrameOffsetChanged = bLocalOffsetFrameChanged;
+	
+	if (SimulationData.Analysis.PendingReconcileStr == nullptr)
+	{
+		UE_LOG(LogNetworkPredictionTraceProvider, Warning, TEXT("NP Reconcile happened without traced string. Use UE_NP_TRACE_RECONCILE"));
+	}
+}
+
+void FNetworkPredictionProvider::WriteReconcileStr(int32 TraceID, const TCHAR* UserStr)
+{
+	ensure(TraceID > 0);
+
+	FSimulationData& SimulationData = FindChecked(TraceID).Get();
+	ensureMsgf(SimulationData.ConstData.ID.PIESession >= 0, TEXT("Invalid PIE Session: %d"), SimulationData.ConstData.ID.PIESession);
+
+	ensure(SimulationData.Analysis.PendingReconcileStr == nullptr); // Not expected to get 2+ WriteReconcileStr before WriteReconcile
+	SimulationData.Analysis.PendingReconcileStr = UserStr;
+}
+
 TSharedRef<FSimulationData>& FNetworkPredictionProvider::FindOrAdd(int32 TraceID)
 {
 	for (TSharedRef<FSimulationData>& Data : ProviderData)
@@ -331,6 +386,20 @@ TSharedRef<FSimulationData>& FNetworkPredictionProvider::FindOrAdd(int32 TraceID
 	}
 
 	ProviderData.Add(MakeShareable(new FSimulationData(TraceID, Session.GetLinearAllocator())));
+	return ProviderData.Last();
+}
+
+TSharedRef<FSimulationData>& FNetworkPredictionProvider::FindChecked(int32 TraceID)
+{
+	for (TSharedRef<FSimulationData>& Data : ProviderData)
+	{
+		if (Data->TraceID == TraceID)
+		{
+			return Data;
+		}
+	}
+
+	checkf(false, TEXT("No matching simulation data found for TraceID: %d"), TraceID);
 	return ProviderData.Last();
 }
 
@@ -415,6 +484,20 @@ const TCHAR* LexToString(ENetSerializeRecvStatus Status)
 	case ENetSerializeRecvStatus::Stale:
 		return TEXT("Stale");
 
+	default:
+		ensure(false);
+		return TEXT("???");
+	}
+}
+
+const TCHAR* LexToString(ENP_TickingPolicy Policy)
+{
+	switch(Policy)
+	{
+	case ENP_TickingPolicy::Independent:
+		return TEXT("Independent");
+	case ENP_TickingPolicy::Fixed:
+		return TEXT("Fixed");
 	default:
 		ensure(false);
 		return TEXT("???");

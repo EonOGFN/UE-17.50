@@ -272,9 +272,16 @@ EAbcImportError FAbcFile::Import(UAbcImportSettings* InImportSettings)
 
 							if (BaseMaterial)
 							{
-								BaseMaterial->bUsedWithSkeletalMesh |= ImportSettings->ImportType == EAlembicImportType::Skeletal;
-								BaseMaterial->bUsedWithMorphTargets |= ImportSettings->ImportType == EAlembicImportType::Skeletal;
-								BaseMaterial->bUsedWithGeometryCache |= ImportSettings->ImportType == EAlembicImportType::GeometryCache;
+								bool bNeedsRecompile = false;
+								if (ImportSettings->ImportType == EAlembicImportType::Skeletal)
+								{
+									BaseMaterial->SetMaterialUsage(bNeedsRecompile, MATUSAGE_SkeletalMesh);
+									BaseMaterial->SetMaterialUsage(bNeedsRecompile, MATUSAGE_MorphTargets);
+								}
+								else if (ImportSettings->ImportType == EAlembicImportType::GeometryCache)
+								{
+									BaseMaterial->SetMaterialUsage(bNeedsRecompile, MATUSAGE_GeometryCache);
+								}
 							}							
 						}
 					}
@@ -472,6 +479,16 @@ const int32 FAbcFile::GetMaxFrameIndex() const
 	return MaxFrameIndex;
 }
 
+const int32 FAbcFile::GetStartFrameIndex() const
+{
+	return StartFrameIndex;
+}
+
+const int32 FAbcFile::GetEndFrameIndex() const
+{
+	return EndFrameIndex;
+}
+
 const UAbcImportSettings* FAbcFile::GetImportSettings() const 
 {
 	return ImportSettings;
@@ -515,6 +532,11 @@ const int32 FAbcFile::GetImportNumFrames() const
 const int32 FAbcFile::GetFramerate() const
 {
 	return FramesPerSecond;
+}
+
+const float FAbcFile::GetSecondsPerFrame() const
+{
+	return SecondsPerFrame;
 }
 
 int32 FAbcFile::GetFrameIndex(float Time)

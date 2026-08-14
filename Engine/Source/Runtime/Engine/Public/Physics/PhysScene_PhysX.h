@@ -5,6 +5,7 @@
 #include "EngineGlobals.h"
 #include "PhysicsPublic.h"
 #include "PhysxUserData.h"
+#include "PhysicsEngine/RigidBodyIndexPair.h"
 #include "Physics/PhysicsInterfaceTypes.h"
 
 class ISQAccelerator;
@@ -183,6 +184,9 @@ public:
 	{
 		return PhysicsSceneCompletion;
 	}
+
+	FGraphEventArray GetCompletionEvents();
+	bool IsCompletionEventComplete() const;
 
 	/** Handle exec commands related to scene (PXVIS and APEXVIS) */
 	bool HandleExecCommands(const TCHAR* Cmd, FOutputDevice* Ar);

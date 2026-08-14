@@ -83,16 +83,19 @@ public:
 			// Volumetric self shadow mesh commands need to be generated every frame, as they depend on single frame uniform buffers with self shadow data.
 			const bool bSupportsCachingMeshDrawCommands = SupportsCachingMeshDrawCommands(*StaticMesh, FeatureLevel) && !PrimitiveSceneProxy->CastsVolumetricTranslucentShadow();
 
-			bool bUseSkyMaterial = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->IsSky();
-			bool bUseSingleLayerWaterMaterial = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().HasShadingModel(MSM_SingleLayerWater);
+			const FMaterial& Material = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+			bool bUseSkyMaterial = Material.IsSky();
+			bool bUseSingleLayerWaterMaterial = Material.GetShadingModels().HasShadingModel(MSM_SingleLayerWater);
+			bool bUseAnisotropy = Material.GetShadingModels().HasAnyShadingModel({MSM_DefaultLit, MSM_ClearCoat}) && Material.MaterialUsesAnisotropy_RenderThread();
 			FStaticMeshBatchRelevance* StaticMeshRelevance = new(PrimitiveSceneInfo->StaticMeshRelevances) FStaticMeshBatchRelevance(
 				*StaticMesh, 
 				ScreenSize, 
 				bSupportsCachingMeshDrawCommands,
 				bUseSkyMaterial,
 				bUseSingleLayerWaterMaterial,
+				bUseAnisotropy,
 				FeatureLevel
-			);
+				);
 		}
 	}
 
@@ -389,7 +392,7 @@ void FPrimitiveSceneInfo::CacheMeshDrawCommands(FRHICommandListImmediate& RHICmd
 		}
 	}
 
-	if (!RHISupportsMultithreadedShaderCreation(GMaxRHIShaderPlatform))
+	if (!FParallelMeshDrawCommandPass::IsOnDemandShaderCreationEnabled())
 	{
 		FGraphicsMinimalPipelineStateId::InitializePersistentIds();
 	}
@@ -400,7 +403,7 @@ void FPrimitiveSceneInfo::CacheMeshDrawCommands(FRHICommandListImmediate& RHICmd
 		checkf(RHISupportsMultithreadedShaderCreation(GMaxRHIShaderPlatform), TEXT("Raytracing code needs the ability to create shaders from task threads."));
 
 		FCachedRayTracingMeshCommandContext CommandContext(Scene->CachedRayTracingMeshCommands);
-		FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.OpaqueBasePassUniformBuffer);
+		FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer);
 		FRayTracingMeshProcessor RayTracingMeshProcessor(&CommandContext, Scene, nullptr, PassDrawRenderState);
 
 		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
@@ -417,6 +420,9 @@ void FPrimitiveSceneInfo::CacheMeshDrawCommands(FRHICommandListImmediate& RHICmd
 				SceneInfo->CachedRayTracingMeshCommandIndicesPerLOD.Empty(MaxLOD + 1);
 				SceneInfo->CachedRayTracingMeshCommandIndicesPerLOD.AddDefaulted(MaxLOD + 1);
 
+				SceneInfo->CachedRayTracingMeshCommandsHashPerLOD.Empty(MaxLOD + 1);
+				SceneInfo->CachedRayTracingMeshCommandsHashPerLOD.AddZeroed(MaxLOD + 1);
+
 				for (int32 MeshIndex = 0; MeshIndex < SceneInfo->StaticMeshes.Num(); MeshIndex++)
 				{
 					FStaticMeshBatch& Mesh = SceneInfo->StaticMeshes[MeshIndex];
@@ -425,6 +431,10 @@ void FPrimitiveSceneInfo::CacheMeshDrawCommands(FRHICommandListImmediate& RHICmd
 
 					if (CommandContext.CommandIndex >= 0)
 					{
+						uint64& Hash = SceneInfo->CachedRayTracingMeshCommandsHashPerLOD[Mesh.LODIndex];
+						Hash <<= 1;
+						Hash ^= Scene->CachedRayTracingMeshCommands.RayTracingMeshCommands[CommandContext.CommandIndex].ShaderBindings.GetDynamicInstancingHash();
+
 						SceneInfo->CachedRayTracingMeshCommandIndicesPerLOD[Mesh.LODIndex].Add(CommandContext.CommandIndex);
 						CommandContext.CommandIndex = -1;
 					}
@@ -498,6 +508,8 @@ void FPrimitiveSceneInfo::RemoveCachedMeshDrawCommands()
 		}
 
 		CachedRayTracingMeshCommandIndicesPerLOD.Empty();
+
+		CachedRayTracingMeshCommandsHashPerLOD.Empty();
 	}
 #endif
 }
@@ -1020,8 +1032,6 @@ void FPrimitiveSceneInfo::UnlinkLODParentComponent()
 	if(LODParentComponentId.IsValid())
 	{
 		Scene->SceneLODHierarchy.RemoveChildNode(LODParentComponentId, this);
-		// I don't think this will be reused but just in case
-		LODParentComponentId = FPrimitiveComponentId();
 	}
 }
 

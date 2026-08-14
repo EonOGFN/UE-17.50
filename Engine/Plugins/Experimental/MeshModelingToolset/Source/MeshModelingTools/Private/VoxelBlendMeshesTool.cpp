@@ -38,6 +38,11 @@ void UVoxelBlendMeshesTool::SetupProperties()
 	BlendProperties = NewObject<UVoxelBlendMeshesToolProperties>(this);
 	BlendProperties->RestoreProperties(this);
 	AddToolPropertySource(BlendProperties);
+
+	SetToolDisplayName(LOCTEXT("VoxelBlendMeshesToolName", "Blend Meshes Tool"));
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("VoxelBlendMeshesToolDescription", "Compute a volumetric Blend of the input meshes, controlled by the Blend Power/Falloff. UVs, sharp edges, and small/thin features will be lost. Increase Voxel Count to enhance accuracy."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -57,7 +62,9 @@ TUniquePtr<FDynamicMeshOperator> UVoxelBlendMeshesTool::MakeNewOperator()
 	for (int Idx = 0; Idx < ComponentTargets.Num(); Idx++)
 	{
 		Op->Meshes[Idx] = OriginalDynamicMeshes[Idx];
-		Op->Transforms[Idx] = TransformProxies[Idx]->GetTransform();
+		FTransform UseTransform = TransformProxies[Idx]->GetTransform();
+		UseTransform.MultiplyScale3D(TransformInitialScales[Idx]);
+		Op->Transforms[Idx] = UseTransform;
 	}
 
 	Op->BlendFalloff = BlendProperties->BlendFalloff;

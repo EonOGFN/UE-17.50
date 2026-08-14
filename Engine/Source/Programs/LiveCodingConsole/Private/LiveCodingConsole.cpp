@@ -129,6 +129,8 @@ public:
 		// loop until the app is ready to quit
 		while (!IsEngineExitRequested())
 		{
+			BeginExitIfRequested();
+
 			Slate.PumpMessages();
 			Slate.Tick();
 
@@ -469,7 +471,7 @@ bool LiveCodingConsoleMain(const TCHAR* CmdLine)
 #endif
 
 			// Load the server module
-			FModuleManager::Get().LoadModuleChecked<ILiveCodingServer>(TEXT("LiveCodingServer"));
+			FModuleManager::Get().LoadModuleChecked<ILiveCodingServerModule>(TEXT("LiveCodingServer"));
 			ILiveCodingServer& Server = IModularFeatures::Get().GetModularFeature<ILiveCodingServer>(LIVE_CODING_SERVER_FEATURE_NAME);
 
 			// Run the inner application loop

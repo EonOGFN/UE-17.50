@@ -82,59 +82,62 @@ namespace Chaos
 		using Base::AddConstraintRule;
 		using Base::ParticleUpdatePosition;
 
+		using EvolutionTraits = Traits;
 		using FGravityForces = TPerParticleGravity<FReal, 3>;
 		using FCollisionConstraints = FPBDCollisionConstraints;
 		using FCollisionConstraintRule = TPBDConstraintColorRule<FCollisionConstraints>;
 		using FCollisionDetector = FSpatialAccelerationCollisionDetector;
 		using FExternalForces = TPerParticleExternalForces<FReal, 3>;
+		using FRigidClustering = TPBDRigidClustering<TPBDRigidsEvolutionGBF<Traits>, FPBDCollisionConstraints, FReal, 3>;
 
-		static constexpr int32 DefaultNumIterations = 1;
-		static constexpr int32 DefaultNumPairIterations = 1;
-		static constexpr int32 DefaultNumPushOutIterations = 3;
-		static constexpr int32 DefaultNumPushOutPairIterations = 2;
+		// Default iteration counts
+		static constexpr int32 DefaultNumIterations = 2;
+		static constexpr int32 DefaultNumCollisionPairIterations = 3;
+		static constexpr int32 DefaultNumPushOutIterations = 2;
+		static constexpr int32 DefaultNumCollisionPushOutPairIterations = 3;
+		static constexpr float DefaultCollisionMarginFraction = 0.01f;
+		static constexpr float DefaultCollisionMarginMax = 2.0f;
+		static constexpr float DefaultCollisionCullDistance = 5.0f;
+		static constexpr int32 DefaultNumJointPairIterations = 3;
+		static constexpr int32 DefaultNumJointPushOutPairIterations = 0;
 
 		// @todo(chaos): Required by clustering - clean up
 		using Base::ApplyPushOut;
 
-		CHAOS_API TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, int32 InNumIterations = DefaultNumIterations, int32 InNumPushoutIterations = DefaultNumPushOutIterations, bool InIsSingleThreaded = false);
+		CHAOS_API TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr, bool InIsSingleThreaded = false);
 		CHAOS_API ~TPBDRigidsEvolutionGBF() {}
 
-		void SetPostIntegrateCallback(const FPBDRigidsEvolutionCallback& Cb)
+		FORCEINLINE void SetPostIntegrateCallback(const FPBDRigidsEvolutionCallback& Cb)
 		{
 			PostIntegrateCallback = Cb;
 		}
 
-		void SetPostDetectCollisionsCallback(const FPBDRigidsEvolutionCallback& Cb)
+		FORCEINLINE void SetPostDetectCollisionsCallback(const FPBDRigidsEvolutionCallback& Cb)
 		{
 			PostDetectCollisionsCallback = Cb;
 		}
 
-		void SetCollisionModifierCallback(const FCollisionModifierCallback& Cb)
-		{
-			CollisionModifierCallback = Cb;
-		}
-
-		void SetPreApplyCallback(const FPBDRigidsEvolutionCallback& Cb)
+		FORCEINLINE void SetPreApplyCallback(const FPBDRigidsEvolutionCallback& Cb)
 		{
 			PreApplyCallback = Cb;
 		}
 
-		void SetPostApplyCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
+		FORCEINLINE void SetPostApplyCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
 		{
 			PostApplyCallback = Cb;
 		}
 
-		void SetPostApplyPushOutCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
+		FORCEINLINE void SetPostApplyPushOutCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
 		{
 			PostApplyPushOutCallback = Cb;
 		}
 
-		void SetInternalParticleInitilizationFunction(const FPBDRigidsEvolutionInternalHandleCallback& Cb)
+		FORCEINLINE void SetInternalParticleInitilizationFunction(const FPBDRigidsEvolutionInternalHandleCallback& Cb)
 		{ 
 			InternalParticleInitilization = Cb;
 		}
 
-		void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, const TGeometryParticleHandle<float, 3>* NewParticle) 
+		FORCEINLINE void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, const TGeometryParticleHandle<float, 3>* NewParticle) 
 		{ 
 			if(InternalParticleInitilization)
 			{
@@ -142,24 +145,23 @@ namespace Chaos
 			}
 		}
 
-
 		CHAOS_API void Advance(const FReal Dt, const FReal MaxStepDt, const int32 MaxSteps);
 		CHAOS_API void AdvanceOneTimeStep(const FReal dt, const FReal StepFraction = (FReal)1.0);
 
-		FCollisionConstraints& GetCollisionConstraints() { return CollisionConstraints; }
-		const FCollisionConstraints& GetCollisionConstraints() const { return CollisionConstraints; }
+		FORCEINLINE FCollisionConstraints& GetCollisionConstraints() { return CollisionConstraints; }
+		FORCEINLINE const FCollisionConstraints& GetCollisionConstraints() const { return CollisionConstraints; }
 
-		FCollisionConstraintRule& GetCollisionConstraintsRule() { return CollisionRule; }
-		const FCollisionConstraintRule& GetCollisionConstraintsRule() const { return CollisionRule; }
+		FORCEINLINE FCollisionConstraintRule& GetCollisionConstraintsRule() { return CollisionRule; }
+		FORCEINLINE const FCollisionConstraintRule& GetCollisionConstraintsRule() const { return CollisionRule; }
 
-		FCollisionDetector& GetCollisionDetector() { return CollisionDetector; }
-		const FCollisionDetector& GetCollisionDetector() const { return CollisionDetector; }
+		FORCEINLINE FCollisionDetector& GetCollisionDetector() { return CollisionDetector; }
+		FORCEINLINE const FCollisionDetector& GetCollisionDetector() const { return CollisionDetector; }
 
-		FGravityForces& GetGravityForces() { return GravityForces; }
-		const FGravityForces& GetGravityForces() const { return GravityForces; }
+		FORCEINLINE FGravityForces& GetGravityForces() { return GravityForces; }
+		FORCEINLINE const FGravityForces& GetGravityForces() const { return GravityForces; }
 
-		const TPBDRigidClustering<TPBDRigidsEvolutionGBF<Traits>, FPBDCollisionConstraints, FReal, 3>& GetRigidClustering() const { return Clustering; }
-		TPBDRigidClustering<TPBDRigidsEvolutionGBF<Traits>, FPBDCollisionConstraints, FReal, 3>& GetRigidClustering() { return Clustering; }
+		FORCEINLINE const TPBDRigidClustering<TPBDRigidsEvolutionGBF<Traits>, FPBDCollisionConstraints, FReal, 3>& GetRigidClustering() const { return Clustering; }
+		FORCEINLINE TPBDRigidClustering<TPBDRigidsEvolutionGBF<Traits>, FPBDCollisionConstraints, FReal, 3>& GetRigidClustering() { return Clustering; }
 
 		CHAOS_API inline void EndFrame(FReal Dt)
 		{
@@ -263,12 +265,12 @@ namespace Chaos
 
 		FPBDRigidsEvolutionCallback PostIntegrateCallback;
 		FPBDRigidsEvolutionCallback PostDetectCollisionsCallback;
-		FCollisionModifierCallback CollisionModifierCallback;
 		FPBDRigidsEvolutionCallback PreApplyCallback;
 		FPBDRigidsEvolutionIslandCallback PostApplyCallback;
 		FPBDRigidsEvolutionIslandCallback PostApplyPushOutCallback;
 		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 		FEvolutionResimCache* CurrentStepResimCacheImp;
+		const TArray<ISimCallbackObject*>* CollisionModifiers;
 	};
 
 #define EVOLUTION_TRAIT(Trait) extern template class CHAOS_TEMPLATE_API TPBDRigidsEvolutionGBF<Trait>;

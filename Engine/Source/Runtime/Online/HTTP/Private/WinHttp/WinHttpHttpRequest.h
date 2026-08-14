@@ -7,15 +7,16 @@
 #include "CoreMinimal.h"
 #include "GenericPlatform/HttpRequestImpl.h"
 #include "Interfaces/IHttpResponse.h"
+#include "IHttpThreadedRequest.h"
 
 class FRequestPayload;
 class FWinHttpHttpResponse;
-class IWinHttpConnection;
+class FWinHttpConnectionHttp;
 
 using FStringKeyValueMap = TMap<FString, FString>;
 
 class FWinHttpHttpRequest
-	: public FHttpRequestImpl
+	: public IHttpThreadedRequest
 {
 public:
 	FWinHttpHttpRequest();
@@ -50,12 +51,24 @@ public:
 	virtual float GetElapsedTime() const override;
 	//~ End IHttpRequest Interface
 
+	//~ Begin IHttpRequestThreaded Interface
+	/** Called on HTTP thread */
+	virtual bool StartThreadedRequest() override;
+	/** Called on HTTP thread */
+	virtual bool IsThreadedRequestComplete() override;
+	/** Called on HTTP thread */
+	virtual void TickThreadedRequest(float DeltaSeconds) override;
+
+	/** Called on Game thread */
+	virtual void FinishRequest() override;
+	//~ End IHttpRequestThreaded Interface
+
 protected:
 	void HandleDataTransferred(int32 BytesSent, int32 BytesReceived);
 	void HandleHeaderReceived(const FString& HeaderKey, const FString& HeaderValue);
-	void HandleRequestComplete(EHttpRequestStatus::Type CompletionStatus, EHttpResponseCodes::Type HttpStatusCode, FStringKeyValueMap& Headers, TArray<uint8>& Contents);
+	void HandleRequestComplete(EHttpRequestStatus::Type CompletionStatus);
 
-	void FinishRequest();
+	void UpdateResponseBody(bool bForceResponseExist = false);
 
 private:
 	struct FWinHttpHttpRequestData
@@ -88,11 +101,11 @@ private:
 	EHttpRequestStatus::Type State = EHttpRequestStatus::NotStarted;
 
 	/** */
-	TSharedPtr<IWinHttpConnection, ESPMode::ThreadSafe> Connection;
+	TSharedPtr<FWinHttpConnectionHttp, ESPMode::ThreadSafe> Connection;
 
 	/** */
 	TSharedPtr<FWinHttpHttpResponse, ESPMode::ThreadSafe> Response;
-	
+
 	/** */
 	int32 TotalBytesSent = 0;
 

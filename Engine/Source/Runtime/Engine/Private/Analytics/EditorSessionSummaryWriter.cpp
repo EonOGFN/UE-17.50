@@ -12,13 +12,16 @@
 
 #include "Engine/Engine.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/ExceptionHandling.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/FileManager.h"
 #include "IAnalyticsProviderET.h"
 #include "Interfaces/IPluginManager.h"
 #include "Interfaces/IProjectManager.h"
 #include "Logging/LogMacros.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/EngineBuildSettings.h"
 #include "Misc/EngineVersion.h"
@@ -36,13 +39,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogEditorSessionSummary, Verbose, All);
 
 namespace EditorSessionWriterDefs
 {
-	// Number of seconds to wait between each update of the mutable metrics.
-	static const float HeartbeatPeriodSeconds = 60;
-
-	// In the first minutes, update every seconds because lot of crashes occurs in the first minute.
-	static const float EarlyHeartbeatPeriodSeconds = 1;
-
-	// In the first minutes, update every seconds because lot of crashes occurs in the first minute.
+	// Number of seconds to wait before checking again if the debugger is connected.
 	static const float DebuggerCheckPeriodSeconds = 1;
 
 	// The upper CPU usage % considered as Idle. If the CPU usage goes above this threshold, the Editor is considered 'active'.
@@ -50,11 +47,20 @@ namespace EditorSessionWriterDefs
 
 	// The number of seconds required between Editor activities to consider the Editor as 'inactive' (user input, cpu burst).
 	constexpr double EditorInactivitySecondsForIdleState = 5 * 60.0; // To be comparable to the 5-min user inactivity.
+
+	// Returns the default period at which the session is saved.
+	constexpr double GetDefaultSavePeriodSecs()
+	{
+	#if PLATFORM_WINDOWS
+		return 30; // Saving to a couple of values to the registry takes about 5ms, so we can save more or less frequently.
+	#else
+		return 60; // On other platforms, were we must load/parse/update/save a .ini, this is rather slow, so throttle it more.
+	#endif
+	}
 }
 
 FEditorSessionSummaryWriter::FEditorSessionSummaryWriter(uint32 InProcessMonitorProcessId)
-	: HeartbeatTimeElapsed(0.0f)
-	, NextDebuggerCheckSecs(FPlatformTime::Seconds())
+	: NextDebuggerCheckSecs(FPlatformTime::Seconds())
 	, LastUserActivityTimeSecs(FPlatformTime::Seconds())
 	, AccountedUserIdleSecs(0)
 	, LastEditorActivityTimeSecs(FPlatformTime::Seconds())
@@ -91,6 +97,7 @@ void FEditorSessionSummaryWriter::Initialize()
 		UpdateSessionDuration(CurrTimeSecs);
 
 		CurrentSession->Save();
+		LastSaveTimeSecs = CurrTimeSecs;
 
 		UE_LOG(LogEditorSessionSummary, Log, TEXT("EditorSessionSummaryWriter initialized"));
 
@@ -112,6 +119,7 @@ void FEditorSessionSummaryWriter::Initialize()
 		FCoreDelegates::OnHandleSystemError.AddRaw(this, &FEditorSessionSummaryWriter::OnCrashing); // WARNING: Don't assume this function is only called from game thread.
 		FCoreDelegates::ApplicationWillTerminateDelegate.AddRaw(this, &FEditorSessionSummaryWriter::OnTerminate); // WARNING: Don't assume this function is only called from game thread.
 		FCoreDelegates::IsVanillaProductChanged.AddRaw(this, &FEditorSessionSummaryWriter::OnVanillaStateChanged);
+		FCoreDelegates::OnUserLoginChangedEvent.AddRaw(this, &FEditorSessionSummaryWriter::OnUserLoginChanged);
 		FEditorDelegates::PreBeginPIE.AddRaw(this, &FEditorSessionSummaryWriter::OnEnterPIE);
 		FEditorDelegates::EndPIE.AddRaw(this, &FEditorSessionSummaryWriter::OnExitPIE);
 		FUserActivityTracking::OnActivityChanged.AddRaw(this, &FEditorSessionSummaryWriter::OnUserActivity);
@@ -223,6 +231,35 @@ bool FEditorSessionSummaryWriter::UpdateUserIdleTime(double CurrTimeSecs, bool b
 	return bSessionUpdated; // True if the idle timers were updated.
 }
 
+bool FEditorSessionSummaryWriter::UpdateOutOfProcessMonitorState(bool bQuickCheck)
+{
+	if (CurrentSession->MonitorProcessID == 0)
+	{
+		return false; // Nothing to update, monitor is not running in background (not supported/not in monitor mode/failed to launch)
+	}
+	else if (CurrentSession->MonitorExitCode.IsSet() && *CurrentSession->MonitorExitCode != ECrashExitCodes::OutOfProcessReporterExitedUnexpectedly)
+	{
+		return false; // Already have the real exit code set.
+	}
+	else if (TOptional<int32> ExitCode = FGenericCrashContext::GetOutOfProcessCrashReporterExitCode())
+	{
+		CurrentSession->MonitorExitCode = MoveTemp(ExitCode); // Just acquired the real exit code from the engine.
+		return true;
+	}
+	else if (bQuickCheck)
+	{
+		return false; // All the code above is pretty fast and can run every tick. IsApplicationRunning() is very slow, so exit here.
+	}
+	else if (!CurrentSession->MonitorExitCode.IsSet() && !FPlatformProcess::IsApplicationRunning(CurrentSession->MonitorProcessID))
+	{
+		// Set a rather unique, but known exit code as place holder, hoping that next update, the engine will report the real one.
+		CurrentSession->MonitorExitCode.Emplace(ECrashExitCodes::OutOfProcessReporterExitedUnexpectedly);
+		return true;
+	}
+	// else -> either CrashReportClientEditor is still running or we already flagged it as dead.
+	return false;
+}
+
 void FEditorSessionSummaryWriter::Tick(float DeltaTime)
 {
 	if (bShutdown)
@@ -238,19 +275,57 @@ void FEditorSessionSummaryWriter::Tick(float DeltaTime)
 	}
 
 	const double CurrentTimeSecs = FPlatformTime::Seconds();
+	const FDateTime CurrentTimeUtc = FDateTime::UtcNow();
 
-	// If the Editor process CPU usage is high enough, this count as an activity.
+	// In the n first seconds, save more frequently because lot of bad things happen early and we'd like to have the data as accurate as possible.
+	constexpr double EarlySessionAgeSecs = 30;
+	constexpr double EarlySavePeriodSecs = 1;
+	constexpr double DefaultSavePeriodSecs = EditorSessionWriterDefs::GetDefaultSavePeriodSecs();
+	const double SessionAgeSecs = CurrentTimeSecs - SessionStartTimeSecs;
+	bool bSaveSession = (CurrentTimeSecs - LastSaveTimeSecs >= (SessionAgeSecs <= EarlySessionAgeSecs ? EarlySavePeriodSecs : DefaultSavePeriodSecs));
+
+	// Update all variables that are cheap to update.
+	extern ENGINE_API float GAverageFPS;
+	CurrentSession->AverageFPS = GAverageFPS;
+	CurrentSession->LastTickTimestamp = CurrentTimeUtc;
+	CurrentSession->SessionTickCount++;
+	CurrentSession->EngineTickCount = GFrameCounter;
+
+	// Detect if the Editor process CPU usage is high, this count as an activity and this resets Editor idle counter.
 	if (FPlatformTime::GetCPUTime().CPUTimePct > EditorSessionWriterDefs::IdleCpuUsagePercent)
 	{
 		UpdateEditorIdleTime(CurrentTimeSecs, /*bReset*/true);
 	}
 
-	// Update other session stats approximatively every minute.
-	HeartbeatTimeElapsed += DeltaTime;
+	// Detect if CRC state changed since the last update.
+	bSaveSession |= UpdateOutOfProcessMonitorState(/*bQuickCheck*/true);
 
-	// Frequently check if the debugger is attached. (More than once per minute)
+	// Detect if the VR mode changed since the last update.
+	bool bVREditorModeActive = IVREditorModule::Get().IsVREditorModeActive();
+	if (bVREditorModeActive != CurrentSession->bIsInVRMode)
+	{
+		CurrentSession->bIsInVRMode = bVREditorModeActive;
+		bSaveSession = true;
+	}
+
+	// Detect if the PIE state changed since the last update.
+	bool bInPie = FPlayWorldCommandCallbacks::IsInPIE();
+	if (bInPie != CurrentSession->bIsInPIE)
+	{
+		CurrentSession->bIsInPIE = bInPie;
+		bSaveSession = true;
+	}
+
+	// Periodially check if the debugger is attached. The call might be slightly expensive on some platforms, so throttle it down.
 	if (CurrentTimeSecs >= NextDebuggerCheckSecs)
 	{
+		// Ignoring the debugger changes how IsDebuggerPresent() behave and masks the usage of the debugger if true.
+		if (GIgnoreDebugger)
+		{
+			bSaveSession |= CurrentSession->bIsDebuggerIgnored == false; // Only saved it when it goes from false to true.
+			CurrentSession->bIsDebuggerIgnored = true;
+		}
+
 		// Check if the debugger is present.
 		bool bIsDebuggerPresent = FPlatformMisc::IsDebuggerPresent();
 		if (CurrentSession->bIsDebugger != bIsDebuggerPresent)
@@ -260,32 +335,15 @@ void FEditorSessionSummaryWriter::Tick(float DeltaTime)
 			{
 				CurrentSession->bWasEverDebugger = true;
 			}
-			TrySaveCurrentSession(FDateTime::UtcNow(), CurrentTimeSecs);
+			bSaveSession = true;
 		}
 		NextDebuggerCheckSecs = CurrentTimeSecs + EditorSessionWriterDefs::DebuggerCheckPeriodSeconds;
 	}
 
-	// In the first seconds of the session, be more granular about updating the session (many crashes occurs there), update/save every second or so, then every minutes later on.
-	if (HeartbeatTimeElapsed >= EditorSessionWriterDefs::HeartbeatPeriodSeconds || (CurrentTimeSecs - SessionStartTimeSecs <= 30.0 && HeartbeatTimeElapsed >= EditorSessionWriterDefs::EarlyHeartbeatPeriodSeconds))
+	if (bSaveSession)
 	{
-		HeartbeatTimeElapsed = 0.0f;
-
-		// Check if the out of process monitor is running.
-		if (CurrentSession->MonitorProcessID != 0 && !CurrentSession->MonitorExceptCode.IsSet())
-		{
-			// The out-of-process application reporting our crash shouldn't die before this process.
-			if (!FPlatformProcess::IsApplicationRunning(CurrentSession->MonitorProcessID))
-			{
-				CurrentSession->MonitorExceptCode.Emplace(ECrashExitCodes::OutOfProcessReporterExitedUnexpectedly);
-			}
-		}
-
-		extern ENGINE_API float GAverageFPS;
-		CurrentSession->AverageFPS = GAverageFPS;
-		CurrentSession->bIsInVRMode = IVREditorModule::Get().IsVREditorModeActive();
-		CurrentSession->bIsInPIE = FPlayWorldCommandCallbacks::IsInPIE();
-
-		TrySaveCurrentSession(FDateTime::UtcNow(), CurrentTimeSecs); // Saving also updates session duration/timestamp/userIdle/editorIdle
+		// TODO: Consider cloning the session and saving in another thread. It cost about 1 to 6ms on Windows to save in the main thread.
+		TrySaveCurrentSession(CurrentTimeUtc, CurrentTimeSecs); // Saving also updates session duration/timestamp/userIdle/editorIdle
 	}
 }
 
@@ -311,6 +369,7 @@ void FEditorSessionSummaryWriter::Shutdown()
 		FUserActivityTracking::OnActivityChanged.RemoveAll(this);
 		FSlateApplication::Get().GetOnModalLoopTickEvent().RemoveAll(this);
 		FSlateApplication::Get().GetLastUserInteractionTimeUpdateEvent().RemoveAll(this);
+		FCoreDelegates::OnUserLoginChangedEvent.RemoveAll(this);
 		FCoreDelegates::OnHandleSystemError.RemoveAll(this);
 
 		CurrentSession->bWasShutdown = true;
@@ -331,7 +390,7 @@ void FEditorSessionSummaryWriter::Shutdown()
 	bShutdown = true;
 }
 
-TUniquePtr<FEditorAnalyticsSession> FEditorSessionSummaryWriter::CreateCurrentSession(const FDateTime& StartupTimeUtc, uint32 OutOfProcessMonitorProcessId)
+TUniquePtr<FEditorAnalyticsSession> FEditorSessionSummaryWriter::CreateCurrentSession(const FDateTime& StartupTimeUtc, uint32 CrashReportClientProcessId)
 {
 	check(FEngineAnalytics::IsAvailable()); // The function assumes the caller checked it before calling.
 
@@ -356,19 +415,50 @@ TUniquePtr<FEditorAnalyticsSession> FEditorSessionSummaryWriter::CreateCurrentSe
 	Session->AppVersion = AnalyticProvider.GetAppVersion();
 	Session->UserId = AnalyticProvider.GetUserID();
 
+	FString ProjectName = FApp::GetProjectName();
+	if (ProjectName.Len() && ProjectSettings.ProjectName.Len())
+	{
+		if (ProjectSettings.ProjectName != ProjectName)
+		{
+			ProjectName = ProjectName / ProjectSettings.ProjectName; // The project names don't match, report both.
+		}
+	}
+	else if (ProjectName.IsEmpty())
+	{
+		ProjectName = ProjectSettings.ProjectName;
+	}
+
 	Session->PlatformProcessID = FPlatformProcess::GetCurrentProcessId();
-	Session->MonitorProcessID = OutOfProcessMonitorProcessId;
-	Session->ProjectName = ProjectSettings.ProjectName.Len() ? ProjectSettings.ProjectName : FApp::GetProjectName();
+	Session->MonitorProcessID = CrashReportClientProcessId;
+	Session->ProjectName = ProjectName;
 	Session->ProjectID = ProjectSettings.ProjectID.ToString(EGuidFormats::DigitsWithHyphens);
 	Session->ProjectDescription = ProjectSettings.Description;
 	Session->ProjectVersion = ProjectSettings.ProjectVersion;
 	Session->EngineVersion = FEngineVersion::Current().ToString(EVersionComponent::Changelist);
 	Session->StartupTimestamp = StartupTimeUtc;
+	Session->LastTickTimestamp = FDateTime::UtcNow();
 	Session->Timestamp = FDateTime::UtcNow();
 	Session->bIsDebugger = FPlatformMisc::IsDebuggerPresent();
 	Session->bWasEverDebugger = FPlatformMisc::IsDebuggerPresent();
 	Session->CurrentUserActivity = GetUserActivityString();
 	Session->bIsVanilla = GEngine && GEngine->IsVanillaProduct();
+	Session->CommandLine = FCommandLine::GetForLogging();
+	Session->EngineTickCount = GFrameCounter;
+
+	// TODO: Add a function later on to PlatfomCrashContext to check existance of CRC. This is only used on windows at the moment to categorize cases where CRC fails to report the exit code (only supported on Windows).
+#if PLATFORM_WINDOWS
+	// If the monitor process (CRC) did not launch, check if the executable is present. (Few people seems to delete it or not build it)
+	if (Session->MonitorProcessID == 0)
+	{
+		const FString EngineDir = FPlatformMisc::EngineDir();
+
+		// Find the path to crash reporter binary. Avoid creating FStrings.
+		FString CrcPathRel = EngineDir / TEXT("Binaries") / FPlatformProcess::GetBinariesSubdirectory() / TEXT("CrashReportClientEditor.exe");
+		FString CrcPathDev = EngineDir / TEXT("Binaries") / FPlatformProcess::GetBinariesSubdirectory() / TEXT("CrashReportClientEditor-Win64-Development.exe");
+
+		Session->bIsCrcExeMissing = !IFileManager::Get().FileExists(*CrcPathRel) && !IFileManager::Get().FileExists(*CrcPathDev);
+	}
+#endif
 
 	FString OSMajor;
 	FString OSMinor;
@@ -382,6 +472,7 @@ TUniquePtr<FEditorAnalyticsSession> FEditorSessionSummaryWriter::CreateCurrentSe
 	Session->GRHIDeviceRevision = GRHIDeviceRevision;
 	Session->GRHIAdapterInternalDriverVersion = GRHIAdapterInternalDriverVersion;
 	Session->GRHIAdapterUserDriverVersion = GRHIAdapterUserDriverVersion;
+	Session->GRHIName = GDynamicRHI ? GDynamicRHI->GetName() : TEXT("");
 	Session->TotalPhysicalRAM = Stats.TotalPhysical;
 	Session->CPUPhysicalCores = FPlatformMisc::NumberOfCores();
 	Session->CPULogicalCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
@@ -406,12 +497,6 @@ TUniquePtr<FEditorAnalyticsSession> FEditorSessionSummaryWriter::CreateCurrentSe
 
 	Session->Plugins.Sort();
 
-	// The out-of-process application reporting our crash shouldn't die before this process.
-	if (Session->MonitorProcessID != 0 && !FPlatformProcess::IsApplicationRunning(Session->MonitorProcessID))
-	{
-		Session->MonitorExceptCode.Emplace(ECrashExitCodes::OutOfProcessReporterExitedUnexpectedly);
-	}
-
 	return Session;
 }
 
@@ -426,7 +511,6 @@ void FEditorSessionSummaryWriter::OnCrashing()
 		UpdateEditorIdleTime(CurrTimeSecs, /*bSaveSession*/false);
 		UpdateSessionDuration(CurrTimeSecs);
 		CurrentSession->LogEvent(FEditorAnalyticsSession::EEventType::Crashed, FDateTime::UtcNow());
-		CurrentSession->bCrashed = true; // Not atomic and not strictly required, the logged event will cover for it, but for debugging this is easier when looking in the registry directly.
 
 		if (GIsGPUCrashed)
 		{
@@ -434,8 +518,8 @@ void FEditorSessionSummaryWriter::OnCrashing()
 			CurrentSession->bGPUCrashed = true; // Not atomic and not strictly required, the logged event will cover for it, but for debugging this is easier when looking in the registry directly.
 		}
 
-		// At last, try to save the session. It may fail, but the locklessly logged events above will carry the most important information.
-		TrySaveCurrentSession(FDateTime::UtcNow(), FPlatformTime::Seconds());
+		// NOTE: Don't explicitely Shutdown(), it is expected to be called on game thread to prevent unregistering delegate from a random thread.
+		// NOTE: Don't call TrySaveCurrentSession(), not all fields are atomic and saving could write a corrupted version if the field is written at the same time.
 	}
 }
 
@@ -449,12 +533,9 @@ void FEditorSessionSummaryWriter::OnTerminate()
 		UpdateEditorIdleTime(CurrTimeSecs, /*bSaveSession*/false);
 		UpdateSessionDuration(CurrTimeSecs);
 		CurrentSession->LogEvent(FEditorAnalyticsSession::EEventType::Terminated, FDateTime::UtcNow());
-		CurrentSession->bIsTerminating = true; // Not atomic and not strictly required, the logged event will cover for it, but for debugging this is easier when looking in the registry directly.
-
-		// At last, try to save the session. It may fail, but the locklessly logged events above will carry the most important information.
-		TrySaveCurrentSession(FDateTime::UtcNow(), FPlatformTime::Seconds());
 
 		// NOTE: Don't explicitely Shutdown(), it is expected to be called on game thread to prevent unregistering delegate from a random thread.
+		// NOTE: Don't call TrySaveCurrentSession(), not all fields are atomic and saving could write a corrupted version if the field is written at the same time.
 	}
 }
 
@@ -476,6 +557,24 @@ void FEditorSessionSummaryWriter::OnUserActivity(const FUserActivity& UserActivi
 	}
 }
 
+void FEditorSessionSummaryWriter::OnUserLoginChanged(bool bLoggingIn, int32, int32)
+{
+	if (!bLoggingIn)
+	{
+		CurrentSession->bIsUserLoggingOut = true;
+
+		double CurrTimeSecs = FPlatformTime::Seconds();
+		FDateTime CurrTimeUtc = FDateTime::UtcNow();
+		if (!TrySaveCurrentSession(CurrTimeUtc, CurrTimeSecs)) // If the save fails (because the lock was already taken)
+		{
+			UpdateUserIdleTime(CurrTimeSecs, /*bReset*/false);
+			UpdateEditorIdleTime(CurrTimeSecs, /*bReset*/false);
+			UpdateSessionDuration(CurrTimeSecs);
+			CurrentSession->LogEvent(FEditorAnalyticsSession::EEventType::LogOut, FDateTime::UtcNow()); // Use the lockless mechanism. It doesn't save everything, but it carries the critical information.
+		}
+	}
+}
+
 FString FEditorSessionSummaryWriter::GetUserActivityString()
 {
 	const FUserActivity& UserActivity = FUserActivityTracking::GetUserActivity();
@@ -490,6 +589,8 @@ FString FEditorSessionSummaryWriter::GetUserActivityString()
 
 void FEditorSessionSummaryWriter::OnSlateUserInteraction(double CurrSlateInteractionTime)
 {
+	CurrentSession->UserInteractionCount++;
+
 	// User input 'reset' the idle timers.
 	double CurrTimeSecs = FPlatformTime::Seconds();
 	bool bSave = UpdateUserIdleTime(CurrTimeSecs, /*bReset*/true);
@@ -524,11 +625,13 @@ bool FEditorSessionSummaryWriter::TrySaveCurrentSession(const FDateTime& CurrTim
 	{
 		if (SaveSessionLock.TryLock()) // Intra-process lock to grant the calling thread exclusive access to the key-store file/registry.
 		{
+			UpdateOutOfProcessMonitorState(/*bQuickCheck*/true);
 			UpdateUserIdleTime(CurrTimeSecs, /*bReset*/false);
 			UpdateEditorIdleTime(CurrTimeSecs, /*bReset*/false);
 			UpdateSessionDuration(CurrTimeSecs);
 			UpdateSessionTimestamp(CurrTimeUtc);
 			CurrentSession->Save();
+			LastSaveTimeSecs = CurrTimeSecs;
 			SaveSessionLock.Unlock();
 		}
 		FEditorAnalyticsSession::Unlock();

@@ -47,6 +47,7 @@ class MESHMODELINGTOOLS_API UConvertToPolygonsToolProperties : public UInteracti
 	GENERATED_BODY()
 
 public:
+	/** Strategy to use to group triangles */
 	UPROPERTY(EditAnywhere, Category = PolyGroups)
 	EConvertToPolygonsMode ConversionMode = EConvertToPolygonsMode::FaceNormalDeviation;
 
@@ -54,9 +55,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = PolyGroups, meta = (UIMin = "0.001", UIMax = "20.0", ClampMin = "0.0", ClampMax = "90.0", EditCondition = "ConversionMode == EConvertToPolygonsMode::FaceNormalDeviation"))
 	float AngleTolerance = 0.1f;
 
+	/** If true, normals are recomputed per-group, with hard edges at group boundaries */
 	UPROPERTY(EditAnywhere, Category = PolyGroups)
 	bool bCalculateNormals = true;
-
+	
+	/** Display each group with a different auto-generated color */
 	UPROPERTY(EditAnywhere, Category = Display)
 	bool bShowGroupColors = true;
 };
@@ -79,8 +82,7 @@ public:
 	virtual void OnTick(float DeltaTime) override;
 
 	virtual bool HasCancel() const override { return true; }
-	virtual bool HasAccept() const override;
-	virtual bool CanAccept() const override;
+	virtual bool HasAccept() const override { return true; }
 
 	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;
 

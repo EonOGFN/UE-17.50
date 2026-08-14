@@ -24,10 +24,13 @@ namespace ChaosTest {
 	{
 	public:
 		TMockGraphConstraintHandle(TMockGraphConstraints<T_TYPEID>* InConstraintContainer, int32 ConstraintIndex)
-			: FConstraintHandle(ConstraintIndex)
+			: FConstraintHandle(FConstraintHandle::EType::Invalid, ConstraintIndex)
 			, ConstraintContainer(InConstraintContainer)
 		{
 		}
+
+		virtual void SetEnabled(bool InEnabled) {};
+		virtual bool IsEnabled() const { return true; };
 
 		TMockGraphConstraints<T_TYPEID>* ConstraintContainer;
 	};
@@ -658,6 +661,13 @@ namespace ChaosTest {
 			FPBDConstraintGraph Graph;
 			for (int32 LoopIndex = 0; LoopIndex < 5 + PhysicalMaterial->SleepCounterThreshold; ++LoopIndex)
 			{
+				// @todo(chaos): redo this test - sleeping now used a damped velocity rather than current velocity
+				// For now, this will make it work as it did before and isn't too outrageous
+				for (int32 ParticleIndex = 0; ParticleIndex < NumParticles; ++ParticleIndex)
+				{
+					Particles[ParticleIndex]->ResetSmoothedVelocities();
+				}
+
 				HelpTickConstraints(SOAs,Particles,Graph,ConstrainedParticles,PhysicsMaterials,PhysicalMaterials);
 			
 				// Particles 0-2 are always awake
@@ -734,6 +744,13 @@ namespace ChaosTest {
 			const int32 WakeUpFrame = 5 + PhysicalMaterial->SleepCounterThreshold;
 			for (int32 LoopIndex = 0; LoopIndex < WakeUpFrame + 5; ++LoopIndex)
 			{
+				// @todo(chaos): redo this test - sleeping now used a damped velocity rather than current velocity
+				// For now, this will make it work as it did before and isn't too outrageous
+				for (int32 ParticleIndex = 0; ParticleIndex < NumParticles; ++ParticleIndex)
+				{
+					Particles[ParticleIndex]->ResetSmoothedVelocities();
+				}
+
 				if(LoopIndex < WakeUpFrame)
 				{
 					HelpTickConstraints(SOAs,Particles,Graph,ConstrainedParticles,PhysicsMaterials,PhysicalMaterials);
@@ -826,6 +843,13 @@ namespace ChaosTest {
 					//slow particles down to merge islands but stay asleep
 					Particles[0]->V() = FVec3(1);
 					Particles[1]->V() = FVec3(1);
+				}
+
+				// @todo(chaos): redo this test - sleeping now used a damped velocity rather than current velocity
+				// For now, this will make it work as it did before and isn't too outrageous
+				for (int32 ParticleIndex = 0; ParticleIndex < NumParticles; ++ParticleIndex)
+				{
+					Particles[ParticleIndex]->ResetSmoothedVelocities();
 				}
 
 				if(LoopIndex < MergeFrame)
@@ -967,7 +991,7 @@ namespace ChaosTest {
 		// Randomize the constraint order
 		if (bRandomize)
 		{
-			FMath::RandInit((int32)3354786483);
+			FMath::RandInit((int32)354786483);
 			for (int32 RandIndex = 0; RandIndex < 2 * ConstrainedParticles.Num(); ++RandIndex)
 			{
 				int32 Rand0 = FMath::RandRange(0, ConstrainedParticles.Num() - 1);

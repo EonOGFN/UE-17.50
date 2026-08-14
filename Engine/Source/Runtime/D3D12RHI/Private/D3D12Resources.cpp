@@ -75,17 +75,20 @@ bool FD3D12DeferredDeletionQueue::ReleaseResources(bool bDeleteImmediately, bool
 	{
 		if (bDeleteImmediately)
 		{
+			// Wait for all deferred delete tasks to finish
 			FAsyncTask<FD3D12AsyncDeletionWorker>* DeleteTask = nullptr;
-			// Call back all threads
 			while (DeleteTasks.Peek(DeleteTask))
 			{
 				DeleteTasks.Dequeue(DeleteTask);
 				DeleteTask->EnsureCompletion(true);
 				delete(DeleteTask);
 			}
+
+			// current deferred release queue will be freed via non async deferred deletion code path below
 		}
 		else
 		{
+			// Clean up all previously finished delete tasks
 			FAsyncTask<FD3D12AsyncDeletionWorker>* DeleteTask = nullptr;
 			while (DeleteTasks.Peek(DeleteTask) && DeleteTask->IsDone())
 			{
@@ -93,11 +96,13 @@ bool FD3D12DeferredDeletionQueue::ReleaseResources(bool bDeleteImmediately, bool
 				delete(DeleteTask);
 			}
 
+			// Create new delete task, which will only collect resources in the constructor for which the fence is complete, not the whole list!
 			DeleteTask = new FAsyncTask<FD3D12AsyncDeletionWorker>(Adapter, &DeferredReleaseQueue);
 
 			DeleteTask->StartBackgroundTask();
 			DeleteTasks.Enqueue(DeleteTask);
 
+			// Deferred release queue is not empty yet
 			return false;
 		}
 	}
@@ -249,6 +254,9 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	, bRequiresResourceStateTracking(true)
 	, bDepthStencil(false)
 	, bDeferDelete(true)
+#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
+	, bBackBuffer(false)
+#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 	, HeapType(InHeapType)
 	, GPUVirtualAddress(0)
 	, ResourceBaseAddress(nullptr)
@@ -267,6 +275,13 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	}
 
 	InitalizeResourceState(InInitialState, InResourceStateMode, InDefaultResourceState);
+
+#if NV_AFTERMATH
+	if (GDX12NVAfterMathTrackResources)
+	{
+		GFSDK_Aftermath_DX12_RegisterResource(InResource, &AftermathHandle);
+	}
+#endif
 }
 
 FD3D12Resource::~FD3D12Resource()
@@ -275,6 +290,13 @@ FD3D12Resource::~FD3D12Resource()
 	{
 		D3DX12Residency::EndTrackingObject(GetParentDevice()->GetResidencyManager(), ResidencyHandle);
 	}
+
+#if NV_AFTERMATH
+	if (GDX12NVAfterMathTrackResources)
+	{
+		GFSDK_Aftermath_DX12_UnregisterResource(AftermathHandle);
+	}
+#endif
 }
 
 void FD3D12Resource::StartTrackingForResidency()
@@ -709,4 +731,58 @@ void FD3D12ResourceLocation::SetResource(FD3D12Resource* Value)
 
 	UnderlyingResource = Value;
 	ResidencyHandle = UnderlyingResource->GetResidencyHandle();
+}
+
+/////////////////////////////////////////////////////////////////////
+//	FD3D12 Resource Barrier Batcher
+/////////////////////////////////////////////////////////////////////
+
+void FD3D12ResourceBarrierBatcher::Flush(FD3D12Device* Device, ID3D12GraphicsCommandList* pCommandList, int32 BarrierBatchMax)
+{
+	if (Barriers.Num())
+	{
+		check(pCommandList);
+		if (Barriers.Num() > BarrierBatchMax)
+		{
+			int Num = Barriers.Num();
+			D3D12_RESOURCE_BARRIER* Ptr = Barriers.GetData();
+			while (Num > 0)
+			{
+				int DispatchNum = FMath::Min(Num, BarrierBatchMax);
+				pCommandList->ResourceBarrier(DispatchNum, Ptr);
+				Ptr += BarrierBatchMax;
+				Num -= BarrierBatchMax;
+			}
+		}
+		else
+		{
+			pCommandList->ResourceBarrier(Barriers.Num(), Barriers.GetData());
+		}
+	}
+
+#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
+	if (BackBufferBarriers.Num())
+	{
+		check(pCommandList);
+		FD3D12ScopedTimedIntervalQuery BarrierScopeTimer(Device->GetBackBufferWriteBarrierTracker(), pCommandList);
+		if (BackBufferBarriers.Num() > BarrierBatchMax)
+		{
+			int Num = BackBufferBarriers.Num();
+			D3D12_RESOURCE_BARRIER* Ptr = BackBufferBarriers.GetData();
+			while (Num > 0)
+			{
+				int DispatchNum = FMath::Min(Num, BarrierBatchMax);
+				pCommandList->ResourceBarrier(DispatchNum, Ptr);
+				Ptr += BarrierBatchMax;
+				Num -= BarrierBatchMax;
+			}
+		}
+		else
+		{
+			pCommandList->ResourceBarrier(BackBufferBarriers.Num(), BackBufferBarriers.GetData());
+		}
+	}
+#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
+
+	Reset();
 }

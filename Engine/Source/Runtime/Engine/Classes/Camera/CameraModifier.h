@@ -11,6 +11,7 @@
 
 class AActor;
 class APlayerCameraManager;
+class FDebugDisplayInfo;
 
 //=============================================================================
 /**
@@ -66,6 +67,16 @@ protected:
 	virtual float GetTargetAlpha();
 
 public:
+
+	/**
+	 * Allows camera modifiers to output debug text during "showdebug camera"
+	 * @param Canvas - The canvas to write debug info on.
+	 * @param DebugDisplay - Meta data about the current debug display.
+	 * @param YL - Vertical spacing.
+	 * @param YPos - Current vertical space to start writing.
+	 */
+	virtual void DisplayDebug(class UCanvas* Canvas, const FDebugDisplayInfo& DebugDisplay, float& YL, float& YPos);
+
 	/** 
 	 * Allows any custom initialization. Called immediately after creation.
 	 * @param Camera - The camera this modifier should be associated with.

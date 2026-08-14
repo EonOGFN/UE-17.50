@@ -7,6 +7,7 @@
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundSubmix.h"
+#include "Engine/AssetUserData.h"
 
 
 USoundClass* USoundBase::DefaultSoundClassObject = nullptr;
@@ -19,14 +20,8 @@ USoundBase::USoundBase(const FObjectInitializer& ObjectInitializer)
 	, Priority(1.0f)
 {
 #if WITH_EDITORONLY_DATA
-	bModulationEnabled = 0;
 	MaxConcurrentPlayCount_DEPRECATED = 16;
 #endif // WITH_EDITORONLY_DATA
-
-	VolumeModulationDestination.Value = 0.0f;
-	PitchModulationDestination.Value = 0.0f;
-	HighpassModulationDestination.Value = MIN_FILTER_FREQUENCY;
-	LowpassModulationDestination.Value = MAX_FILTER_FREQUENCY;
 }
 
 void USoundBase::PostInitProperties()
@@ -208,15 +203,6 @@ void USoundBase::PostLoad()
 		ConcurrencyOverrides.MaxCount = FMath::Max(MaxConcurrentPlayCount_DEPRECATED, 1);
 		ConcurrencyOverrides.ResolutionRule = MaxConcurrentResolutionRule_DEPRECATED;
 	}
-
-	if (FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get())
-	{
-		FAudioDeviceHandle DeviceHandle = DeviceManager->GetActiveAudioDevice();
-		if (FAudioDevice* AudioDevice = DeviceHandle.GetAudioDevice())
-		{
-			bModulationEnabled = AudioDevice->IsModulationPluginEnabled() && AudioDevice->ModulationInterface.IsValid();
-		}
-	}
 }
 #endif // WITH_EDITORONLY_DATA
 
@@ -246,3 +232,46 @@ void USoundBase::Serialize(FArchive& Ar)
 #endif // WITH_EDITORONLY_DATA
 }
 
+void USoundBase::AddAssetUserData(UAssetUserData* InUserData)
+{
+	if (InUserData != nullptr)
+	{
+		UAssetUserData* ExistingData = GetAssetUserDataOfClass(InUserData->GetClass());
+		if (ExistingData != nullptr)
+		{
+			AssetUserData.Remove(ExistingData);
+		}
+		AssetUserData.Add(InUserData);
+	}
+}
+
+UAssetUserData* USoundBase::GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
+		{
+			return Datum;
+		}
+	}
+	return nullptr;
+}
+
+void USoundBase::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
+		{
+			AssetUserData.RemoveAt(DataIdx);
+			return;
+		}
+	}
+}
+
+const TArray<UAssetUserData*>* USoundBase::GetAssetUserDataArray() const
+{
+	return &AssetUserData;
+}

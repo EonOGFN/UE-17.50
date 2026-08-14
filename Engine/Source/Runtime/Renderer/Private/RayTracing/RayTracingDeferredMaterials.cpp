@@ -12,6 +12,19 @@
 
 #if RHI_RAYTRACING
 
+static TAutoConsoleVariable<int32> CVarRayTracingAMDHitToken(
+	TEXT("r.RayTracing.AMDHitToken"),
+	1,
+	TEXT("Whether to allow the AMD HitToken extension"),
+	ECVF_RenderThreadSafe
+);
+
+bool CanUseRayTracingAMDHitToken()
+{
+	return GRHISupportsRayTracingAMDHitToken
+		&& CVarRayTracingAMDHitToken.GetValueOnRenderThread() != 0;
+}
+
 class FRayTracingDeferredMaterialCHS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FRayTracingDeferredMaterialCHS)
@@ -33,13 +46,32 @@ class FRayTracingDeferredMaterialCHS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FRayTracingDeferredMaterialCHS, "/Engine/Private/RayTracing/RayTracingDeferredMaterials.usf", "DeferredMaterialCHS", SF_RayHitGroup);
 
-FRayTracingPipelineState* FDeferredShadingSceneRenderer::BindRayTracingDeferredMaterialGatherPipeline(FRHICommandList& RHICmdList, const FViewInfo& View, FRHIRayTracingShader* RayGenShader)
+class FRayTracingDeferredMaterialMS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRayTracingDeferredMaterialMS)
+	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayTracingDeferredMaterialMS, FGlobalShader)
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	}
+
+	using FParameters = FEmptyShaderParameters;
+};
+
+IMPLEMENT_GLOBAL_SHADER(FRayTracingDeferredMaterialMS, "/Engine/Private/RayTracing/RayTracingDeferredMaterials.usf", "DeferredMaterialMS", SF_RayMiss);
+
+FRayTracingPipelineState* FDeferredShadingSceneRenderer::BindRayTracingDeferredMaterialGatherPipeline(FRHICommandList& RHICmdList, const FViewInfo& View, const TArrayView<FRHIRayTracingShader*>& RayGenShaderTable)
 {
 	SCOPE_CYCLE_COUNTER(STAT_BindRayTracingPipeline);
 
 	FRayTracingPipelineStateInitializer Initializer;
 
-	FRHIRayTracingShader* RayGenShaderTable[] = { RayGenShader };
 	Initializer.SetRayGenShaderTable(RayGenShaderTable);
 
 	Initializer.MaxPayloadSizeInBytes = 12; // sizeof FDeferredMaterialPayload
@@ -48,6 +80,10 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::BindRayTracingDeferredM
 	auto ClosestHitShader = View.ShaderMap->GetShader<FRayTracingDeferredMaterialCHS>();
 	FRHIRayTracingShader* HitShaderTable[] = { ClosestHitShader.GetRayTracingShader() };
 	Initializer.SetHitGroupTable(HitShaderTable);
+
+	auto MissShader = View.ShaderMap->GetShader<FRayTracingDeferredMaterialMS>();
+	FRHIRayTracingShader* MissShaderTable[] = { MissShader.GetRayTracingShader() };
+	Initializer.SetMissShaderTable(MissShaderTable);
 
 	FRayTracingPipelineState* PipelineState = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
 

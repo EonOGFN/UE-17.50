@@ -3,7 +3,7 @@ import * as Path from 'path';
 import { BranchState, EdgeState } from './BranchState';
 import * as bent from 'bent'
 import * as System from './system';
-import { Perforce, VERBOSE } from './test-perforce';
+import { Change, Perforce, VERBOSE } from './test-perforce';
 
 const getJson = bent('json')
 
@@ -126,7 +126,6 @@ type RobomergeBranchOptions = {
 	rootPath: string
 	isDefaultBot: boolean
 	emailOnBlockage: boolean // if present, completely overrides BotConfig
-	maxFilesPerIntegration: number // otherwise auto pause
 
 	notify: string[]
 	flowsTo: string[]
@@ -137,9 +136,6 @@ type RobomergeBranchOptions = {
 	aliases: string[]
 	badgeProject: string | null
 
-	pathsToMonitor: string[] | null
-
-
 	////////////////////
 	// NodeOptionFields
 	disabled: boolean
@@ -147,6 +143,7 @@ type RobomergeBranchOptions = {
 	forceAll: boolean
 	visibility: string[] | string
 	blockAssetFlow: string[]
+	disallowDeadend: boolean
 
 	streamDepot: string
 	streamName: string
@@ -183,6 +180,7 @@ type EdgeOptionFields = {
 
 	disallowSkip: boolean
 	incognitoMode: boolean
+	terminal: boolean // changes go along terminal edges but no further
 
 	excludeAuthors: string[]
 }
@@ -212,7 +210,10 @@ export abstract class FunctionalTest {
 	abstract run(): Promise<any>;
 	abstract getBranches(): RobomergeBranchSpec[];
 	getEdges(): EdgeProperties[] { return [] }
+	getMacros(): {[name:string]: string[]} { return {} }
 	abstract verify(): Promise<any>;
+
+	allowSyntaxErrors() { return false }
 
 	workspaceName(user: string, name: string) {
 		return [user, this.testName, name].join('_')
@@ -226,7 +227,7 @@ export abstract class FunctionalTest {
 		return `//${depot}/${name}`
 	}
 
-	protected fullBranchName(branch: string) {
+	fullBranchName(branch: string) {
 		return this.testName + P4Util.escapeBranchName(branch)
 	}
 
@@ -271,9 +272,10 @@ export abstract class FunctionalTest {
 	}
 
 	protected makeBranchDef(stream: string, to: string[], forceAll?: boolean): RobomergeBranchSpec {
+		const name = this.fullBranchName(stream)
 		return {
 			streamDepot: this.testName,
-			name: this.fullBranchName(stream),
+			name, aliases: [name + '_alias'],
 			streamName: stream,
 			flowsTo: to.map(str => this.fullBranchName(str)),
 			forceAll: !!forceAll
@@ -510,6 +512,28 @@ export abstract class FunctionalTest {
 		}
 	}
 
+	async checkDescriptionContainsEdit(stream: string, requiredList?: string[], blacklist?: string[], depotName?: string) {
+		this.getClient(stream, undefined, depotName).changes(1)
+			.then((changes: Change[]) => {
+				const description = changes[0]!.description.toLowerCase()
+				for (const required of (requiredList || ['edited file'])) { // default to look for description in editFileAndSubmit
+					if (description.indexOf(required.toLowerCase()) < 0) {
+						this.error(description)
+						throw new Error(`Expected '${required}' to appear in description`)
+					}
+				}
+				if (blacklist) {
+					for (const bawal of blacklist) {
+						if (description.indexOf(bawal.toLowerCase()) >= 0) {
+							this.error(description)
+							throw new Error(`Unexpected '${bawal}' in description`)
+						}
+					}
+				}
+			})
+	}
+
+
 	async verifyStompRequest(source: string, target: string, edgeState: EdgeState) {
 		if (!edgeState.isBlocked()) {
 			throw new Error('edge must be blocked to stomp!')
@@ -530,6 +554,8 @@ export abstract class FunctionalTest {
 		try {
 			const post = bent('POST', 'json', 200, 400)
 			verifyResult = await post(url)
+
+			// console.dir(verifyResult)
 		}
 		catch (err) {
 			this.error(err)
@@ -623,10 +649,11 @@ export abstract class FunctionalTest {
 
 		if (!verifyResult.validRequest)
 		{
-			this.warn(
-				verifyResult.validRequest, verifyResult.nonBinaryFilesResolved, verifyResult.remainingAllBinary,
-				Array.isArray(verifyResult.files) ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`)
-			throw new Error('Stomp Verify returned unexpected values. Erroring...')
+			this.warn(verifyResult.message)
+			// this.warn("nonBinaryFilesResolved=" + verifyResult.nonBinaryFilesResolved)
+			// this.warn("remainingAllBinary=" + verifyResult.remainingAllBinary)
+			// this.warn("files=" + (Array.isArray(verifyResult.files) ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`))
+			throw new Error('Stomp verify returned unexpected values')
 		}
 
 		// attempt stomp
@@ -683,7 +710,12 @@ export abstract class FunctionalTest {
 
 		const latestP4CLs = new Map<string, Promise<number>>()
 		for (const client of this.clients.get('testuser1')!.values()) {
-			latestP4CLs.set(this.fullBranchName(client.name), client.changes(1).then(changes => changes[0].change))
+			latestP4CLs.set(this.fullBranchName(client.name), client.changes(1).then(changes => {
+				if (!changes[0]) {
+					throw new Error('No changes! ' + client.stream)
+				}
+				return changes[0].change
+			}))
 		}
 
 		const unblockedBranchStates = new Map<string, BranchState>()
@@ -725,7 +757,7 @@ export abstract class FunctionalTest {
 			const status = branchState.getStatusMessage()
 			if (status) {
 				if (dump) {
-					this.verbose(`${node} status: ${status} (active: ${branchState.isActive()})`)
+					this.verbose(`${node} status: ${status} (active: ${branchState.isActive()} - ${branchState.getStatusMessage()})`)
 				}
 				return false
 			}
@@ -781,7 +813,7 @@ export abstract class FunctionalTest {
 		return true
 	}
 
-	async waitForRobomergeIdle(dump = false, wait_limit = 15) {
+	async waitForRobomergeIdle(dump = false, wait_limit = 20) {
 		let sleepTime = .5
 		for (let safety = 0; safety < wait_limit; ++safety) {
 			if (await this.isRobomergeIdle(dump || safety === wait_limit - 1)) {

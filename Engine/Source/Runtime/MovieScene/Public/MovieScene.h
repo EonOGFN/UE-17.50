@@ -24,6 +24,12 @@ struct FMovieSceneTimeController;
 class UMovieSceneFolder;
 class UMovieSceneSection;
 class UMovieSceneTrack;
+struct FMovieSceneChannelMetaData;
+
+//delegates for use when some data in the MovieScene changes, WIP right now, hopefully will replace delegates on ISequencer
+//and be used for moving towards a true MVC system
+DECLARE_MULTICAST_DELEGATE_TwoParams(FMovieSceneOnChannelChanged, const FMovieSceneChannelMetaData* MetaData, UMovieSceneSection*)
+
 
 /** @todo: remove this type when support for intrinsics on TMap values is added? */
 USTRUCT()
@@ -374,6 +380,7 @@ public:
 	virtual void Serialize( FArchive& Ar ) override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
 
 public:
 
@@ -689,6 +696,7 @@ public:
 	{
 		return ObjectBindings.FindByPredicate([ForGuid](const FMovieSceneBinding& Binding) { return Binding.GetObjectGuid() == ForGuid; });
 	}
+
 public:
 
 	// @todo sequencer: the following methods really shouldn't be here
@@ -885,6 +893,11 @@ public:
 	 */
 	TArray<FString>& GetMuteNodes() { return MuteNodes; }
 	
+	//WIP Set of Delegates
+	/** Gets a multicast delegate which is executed whenever a channel is changed, currently only set by Python/BP actions.
+	*
+	*/
+	FMovieSceneOnChannelChanged& OnChannelChanged() { return OnChannelChangedDelegate; }
 #endif
 
 	/**
@@ -1000,7 +1013,7 @@ public:
 	const TArray<FMovieSceneMarkedFrame>& GetMarkedFrames() const { return MarkedFrames; }
 
 	/*
-	 * Sets the frame number for the given marked frame index.
+	 * Sets the frame number for the given marked frame index. Does not maintain sort. Call SortMarkedFrames
 	 *
 	 * @InMarkIndex The given user marked frame index to edit
 	 * @InFrameNumber The frame number to set
@@ -1027,6 +1040,11 @@ public:
 	 * Delete all user marked frames
 	 */
 	void DeleteMarkedFrames();
+
+	/*
+	 * Sort the marked frames in chronological order
+	 */
+	void SortMarkedFrames();
 
 	/*
 	 * Find the user marked frame by label
@@ -1243,5 +1261,10 @@ private:
 	UPROPERTY()
 	float FixedFrameInterval_DEPRECATED;
 
+	//delegates
+	private:
+	FMovieSceneOnChannelChanged OnChannelChangedDelegate;
 #endif
+
+		
 };

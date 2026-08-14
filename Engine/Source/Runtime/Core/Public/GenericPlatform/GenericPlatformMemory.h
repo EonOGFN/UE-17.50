@@ -138,6 +138,19 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 	
 	/** Default constructor, clears all variables. */
 	FGenericPlatformMemoryStats();
+
+	struct FPlatformSpecificStat
+	{
+		const TCHAR* Name;
+		uint64 Value;
+
+		FPlatformSpecificStat(const TCHAR* InName, uint64 InValue)
+			: Name(InName)
+			, Value(InValue)
+		{}
+	};
+
+	TArray<FPlatformSpecificStat> GetPlatformSpecificStats() const;
 };
 
 
@@ -706,6 +719,12 @@ public:
 	* Can be used to set platform-specific calculated tag data via SetTagAmountForTracker
 	*/
 	static void UpdateCustomLLMTags() { };
+
+	/**
+	* Returns true if Protecting the parent processes pages has been enabled
+	* Only supported on platforms that support forking
+	*/
+	static bool HasForkPageProtectorEnabled() { return false; }
 
 protected:
 	friend struct FGenericStatsUpdater;

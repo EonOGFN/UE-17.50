@@ -129,6 +129,12 @@ static void ProcessCompilationJob(const FShaderCompilerInput& Input,FShaderCompi
 	double TimeStart = FPlatformTime::Seconds();
 	Compiler->CompileShader(Input.ShaderFormat, Input, Output, WorkingDirectory);
 	Output.CompileTime = FPlatformTime::Seconds() - TimeStart;
+
+	if (Compiler->UsesHLSLcc(Input))
+	{
+		Output.bUsedHLSLccCompiler = true;
+	}
+
 	++GNumProcessedJobs;
 }
 
@@ -259,6 +265,12 @@ public:
 				// We only do one pass per process when using XGE.
 				break;
 			}
+
+			if (TimeToLive == 0 || AnyJobUsedHLSLccCompiler( SingleJobResults, PipelineJobResults ))
+			{
+				UE_LOG(LogShaders, Log, TEXT("TimeToLive set to 0, or used HLSLcc compiler, exiting after single job"));
+				break;
+			}
 		}
 
 		UE_LOG(LogShaders, Log, TEXT("Exiting job loop"));
@@ -316,7 +328,7 @@ private:
 			{
 				if (Pair.Value != *Found)
 				{
-					ExitWithoutCrash(ESCWErrorCode::BadShaderFormatVersion, FString::Printf(TEXT("Mismatched shader version for format %s; did you forget to build ShaderCompilerWorker?"), *Pair.Key, *Found, Pair.Value));
+					ExitWithoutCrash(ESCWErrorCode::BadShaderFormatVersion, FString::Printf(TEXT("Mismatched shader version for format %s: Found version %u but expected %u; did you forget to build ShaderCompilerWorker?"), *Pair.Key, *Found, Pair.Value));
 				}
 			}
 		}
@@ -353,7 +365,7 @@ private:
 		// Initialize shader hash cache before reading any includes.
 		InitializeShaderHashCache();
 
-		TMap<FString, TSharedPtr<FString>> ExternalIncludes;
+		TMap<FString, FThreadSafeSharedStringPtr> ExternalIncludes;
 		TArray<FShaderCompilerEnvironment> SharedEnvironments;
 
 		// Shared inputs
@@ -676,6 +688,32 @@ private:
 			}
 		}
 #endif
+	}
+	
+	static bool AnyJobUsedHLSLccCompiler(TArray<FJobResult>& SingleJobResults, TArray<FPipelineJobResult>& PipelineJobResults)
+	{
+		for (int32 ResultIndex = 0; ResultIndex < SingleJobResults.Num(); ResultIndex++)
+		{
+			FJobResult& JobResult = SingleJobResults[ResultIndex];
+			if (JobResult.CompilerOutput.bUsedHLSLccCompiler)
+			{
+				return true;
+			}
+		}
+
+		for (int32 ResultIndex = 0; ResultIndex < PipelineJobResults.Num(); ResultIndex++)
+		{
+			FPipelineJobResult& PipelineJob = PipelineJobResults[ResultIndex];
+			for (int32 Index = 0; Index < PipelineJob.SingleJobs.Num(); ++Index)
+			{
+				FJobResult& JobResult = PipelineJob.SingleJobs[Index];
+				if (JobResult.CompilerOutput.bUsedHLSLccCompiler)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 };
 

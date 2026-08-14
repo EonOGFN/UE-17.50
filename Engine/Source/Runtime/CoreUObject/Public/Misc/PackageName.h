@@ -7,6 +7,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 #include "Containers/StringView.h"
 
 struct FFileStatData;
@@ -125,7 +126,7 @@ public:
 	 */
 	static bool IsValidLongPackageName(const FString& InLongPackageName, bool bIncludeReadOnlyRoots = false, FText* OutReason = nullptr);
 
-	/** 
+	/**
 	 * Returns true if the path starts with a valid root (i.e. /Game/, /Engine/, etc) and contains no illegal characters.
 	 * This validates that the packagename is valid, and also makes sure the object after package name is also correct.
 	 * This will return false if passed a path starting with Classname'
@@ -135,6 +136,15 @@ public:
 	 * @return							true if a valid object path
 	 */
 	static bool IsValidObjectPath(const FString& InObjectPath, FText* OutReason = nullptr);
+
+	/**
+	 * Returns true if the path starts with a valid root (i.e. /Game/, /Engine/, etc).
+	 * 
+	 *
+	 * @param InObjectPath				The object path to test
+	 * @return							true if a valid object path
+	 */
+	static bool IsValidPath(const FString& InPath);
 
 	/**
 	 * Checks if the given string is a long package name or not.
@@ -173,6 +183,18 @@ public:
 	static FName GetShortFName(const FString& LongName);
 	static FName GetShortFName(const FName& LongName);
 	static FName GetShortFName(const TCHAR* LongName);
+
+	/**
+	 * Tries to convert a file or directory in game-relative package name format to the corresponding local path
+	 * Game-relative package names can be a full package path (/Game/Folder/File, /Engine/Folder/File, /PluginName/Folder/File) or
+	 * a relative path (Folder/File).
+	 * Full package paths must be in a mounted directory to be successfully converted.
+	 *
+	 * @param RelativePackagePath The path in game-relative package format (allowed to have or not have an extension).
+	 * @param OutLocalPath The corresponding local-path file (with the extension or lack of extension from the input).
+	 * @return Whether the conversion was successful.
+	 */
+	static bool TryConvertGameRelativePackagePathToLocalPath(FStringView RelativePackagePath, FString& OutLocalPath);
 
 	/**
 	 * This will insert a mount point at the head of the search chain (so it can overlap an existing mount point and win).
@@ -389,11 +411,20 @@ public:
 	/**
 	 * This will recurse over a directory structure looking for packages.
 	 * 
-	 * @param	OutPackages			The output array that is filled out with a file paths
-	 * @param	RootDirectory		The root of the directory structure to recurse through
+	 * @param	OutPackages			The output array that is filled out with the discovered file paths
+	 * @param	RootDir				The root of the directory structure to recurse through
 	 * @return	Returns true if any packages have been found, otherwise false
 	 */
 	static bool FindPackagesInDirectory(TArray<FString>& OutPackages, const FString& RootDir);
+
+	/**
+	 * This will recurse over the given list of directory structures looking for packages.
+	 *
+	 * @param	OutPackages			The output array that is filled out with the discovered file paths
+	 * @param	RootDirss			The roots of the directory structures to recurse through
+	 * @return	Returns true if any packages have been found, otherwise false
+	 */
+	static bool FindPackagesInDirectories(TArray<FString>& OutPackages, const TArrayView<const FString>& RootDirs);
 
 	/**
 	 * This will recurse over a directory structure looking for packages.
@@ -424,8 +455,11 @@ public:
 	 * Queries all of the root content paths, like "/Game/", "/Engine/", and any dynamically added paths
 	 *
 	 * @param	OutRootContentPaths	[Out] List of content paths
+	 * @param	bIncludeReadOnlyRoots	  Include read only root content paths such as "/Temp/"
+	 * @param	bWithoutLeadingSlashes	  Strip slash at start of each path to end up with "Game/"
+	 * @param	bWithoutTrailingSlashes	  Strip trailing slash at end of each path to end up with "/Game"
 	 */
-	static void QueryRootContentPaths( TArray<FString>& OutRootContentPaths );
+	static void QueryRootContentPaths( TArray<FString>& OutRootContentPaths, bool bIncludeReadOnlyRoots = false, bool bWithoutLeadingSlashes = false, bool bWithoutTrailingSlashes = false);
 	
 	/** If the FLongPackagePathsSingleton is not created yet, this function will create it and thus allow mount points to be added */
 	static void EnsureContentPathsAreRegistered();
@@ -438,7 +472,8 @@ public:
 	 * @param OutObjectPath The path to the object.
 	 * @return True if the supplied export text path could be parsed
 	 */
-	static bool ParseExportTextPath(FStringView InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath);
+	static bool ParseExportTextPath(FWideStringView InExportTextPath, FWideStringView* OutClassName, FWideStringView* OutObjectPath);
+	static bool ParseExportTextPath(FAnsiStringView InExportTextPath, FAnsiStringView* OutClassName, FAnsiStringView* OutObjectPath);
 	static bool ParseExportTextPath(const FString& InExportTextPath, FString* OutClassName, FString* OutObjectPath);	
 	static bool ParseExportTextPath(const TCHAR* InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath);
 
@@ -449,19 +484,23 @@ public:
 	 * @param InExportTextPath The export text path for an object. Takes on the form: ClassName'ObjectPath'
 	 * @return The path to the object referred to by the supplied export path.
 	 */
-	static FStringView	ExportTextPathToObjectPath(FStringView InExportTextPath);
-	static FString		ExportTextPathToObjectPath(const FString& InExportTextPath);
-	static FString		ExportTextPathToObjectPath(const TCHAR* InExportTextPath);
+	static FWideStringView	ExportTextPathToObjectPath(FWideStringView InExportTextPath);
+	static FAnsiStringView	ExportTextPathToObjectPath(FAnsiStringView InExportTextPath);
+	static FString			ExportTextPathToObjectPath(const FString& InExportTextPath);
+	static FString			ExportTextPathToObjectPath(const TCHAR* InExportTextPath);
 
 	/** 
 	 * Returns the name of the package referred to by the specified object path
 	 */
+	static FWideStringView ObjectPathToPackageName(FWideStringView InObjectPath);
+	static FAnsiStringView ObjectPathToPackageName(FAnsiStringView InObjectPath);
 	static FString ObjectPathToPackageName(const FString& InObjectPath);
 
 	/** 
 	 * Returns the name of the object referred to by the specified object path
 	 */
-	static FStringView ObjectPathToObjectName(FStringView InObjectPath);
+	static FWideStringView ObjectPathToObjectName(FWideStringView InObjectPath);
+	static FAnsiStringView ObjectPathToObjectName(FAnsiStringView InObjectPath);
 	static FString ObjectPathToObjectName(const FString& InObjectPath);
 
 	/**

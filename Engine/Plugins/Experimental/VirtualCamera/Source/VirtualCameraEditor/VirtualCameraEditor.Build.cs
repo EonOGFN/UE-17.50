@@ -22,8 +22,11 @@ public class VirtualCameraEditor : ModuleRules
 				"TimeManagement",
 				"UMG",
 				"UnrealEd",
+				"VCamCore",
 				"VirtualCamera",
-				"WorkspaceMenuStructure"
+				"VPUtilitiesEditor",
+				"WorkspaceMenuStructure",
+				"PlacementMode"
 			}
 		);
 	}

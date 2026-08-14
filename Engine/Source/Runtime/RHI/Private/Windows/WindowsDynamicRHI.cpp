@@ -15,35 +15,13 @@ static bool ShouldPreferD3D12()
 	if (!GIsEditor)
 	{
 		bool bPreferD3D12 = false;
-		if (GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InGame"), bPreferD3D12, GGameUserSettingsIni))
+		if (GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bUseD3D12InGame"), bPreferD3D12, GGameUserSettingsIni))
 		{
 			return bPreferD3D12;
 		}
 	}
 
-#if 0
-	bool bPreferD3D12 = false;
-	if (GIsEditor)
-	{
-		GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InEditor"), bPreferD3D12, GEngineIni);
-	}
-	else
-	{
-		GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InGame"), bPreferD3D12, GEngineIni);
-	}
-
-	int32 MinNumCPUCores = 0;
-	GConfig->GetInt(TEXT("D3DRHIPreference"), TEXT("con.MinNumCPUCores"), MinNumCPUCores, GEngineIni);
-	const bool bHasEnoughCPUCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads() >= MinNumCPUCores;
-
-	int32 MinPhysicalMemGB = 0;
-	GConfig->GetInt(TEXT("D3DRHIPreference"), TEXT("con.MinPhysicalMemGB"), MinPhysicalMemGB, GEngineIni);
-	const bool bHasEnoughMem = FPlatformMemory::GetConstants().TotalPhysical >= MinPhysicalMemGB * (1llu << 30);
-
-	return bPreferD3D12 && bHasEnoughCPUCores && bHasEnoughMem;
-#else
 	return false;
-#endif
 }
 
 static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFeatureLevel, const TCHAR*& LoadedRHIModuleName)
@@ -58,10 +36,22 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 	bool bPreferD3D12 = ShouldPreferD3D12();
 	
 	// command line overrides
+	bool bForceOpenGL = FParse::Param(FCommandLine::Get(), TEXT("opengl"));
+	if (bForceOpenGL)
+	{
+		// OpenGL can only be used for mobile preview.
+		ERHIFeatureLevel::Type PreviewFeatureLevel;
+		bool bUsePreviewFeatureLevel = RHIGetPreviewFeatureLevel(PreviewFeatureLevel);
+		if (!bUsePreviewFeatureLevel)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "OpenGLRemoved", "Warning: OpenGL is no longer supported for desktop platforms. The default RHI will be used."));
+			bForceOpenGL = false;
+		}
+	}
+
 	bool bForceSM5 = FParse::Param(FCommandLine::Get(), TEXT("sm5"));
 	bool bForceVulkan = FParse::Param(FCommandLine::Get(), TEXT("vulkan"));
-	bool bForceOpenGL = FPlatformMisc::VerifyWindowsVersion(6, 0) == false || FParse::Param(FCommandLine::Get(), TEXT("opengl")) || FParse::Param(FCommandLine::Get(), TEXT("opengl3")) || FParse::Param(FCommandLine::Get(), TEXT("opengl4"));
-	bool bForceD3D11 = FParse::Param(FCommandLine::Get(), TEXT("d3d11")) || FParse::Param(FCommandLine::Get(), TEXT("dx11")) || (bForceSM5 && !bForceVulkan && !bForceOpenGL);
+	bool bForceD3D11 = FParse::Param(FCommandLine::Get(), TEXT("d3d11")) || FParse::Param(FCommandLine::Get(), TEXT("dx11")) || (bForceSM5 && !bForceVulkan);
 	bool bForceD3D12 = FParse::Param(FCommandLine::Get(), TEXT("d3d12")) || FParse::Param(FCommandLine::Get(), TEXT("dx12"));
 	DesiredFeatureLevel = ERHIFeatureLevel::Num;
 	
@@ -99,7 +89,7 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 
 	if (Sum > 1)
 	{
-		UE_LOG(LogRHI, Fatal, TEXT("-d3d12, -d3d11, -vulkan, and -opengl[3|4] are mutually exclusive options, but more than one was specified on the command-line."));
+		UE_LOG(LogRHI, Fatal, TEXT("-d3d12, -d3d11, -vulkan, and -opengl are mutually exclusive options, but more than one was specified on the command-line."));
 	}
 	else if (Sum == 0)
 	{
@@ -158,14 +148,9 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 
 		if (!DynamicRHIModule->IsSupported())
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "RequiredOpenGL", "OpenGL 3.2 is required to run the engine."));
+			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "RequiredOpenGL", "OpenGL 4.3 is required to run the engine."));
 			FPlatformMisc::RequestExit(1);
 			DynamicRHIModule = NULL;
-		}
-
-		if (!UE_BUILD_SHIPPING)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "OpenGLDeprecated", "Warning: OpenGL is deprecated, please use a different RHI."));
 		}
 
 		LoadedRHIModuleName = OpenGLRHIModuleName;

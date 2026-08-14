@@ -8,8 +8,11 @@
 #include "Input/DisplayClusterInputManager.h"
 #include "Render/DisplayClusterRenderManager.h"
 
+#include "DisplayClusterConfigurationTypes.h"
+
 #include "Misc/DisplayClusterGlobals.h"
 #include "Misc/DisplayClusterLog.h"
+#include "Misc/DisplayClusterTypesConverter.h"
 
 
 FDisplayClusterModule::FDisplayClusterModule()
@@ -72,7 +75,7 @@ bool FDisplayClusterModule::Init(EDisplayClusterOperationMode OperationMode)
 {
 	CurrentOperationMode = OperationMode;
 
-	UE_LOG(LogDisplayClusterModule, Log, TEXT("Initializing subsystems to %s operation mode"), *FDisplayClusterTypesConverter::template ToString(CurrentOperationMode));
+	UE_LOG(LogDisplayClusterModule, Log, TEXT("Initializing subsystems to %s operation mode"), *DisplayClusterTypesConverter::template ToString(CurrentOperationMode));
 
 	bool result = true;
 	auto it = Managers.CreateIterator();
@@ -106,15 +109,15 @@ void FDisplayClusterModule::Release()
 	Managers.Empty();
 }
 
-bool FDisplayClusterModule::StartSession(const FString& ConfigPath, const FString& NodeId)
+bool FDisplayClusterModule::StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& NodeId)
 {
-	UE_LOG(LogDisplayClusterModule, Log, TEXT("StartSession: config '%s', node ID '%s'"), *ConfigPath, *NodeId);
+	UE_LOG(LogDisplayClusterModule, Log, TEXT("StartSession with node ID '%s'"), *NodeId);
 
 	bool result = true;
 	auto it = Managers.CreateIterator();
 	while (result && it)
 	{
-		result = result && (*it)->StartSession(ConfigPath, NodeId);
+		result = result && (*it)->StartSession(InConfigData, NodeId);
 		++it;
 	}
 

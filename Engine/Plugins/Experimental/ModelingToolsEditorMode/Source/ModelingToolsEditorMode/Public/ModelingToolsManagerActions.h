@@ -9,7 +9,7 @@
 /**
  * TInteractiveToolCommands implementation for this module that provides standard Editor hotkey support
  */
-class FModelingToolsManagerCommands : public TCommands<FModelingToolsManagerCommands>
+class MODELINGTOOLSEDITORMODE_API FModelingToolsManagerCommands : public TCommands<FModelingToolsManagerCommands>
 {
 public:
 	FModelingToolsManagerCommands();
@@ -36,6 +36,8 @@ public:
 
 	TSharedPtr<FUICommandInfo> BeginSculptMeshTool;
 	TSharedPtr<FUICommandInfo> BeginPolyEditTool;
+	TSharedPtr<FUICommandInfo> BeginGroupEdgeInsertionTool;
+	TSharedPtr<FUICommandInfo> BeginEdgeLoopInsertionTool;
 	TSharedPtr<FUICommandInfo> BeginTriEditTool;
 	TSharedPtr<FUICommandInfo> BeginPolyDeformTool;
 	TSharedPtr<FUICommandInfo> BeginSmoothMeshTool;
@@ -74,6 +76,11 @@ public:
 	TSharedPtr<FUICommandInfo> BeginMeshToVolumeTool;
 	TSharedPtr<FUICommandInfo> BeginVolumeToMeshTool;
 
+	TSharedPtr<FUICommandInfo> BeginPhysicsInspectorTool;
+	TSharedPtr<FUICommandInfo> BeginSetCollisionGeometryTool;
+	TSharedPtr<FUICommandInfo> BeginEditCollisionGeometryTool;
+	TSharedPtr<FUICommandInfo> BeginExtractCollisionGeometryTool;
+
 	TSharedPtr<FUICommandInfo> BeginMeshInspectorTool;
 	TSharedPtr<FUICommandInfo> BeginGlobalUVGenerateTool;
 	TSharedPtr<FUICommandInfo> BeginGroupUVGenerateTool;
@@ -84,6 +91,13 @@ public:
 	TSharedPtr<FUICommandInfo> BeginMeshAttributePaintTool;
 	TSharedPtr<FUICommandInfo> BeginAttributeEditorTool;
 	TSharedPtr<FUICommandInfo> BeginBakeMeshAttributeMapsTool;
+	TSharedPtr<FUICommandInfo> BeginUVSeamEditTool;
+
+	TSharedPtr<FUICommandInfo> BeginGroomToMeshTool;
+	TSharedPtr<FUICommandInfo> BeginGenerateLODMeshesTool;
+	TSharedPtr<FUICommandInfo> BeginGroomCardsToMeshTool;
+	TSharedPtr<FUICommandInfo> BeginGroomMeshToCardsTool;
+	TSharedPtr<FUICommandInfo> BeginGroomCardsEditorTool;
 
 	TSharedPtr<FUICommandInfo> AcceptActiveTool;
 	TSharedPtr<FUICommandInfo> CancelActiveTool;

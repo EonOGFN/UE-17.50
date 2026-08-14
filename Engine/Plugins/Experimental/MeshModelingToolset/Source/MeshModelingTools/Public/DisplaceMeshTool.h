@@ -74,7 +74,7 @@ public:
 	UFUNCTION()
 	TArray<FString> GetWeightMapsFunc();
 
-	UPROPERTY()
+	UPROPERTY(meta = (TransientToolProperty))
 	TArray<FString> WeightMapsList;
 
 	UPROPERTY(EditAnywhere, Category = Options)
@@ -213,7 +213,7 @@ public:
 
 	bool HasCancel() const final { return true; }
 	bool HasAccept() const final { return true; }
-	bool CanAccept() const final { return true; }
+
 #if WITH_EDITOR
 	void OnPropertyModified(UObject* PropertySet, FProperty* Property) final;
 #endif

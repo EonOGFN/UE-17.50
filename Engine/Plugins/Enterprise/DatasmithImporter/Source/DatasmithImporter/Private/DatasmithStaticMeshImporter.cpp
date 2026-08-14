@@ -183,7 +183,7 @@ UStaticMesh* FDatasmithStaticMeshImporter::ImportStaticMesh(const TSharedRef< ID
 	FText FailReason;
 	if (!FDatasmithImporterUtils::CanCreateAsset<UStaticMesh>( AssetsContext.StaticMeshesFinalPackage.Get(), StaticMeshName, FailReason ))
 	{
-		AssetsContext.ParentContext.LogError(FailReason);
+		AssetsContext.GetParentContext().LogError(FailReason);
 		return nullptr;
 	}
 
@@ -351,13 +351,13 @@ void FDatasmithStaticMeshImporter::ProcessCollision(UStaticMesh* StaticMesh, con
 
 	StaticMesh->bCustomizedCollision = true;
 	StaticMesh->CreateBodySetup();
-	if ( !ensure(StaticMesh->BodySetup) )
+	if ( !ensure(StaticMesh->GetBodySetup()) )
 	{
 		return;
 	}
 
 	// Convex elements must be removed first since the re-import process uses the same flow
-	FKAggregateGeom& AggGeom = StaticMesh->BodySetup->AggGeom;
+	FKAggregateGeom& AggGeom = StaticMesh->GetBodySetup()->AggGeom;
 	AggGeom.ConvexElems.Reset();
 	FKConvexElem& ConvexElem = AggGeom.ConvexElems.AddDefaulted_GetRef();
 
@@ -553,7 +553,7 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 	int32 MaxLightmapSize = FDatasmithStaticMeshImportOptions::ConvertLightmapEnumToValue( StaticMeshImportOptions.MaxLightmapResolution );
 
 	int32 LightmapSize = DatasmithStaticMeshImporterImpl::GetLightmapSize( LightmapWeight, MinLightmapSize, MaxLightmapSize );
-	StaticMesh->LightingGuid = FGuid::NewGuid();
+	StaticMesh->SetLightingGuid();
 	StaticMesh->InitResources();
 
 	StaticMeshTemplate->LightMapResolution = LightmapSize;
@@ -596,7 +596,7 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 				FFormatNamedArguments FormatArgs;
 				FormatArgs.Add(TEXT("LightmapCoordinateIndex"), FText::FromString(FString::FromInt(MeshElement->GetLightmapCoordinateIndex())));
 				FormatArgs.Add(TEXT("MeshName"), FText::FromName(StaticMesh->GetFName()));
-				AssetsContext.ParentContext.LogError(FText::Format(LOCTEXT("InvalidLightmapSourceUVError", "The lightmap coordinate index '{LightmapCoordinateIndex}' used for the mesh '{MeshName}' is invalid. A valid lightmap coordinate index was set instead."), FormatArgs));
+				AssetsContext.GetParentContext().LogError(FText::Format(LOCTEXT("InvalidLightmapSourceUVError", "The lightmap coordinate index '{LightmapCoordinateIndex}' used for the mesh '{MeshName}' is invalid. A valid lightmap coordinate index was set instead."), FormatArgs));
 			}
 
 			DestinationIndex = FirstOpenUVChannel;
@@ -618,18 +618,18 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 		{
 			if (!FMath::IsWithin<int32>(SourceIndex, 0, MAX_MESH_TEXTURE_COORDS_MD))
 			{
-				AssetsContext.ParentContext.LogError(FText::Format(LOCTEXT("InvalidLightmapSourceIndexError", "Lightmap generation error for mesh {0}: Specified source is invalid {1}. Cannot find an available fallback source channel."), FText::FromName(StaticMesh->GetFName()), MeshElement->GetLightmapSourceUV()));
+				AssetsContext.GetParentContext().LogError(FText::Format(LOCTEXT("InvalidLightmapSourceIndexError", "Lightmap generation error for mesh {0}: Specified source is invalid {1}. Cannot find an available fallback source channel."), FText::FromName(StaticMesh->GetFName()), MeshElement->GetLightmapSourceUV()));
 				bGenerateLightmapUVs = false;
 			}
 			else if (!FMath::IsWithin<int32>(DestinationIndex, 0, MAX_MESH_TEXTURE_COORDS_MD))
 			{
-				AssetsContext.ParentContext.LogError(FText::Format(LOCTEXT("InvalidLightmapDestinationIndexError", "Lightmap generation error for mesh {0}: Cannot find an available destination channel."), FText::FromName(StaticMesh->GetFName())));
+				AssetsContext.GetParentContext().LogError(FText::Format(LOCTEXT("InvalidLightmapDestinationIndexError", "Lightmap generation error for mesh {0}: Cannot find an available destination channel."), FText::FromName(StaticMesh->GetFName())));
 				bGenerateLightmapUVs = false;
 			}
 
 			if (!bGenerateLightmapUVs)
 			{
-				AssetsContext.ParentContext.LogWarning(FText::Format(LOCTEXT("LightmapUVsWontBeGenerated", "Lightmap UVs for mesh {0} won't be generated."), FText::FromName(StaticMesh->GetFName())));
+				AssetsContext.GetParentContext().LogWarning(FText::Format(LOCTEXT("LightmapUVsWontBeGenerated", "Lightmap UVs for mesh {0} won't be generated."), FText::FromName(StaticMesh->GetFName())));
 			}
 		}
 

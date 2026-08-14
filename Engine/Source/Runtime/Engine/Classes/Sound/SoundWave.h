@@ -73,6 +73,9 @@ struct FStreamedAudioChunk
 		: DataSize(0)
 		, AudioDataSize(0)
 		, CacheLookupID(InvalidAudioStreamCacheLookupID)
+#if WITH_EDITORONLY_DATA
+		, bLoadedFromCookedPackage(false)
+#endif // #if WITH_EDITORONLY_DATA
 	{
 	}
 
@@ -82,6 +85,9 @@ struct FStreamedAudioChunk
 #if WITH_EDITORONLY_DATA
 	/** Key if stored in the derived data cache. */
 	FString DerivedDataKey;
+
+	/** True if this chunk was loaded from a cooked package. */
+	bool bLoadedFromCookedPackage;
 
 	/**
 	 * Place chunk data in the derived data cache associated with the provided
@@ -315,8 +321,8 @@ public:
 	UPROPERTY(EditAnywhere, Category="Playback|Streaming", meta=(ClampMin=0))
 	int32 StreamingPriority;
 
-	/** Quality of sample rate conversion for platforms that opt into resampling during cook. */
-	UPROPERTY(EditAnywhere, Category = "Format|Quality", meta=(DisplayName="Sample Rate"))
+	/** Quality of sample rate conversion for platforms that opt into resampling during cook. The sample rate for each enumeration is definable per platform in platform target settings. */
+	UPROPERTY(EditAnywhere, Category = "Format|Quality")
 	ESoundwaveSampleRateSettings SampleRateQuality;
 
 	/** Type of buffer this wave uses. Set once on load */
@@ -360,15 +366,15 @@ public:
 	uint8 bDynamicResource:1;
 
 	/** If set to true if this sound is considered to contain mature/adult content. */
-	UPROPERTY(EditAnywhere, Category=Subtitles, AssetRegistrySearchable)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles, AssetRegistrySearchable)
 	uint8 bMature:1;
 
 	/** If set to true will disable automatic generation of line breaks - use if the subtitles have been split manually. */
-	UPROPERTY(EditAnywhere, Category=Subtitles )
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles )
 	uint8 bManualWordWrap:1;
 
 	/** If set to true the subtitles display as a sequence of single lines as opposed to multiline. */
-	UPROPERTY(EditAnywhere, Category=Subtitles )
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles )
 	uint8 bSingleLine:1;
 
 #if WITH_EDITORONLY_DATA
@@ -551,11 +557,11 @@ private:
 public:
 
 	/** A localized version of the text that is actually spoken phonetically in the audio. */
-	UPROPERTY(EditAnywhere, Category=Subtitles )
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles )
 	FString SpokenText;
 
 	/** The priority of the subtitle. */
-	UPROPERTY(EditAnywhere, Category=Subtitles)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles)
 	float SubtitlePriority;
 
 	/** Playback volume of sound 0 to 1 - Default is 1.0. */
@@ -602,7 +608,7 @@ public:
 	 * Subtitle cues.  If empty, use SpokenText as the subtitle.  Will often be empty,
 	 * as the contents of the subtitle is commonly identical to what is spoken.
 	 */
-	UPROPERTY(EditAnywhere, Category=Subtitles)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Subtitles)
 	TArray<struct FSubtitleCue> Subtitles;
 
 #if WITH_EDITORONLY_DATA
@@ -850,7 +856,10 @@ public:
 
 #if WITH_EDITOR
 	/** Utility which returns imported PCM data and the parsed header for the file. Returns true if there was data, false if there wasn't. */
-	bool GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, uint16& OutNumChannels);
+	bool GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, uint16& OutNumChannels) const;
+
+	/** Utility which returns imported PCM data and the parsed header for the file. Returns true if there was data, false if there wasn't. */
+	bool GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, TArray<EAudioSpeakers>& OutChannelOrder) const;
 
 	/**
 	 * This function can be called before playing or using a SoundWave to check if any cook settings have been modified since this SoundWave was last cooked.

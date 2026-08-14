@@ -13,6 +13,7 @@
 #include "GraphEditorSettings.h"
 #include "GraphEditorDragDropAction.h"
 #include "NodeFactory.h"
+#include "Classes/EditorStyleSettings.h"
 
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
@@ -104,7 +105,9 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 	// First paint the background
 	const UEditorExperimentalSettings& Options = *GetDefault<UEditorExperimentalSettings>();
 
-	const FSlateBrush* BackgroundImage = FEditorStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
+	const FSlateBrush* DefaultBackground = FEditorStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
+	const FSlateBrush* CustomBackground = &GetDefault<UEditorStyleSettings>()->GraphBackgroundBrush;
+	const FSlateBrush* BackgroundImage = CustomBackground->HasUObject() ? CustomBackground : DefaultBackground;
 	PaintBackgroundAsLines(BackgroundImage, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId);
 
 	const float ZoomFactor = AllottedGeometry.Scale * GetZoomAmount();
@@ -731,7 +734,8 @@ TSharedPtr<SWidget> SGraphPanel::OnSummonContextMenu(const FGeometry& MyGeometry
 	UEdGraphNode* EdNodeUnderMouse = NodeUnderMouse.IsValid() ? NodeUnderMouse->GetNodeObj() : nullptr;
 	TArray<UEdGraphPin*> NoSourcePins;
 
-	return SummonContextMenu(MouseEvent.GetScreenSpacePosition(), PastePosition, EdNodeUnderMouse, PinUnderCursor, NoSourcePins);
+	const FVector2D NodeAddPosition = PanelCoordToGraphCoord(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()));
+	return SummonContextMenu(MouseEvent.GetScreenSpacePosition(), NodeAddPosition, EdNodeUnderMouse, PinUnderCursor, NoSourcePins);
 }
 
 
@@ -1111,7 +1115,7 @@ TSharedPtr<SWidget> SGraphPanel::SummonContextMenu(const FVector2D& WhereToSummo
 			FPopupTransitionEffect( FPopupTransitionEffect::ContextMenu )
 			);
 
-		if (Menu.IsValid() && Menu->GetOwnedWindow().IsValid())
+		if (Menu.IsValid() && Menu->GetOwnedWindow().IsValid() && FocusedContent.WidgetToFocus.IsValid())
 		{
 			Menu->GetOwnedWindow()->SetWidgetToFocusOnActivate(FocusedContent.WidgetToFocus);
 		}

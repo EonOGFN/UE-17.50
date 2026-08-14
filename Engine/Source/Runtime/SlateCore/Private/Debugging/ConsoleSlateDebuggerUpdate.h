@@ -8,6 +8,7 @@
 #if WITH_SLATE_DEBUGGING
 
 #include "CoreMinimal.h"
+#include "Debugging/ConsoleSlateDebuggerUtility.h"
 #include "Delegates/Delegate.h"
 #include "Input/Reply.h"
 #include "HAL/IConsoleManager.h"
@@ -33,6 +34,7 @@ public:
 
 	void StartDebugging();
 	void StopDebugging();
+	bool IsEnabled() const { return bEnabled; }
 
 	void ToggleDisplayLegend();
 	void ToogleDisplayWidgetNameList();
@@ -41,6 +43,7 @@ public:
 	void SaveConfig();
 
 private:
+	void HandleEnabled(IConsoleVariable* Variable);
 	void HandleSetWidgetUpdateFlagsFilter(const TArray<FString>& Params);
 
 	void HandleEndFrame();
@@ -49,6 +52,7 @@ private:
 
 private:
 	bool bEnabled;
+	bool bEnabledCVarValue;
 
 	//~ Settings
 	bool bDisplayWidgetsNameList;
@@ -69,23 +73,19 @@ private:
 	//~ Console objects
 	FAutoConsoleCommand StartCommand;
 	FAutoConsoleCommand StopCommand;
+	FAutoConsoleVariableRef EnabledRefCVar;
 	FAutoConsoleCommand ToggleLegendCommand;
 	FAutoConsoleCommand ToogleWidgetsNameListCommand;
 	FAutoConsoleCommand ToogleDisplayUpdateFromPaintCommand;
 	FAutoConsoleCommand SetWidgetUpdateFlagsFilterCommand;
 	FAutoConsoleVariableRef InvalidationRootFilterRefCVar;
 
-	using TSWidgetId = UPTRINT;
-	using TSWindowId = UPTRINT;
-	static const TSWidgetId InvalidWidgetId = 0;
-	static const TSWindowId InvalidWindowId = 0;
-
 	struct FWidgetInfo
 	{
 		FWidgetInfo(const SWidget* Widget, EWidgetUpdateFlags InUpdateFlags);
 		void Update(const SWidget* Widget, EWidgetUpdateFlags InUpdateFlags);
 
-		TSWindowId WindowId;
+		FConsoleSlateDebuggerUtility::TSWindowId WindowId;
 		FVector2D PaintLocation;
 		FVector2D PaintSize;
 		FString WidgetName;
@@ -93,7 +93,7 @@ private:
 		double LastInvalidationTime;
 	};
 
-	using TWidgetMap = TMap<TSWidgetId, FWidgetInfo>;
+	using TWidgetMap = TMap<FConsoleSlateDebuggerUtility::TSWidgetId, FWidgetInfo>;
 	TWidgetMap UpdatedWidgets;
 };
 

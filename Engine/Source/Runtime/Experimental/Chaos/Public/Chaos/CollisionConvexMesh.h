@@ -486,6 +486,95 @@ namespace Chaos
 			check(InOutParticles.Size() > 3);
 		}
 
+		// Convert multi-triangle faces to single n-gons
+		static void MergeFaces(TArray<TPlaneConcrete<FReal, 3>>& InOutPlanes, TArray<TArray<int32>>& InOutFaceVertexIndices, const TParticles<FReal, 3>& SurfaceParticles)
+		{
+			const FReal NormalThreshold = 1.e-4f;
+
+			// Find planes with equal normal within the threshold and merge them
+			for (int32 PlaneIndex0 = 0; PlaneIndex0 < InOutPlanes.Num(); ++PlaneIndex0)
+			{
+				const TPlaneConcrete<FReal, 3>& Plane0 = InOutPlanes[PlaneIndex0];
+				TArray<int32>& Vertices0 = InOutFaceVertexIndices[PlaneIndex0];
+
+				for (int32 PlaneIndex1 = PlaneIndex0 + 1; PlaneIndex1 < InOutPlanes.Num(); ++PlaneIndex1)
+				{
+					const TPlaneConcrete<FReal, 3>& Plane1 = InOutPlanes[PlaneIndex1];
+					const TArray<int32>& Vertices1 = InOutFaceVertexIndices[PlaneIndex1];
+
+					const FReal PlaneNormalDot = FVec3::DotProduct(Plane0.Normal(), Plane1.Normal());
+					if (PlaneNormalDot > 1.0f - NormalThreshold)
+					{
+						// Merge the verts from the second plane into the first
+						for (int32 VertexIndex1 = 0; VertexIndex1 < Vertices1.Num(); ++VertexIndex1)
+						{
+							Vertices0.AddUnique(Vertices1[VertexIndex1]);
+						}
+
+						// Erase the second plane
+						InOutPlanes.RemoveAtSwap(PlaneIndex1, 1, false);
+						InOutFaceVertexIndices.RemoveAtSwap(PlaneIndex1, 1, false);
+						--PlaneIndex1;
+					}
+				}
+			}
+
+			// Re-order the face vertices to form the face half-edges
+			for (int32 PlaneIndex0 = 0; PlaneIndex0 < InOutPlanes.Num(); ++PlaneIndex0)
+			{
+				SortFaceVerticesCCW(InOutPlanes[PlaneIndex0], InOutFaceVertexIndices[PlaneIndex0], SurfaceParticles);
+			}
+		}
+
+		// Reorder the vertices to be counter-clockwise about the normal
+		static void SortFaceVerticesCCW(const TPlaneConcrete<FReal, 3>& Face, TArray<int32>& InOutFaceVertexIndices, const TParticles<FReal, 3>& SurfaceParticles)
+		{
+			FMatrix33 FaceMatrix = FRotationMatrix::MakeFromZ(Face.Normal());
+
+			FVec3 Centroid = FVec3(0);
+			for (int32 VertexIndex = 0; VertexIndex < InOutFaceVertexIndices.Num(); ++VertexIndex)
+			{
+				Centroid += SurfaceParticles.X(InOutFaceVertexIndices[VertexIndex]);
+			}
+			Centroid /= FReal(InOutFaceVertexIndices.Num());
+
+			// [2, -2] based on clockwise angle about the normal
+			auto VertexScore = [&Centroid, &FaceMatrix, &SurfaceParticles](int32 VertexIndex)
+			{
+				const FVec3 CentroidOffsetDir = (SurfaceParticles.X(VertexIndex) - Centroid).GetSafeNormal();
+				const FReal DotX = FVec3::DotProduct(CentroidOffsetDir, FaceMatrix.GetAxis(0));
+				const FReal DotY = FVec3::DotProduct(CentroidOffsetDir, FaceMatrix.GetAxis(1));
+				const FReal Score = (DotX >= 0.0f) ? 1.0f + DotY : -1.0f - DotY;
+				return Score;
+			};
+
+			auto VertexSortPredicate = [&VertexScore](int32 LIndex, int32 RIndex)
+			{
+				return VertexScore(LIndex) < VertexScore(RIndex);
+			};
+
+			InOutFaceVertexIndices.Sort(VertexSortPredicate);
+		}
+
+		// Generate the vertex indices for all planes in CCW order (used to serialize old data that did not have structure data)
+		static void BuildPlaneVertexIndices(const TArray<TPlaneConcrete<FReal, 3>>& InPlanes, const TParticles<FReal, 3>& SurfaceParticles, TArray<TArray<int32>>& OutFaceVertexIndices, const FReal DistanceTolerance = 1.e-3f)
+		{
+			OutFaceVertexIndices.Reset(InPlanes.Num());
+			for (int32 PlaneIndex = 0; PlaneIndex < InPlanes.Num(); ++PlaneIndex)
+			{
+				for (int32 VertexIndex = 0; VertexIndex < (int32)SurfaceParticles.Size(); ++VertexIndex)
+				{
+					const FReal PlaneVertexDistance = FVec3::DotProduct(InPlanes[PlaneIndex].Normal(), SurfaceParticles.X(VertexIndex) - InPlanes[PlaneIndex].X());
+					if (FMath::Abs(PlaneVertexDistance) < DistanceTolerance)
+					{
+						OutFaceVertexIndices[PlaneIndex].Add(VertexIndex);
+					}
+				}
+
+				SortFaceVerticesCCW(InPlanes[PlaneIndex], OutFaceVertexIndices[PlaneIndex], SurfaceParticles);
+			}
+		}
+
 		// CVars variables for controlling geometry complexity checking and simplification
 #if PLATFORM_MAC || PLATFORM_LINUX
 		static CHAOS_API int32 PerformGeometryCheck;

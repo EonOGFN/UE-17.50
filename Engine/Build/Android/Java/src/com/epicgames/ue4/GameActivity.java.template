@@ -75,6 +75,7 @@ import android.app.NativeActivity;
 import android.app.ActivityManager;
 import android.app.ProgressDialog;
 import android.os.Bundle;
+import android.os.PersistableBundle;
 import android.util.Log;
 
 import android.os.Vibrator;
@@ -157,6 +158,7 @@ import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.games.Games;
+import com.google.android.apps.internal.games.memoryadvice.MemoryAdvisor;
 
 import com.google.android.gms.plus.Plus;
 
@@ -456,6 +458,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	/** Whether we are in VRMode */
 	private boolean IsInVRMode = false;
 
+	/** Whether this application uses VR keyboard as input */
+	private boolean bUsesVrKeyboard = false;
+
 	/** Used for SurfaceHolder.setFixedSize buffer scaling workaround on early Amazon devices and some others */
 	private boolean bUseSurfaceView = false;
 	private SurfaceView MySurfaceView;
@@ -513,6 +518,12 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public static final int ANDROID_BUILD_VERSION = android.os.Build.VERSION.SDK_INT;
 	
 	private StoreHelper IapStoreHelper;
+	
+	private MemoryAdvisor MemAdvisor;
+	private static final int MemoryAdvisorPollDelayMs = 10000;
+	private static final int ProcessMemoryInfoPollDelayMs = 10000;
+	private long LastMemoryInfoPollTime;
+	private MemoryAdvisor.MemoryState MemState = MemoryAdvisor.MemoryState.UNKNOWN;
 
 //$${gameActivityClassAdditions}$$
 
@@ -2238,6 +2249,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	@Override
 	public void onCreate(Bundle savedInstanceState)
 	{
+		Logger.RegisterCallback(this);
+
 		// Grab a reference to the asset manager
 		AssetManagerReference = this.getAssets();
 
@@ -2345,47 +2358,108 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				}
 			}
 		}
-
-		Logger.RegisterCallback(this);
 		
 		// Suppress java logs in Shipping builds
 		if (bIsShipping)
 		{
 			Logger.SuppressLogs();
 		}
+		
+		MemAdvisor = new MemoryAdvisor(this);
+		JSONObject DeviceInfo = MemAdvisor.getDeviceInfo(this);
+		JSONObject DeviceProfile = DeviceInfo.optJSONObject("deviceProfile");
+		if (DeviceProfile != null)
+		{
+			JSONObject Advice = MemAdvisor.getAdvice();
+			final int MB = 1024 * 1024;
+			int AvailableEstimateMB = (int)(MemoryAdvisor.availabilityEstimate(Advice) / MB);
+			nativeSetEstimatedAvailableMemoryMB(AvailableEstimateMB);
+			Log.debug("[MemoryAdvisor] Device finderprint is: `" + DeviceProfile.optString("fingerprint", "FAILED") + "` matched device is `" + DeviceProfile.optString("matched", "FAILED") + ". Estimated available memory is " + AvailableEstimateMB + " MB");
+		}
+		else
+		{
+			Log.error("[MemoryAdvisor] Cannot detect device profile");
+		}
+		LastMemoryInfoPollTime = System.currentTimeMillis();
 
 		// update memory stats every 10 seconds
 		memoryRunnable = new Runnable() {
 			@Override
 			public void run()
 			{
-				int ProcessMemory = 0;
-
-				ActivityManager activityManager = (ActivityManager)_activity.getSystemService(Context.ACTIVITY_SERVICE);
-				int pid = android.os.Process.myPid();
-				int pids[] = new int[] { pid };
-				android.os.Debug.MemoryInfo[] memoryInfo = activityManager.getProcessMemoryInfo(pids);
-				if (memoryInfo.length > 0)
+				JSONObject Advice = MemAdvisor.getAdvice();
+				MemoryAdvisor.MemoryState CurrentMemoryState = MemoryAdvisor.getMemoryState(Advice);
+				if ((CurrentMemoryState != MemState) || (CurrentMemoryState == MemoryAdvisor.MemoryState.CRITICAL))
 				{
-					ProcessMemory = memoryInfo[0].dalvikPss + memoryInfo[0].nativePss + memoryInfo[0].otherPss;
-
-					if (Build.VERSION.SDK_INT >= 23)
+					final int MB = 1024 * 1024;
+					int AvailableEstimateMB = (int)(MemoryAdvisor.availabilityEstimate(Advice) / MB);
+					if (CurrentMemoryState != MemState)
 					{
-						Map<String, String> memstats = memoryInfo[0].getMemoryStats();
-						if (memstats.containsKey("summary.total-pss"))
+						nativeSetEstimatedAvailableMemoryMB(AvailableEstimateMB);
+						int OomScore = Advice.optJSONObject("metrics").optJSONObject("proc").optInt("oom_score", -1);
+						nativeSetOomScore(OomScore);
+					}
+
+					switch (CurrentMemoryState)
+					{
+						case OK:
+							Log.warn("[MemoryAdvisor] Significant amount of memory is available for allocation. Estimate is " + AvailableEstimateMB + " MB");
+							nativeOnMemoryWarningChanged(0);
+							break;
+						case APPROACHING_LIMIT:
+							Log.warn("[MemoryAdvisor] Approaching memory limit. Estimated available memory is " + AvailableEstimateMB + " MB");
+							nativeOnMemoryWarningChanged(1);
+							break;
+						case CRITICAL:
+							Log.warn("[MemoryAdvisor] Critical memory limit. Estimated available memory is " + AvailableEstimateMB + " MB");
+							nativeOnMemoryWarningChanged(2);
+							break;
+						case UNKNOWN:
+						default:
+							Log.error("[MemoryAdvisor] Unexpected memory state: " + CurrentMemoryState);
+							nativeOnMemoryWarningChanged(-1);
+							break;
+					}
+					
+					MemState = CurrentMemoryState;
+				}
+				
+				int ProcessMemory = 0;
+				
+				long CurrentTimeMs = System.currentTimeMillis();
+				if (CurrentTimeMs - LastMemoryInfoPollTime >= ProcessMemoryInfoPollDelayMs)
+				{
+					ActivityManager activityManager = (ActivityManager)_activity.getSystemService(Context.ACTIVITY_SERVICE);
+					int pid = android.os.Process.myPid();
+					int pids[] = new int[] { pid };
+					android.os.Debug.MemoryInfo[] memoryInfo = activityManager.getProcessMemoryInfo(pids);
+					if (memoryInfo.length > 0)
+					{
+						ProcessMemory = memoryInfo[0].dalvikPss + memoryInfo[0].nativePss + memoryInfo[0].otherPss;
+
+						if (Build.VERSION.SDK_INT >= 23)
 						{
-							ProcessMemory = Integer.parseInt(memstats.get("summary.total-pss"));
+							Map<String, String> memstats = memoryInfo[0].getMemoryStats();
+							if (memstats.containsKey("summary.total-pss"))
+							{
+								ProcessMemory = Integer.parseInt(memstats.get("summary.total-pss"));
+							}
 						}
 					}
+					Log.debug("Used memory: " + ProcessMemory + " ("+FindLineFromStatus("VmRSS:")+")");
+					LastMemoryInfoPollTime = CurrentTimeMs;
 				}
-				Log.debug("Used memory: " + ProcessMemory + " ("+FindLineFromStatus("VmRSS:")+")");
-
+				
 				synchronized(_activity)
 				{
-					_activity.UsedMemory = ProcessMemory;
+					if (ProcessMemory > 0)
+					{
+						_activity.UsedMemory = ProcessMemory;
+					}
+					
 					if (_activity.memoryHandler != null)
 					{
-						_activity.memoryHandler.postDelayed(this, 10000);
+						_activity.memoryHandler.postDelayed(this, _activity.MemoryAdvisorPollDelayMs);
 					}
 				}
 			}
@@ -3113,7 +3187,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				public void onThermalStatusChanged(int status) 
 				{
 					Log.debug("=== Thermal status changed to " + status);
-					nativeOnThermalStatusChangedListener(null, status);
+					nativeOnThermalStatusChangedListener(status);
 				}
 			});
 		}
@@ -3491,6 +3565,27 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		super.onPause();
 		Log.debug("==============> GameActive.onPause complete!");
 	}
+
+	@Override
+	public void onRestart()
+	{
+		super.onRestart();
+//$${gameActivityOnRestartAdditions}$$
+	}
+
+	@Override
+	public void onSaveInstanceState(Bundle outState, PersistableBundle outPersistentState)
+	{
+		super.onSaveInstanceState(outState, outPersistentState);
+//$${gameActivityOnSaveInstanceStateAdditions}$$
+	}
+
+	@Override
+	public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults)
+	{
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+//$${gameActivityOnRequestPermissionsResultAdditions}$$
+	}
 	
 	@Override
 	public void onSensorChanged(SensorEvent event)
@@ -3634,6 +3729,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				Log.debug("==============> GameActive.onTrimMemory(" + level + ") called!");
 				break;
 		}
+		nativeOnTrimMemory(level);
 	}
 
 	@Override
@@ -5892,7 +5988,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				//Log.debug("VK onTextChanged " + charSequence);
 
 				//#jira UE-49143 Inconsistent virtual keyboard behavior tapping between controls
-				if(newVirtualKeyboardInput.getY() > 0)
+				if(newVirtualKeyboardInput.getY() > 0 || bUsesVrKeyboard)
 				{
 					//try to avoid "false empty string" events
 					//delay the "set empty string" event and wait for a second call
@@ -5909,16 +6005,22 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 					}
 					else
 					{
-						String message = newVirtualKeyboardInput.getText().toString();
-						//#jira UE-50645 Carriage returns can be pasted into single line UMG fields on Android
-						//oddly enough, we have to use events/filters to control the EditText's copy/paste behaviour
-						if(newVirtualKeyboardInput.getMaxLines() == 1 && message.contains("\n"))
+						virtualKeyboardHandler.postDelayed(new Runnable()
 						{
-							message = message.replaceAll("\n" , " ");
-							newVirtualKeyboardInput.setText(message);
+							public void run()
+							{
+								String message = newVirtualKeyboardInput.getText().toString();
+								//#jira UE-50645 Carriage returns can be pasted into single line UMG fields on Android
+								//oddly enough, we have to use events/filters to control the EditText's copy/paste behaviour
+								if(newVirtualKeyboardInput.getMaxLines() == 1 && message.contains("\n"))
+								{
+									message = message.replaceAll("\n" , " ");
+									newVirtualKeyboardInput.setText(message);
 						
-						}
-						nativeVirtualKeyboardChanged(message);
+								}
+								nativeVirtualKeyboardChanged(message);
+							}
+						}, 100);
 					}
 				}
 				downgradeEasyCorrectionSpans();
@@ -6327,7 +6429,11 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public native void nativeOnInitialDownloadStarted();
 	public native void nativeOnInitialDownloadCompleted();
 	
-	public native void nativeOnThermalStatusChangedListener(GameActivity activity, int status);
+	public native void nativeOnThermalStatusChangedListener(int status);
+	public native void nativeOnMemoryWarningChanged(int status);
+	public native void nativeOnTrimMemory(int MemoryTrimValue);
+	public native void nativeSetEstimatedAvailableMemoryMB(int Estimate);
+	public native void nativeSetOomScore(int OomScore);
 
 	static
 	{

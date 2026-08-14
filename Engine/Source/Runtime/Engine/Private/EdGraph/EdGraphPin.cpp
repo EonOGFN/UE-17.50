@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphNode.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "EdGraph/EdGraph.h"
@@ -156,6 +158,7 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 	}
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
 
 	if (Ar.CustomVer(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::PinsStoreFName)
 	{
@@ -261,11 +264,19 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 		Ar << bIsConstBool;
 	}
 
+	bool bIsUObjectWrapperBool = bIsUObjectWrapper;
+
+	if (Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::PinTypeIncludesUObjectWrapperFlag)
+	{
+		Ar << bIsUObjectWrapperBool;
+	}
+
 	if (Ar.IsLoading())
 	{
 		bIsReference = bIsReferenceBool;
 		bIsWeakPointer = bIsWeakPointerBool;
 		bIsConst = bIsConstBool;
+		bIsUObjectWrapper = bIsUObjectWrapperBool;
 	}
 
 	return true;
@@ -1300,13 +1311,7 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 
 FEdGraphTerminalType UEdGraphPin::GetPrimaryTerminalType() const
 {
-	FEdGraphTerminalType TerminalType;
-	TerminalType.TerminalCategory = PinType.PinCategory;
-	TerminalType.TerminalSubCategory = PinType.PinSubCategory;
-	TerminalType.TerminalSubCategoryObject = PinType.PinSubCategoryObject;
-	TerminalType.bTerminalIsConst = PinType.bIsConst;
-	TerminalType.bTerminalIsWeakPointer = PinType.bIsWeakPointer;
-	return TerminalType;
+	return FEdGraphTerminalType::FromPinType(PinType);
 }
 
 void UEdGraphPin::MarkPendingKill()

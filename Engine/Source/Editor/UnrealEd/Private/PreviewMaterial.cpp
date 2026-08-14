@@ -36,18 +36,11 @@
 /**
  * Class for rendering the material on the preview mesh in the Material Editor
  */
-class FPreviewMaterial : public FMaterialResource, public FMaterialRenderProxy
+class FPreviewMaterial : public FMaterialResource
 {
 public:
-	FPreviewMaterial()
-	:	FMaterialResource()
+	virtual ~FPreviewMaterial()
 	{
-	}
-	
-	~FPreviewMaterial()
-	{
-		BeginReleaseResource(this);
-		FlushRenderingCommands();
 	}
 
 	/**
@@ -60,7 +53,7 @@ public:
 	 *
 	 * @return true if the shader should be compiled
 	 */
-	virtual bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const
+	virtual bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const override
 	{
 		// only generate the needed shaders (which should be very restrictive for fast recompiling during editing)
 		// @todo: Add a FindShaderType by fname or something
@@ -209,6 +202,10 @@ public:
 			{
 				bShaderTypeMatches = true;
 			}
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("FAnisotropy")))
+			{
+				bShaderTypeMatches = true;
+			}
 			else if (FCString::Stristr(ShaderType->GetName(), TEXT("RayTracingDynamicGeometryConverter")))
 			{
 				bShaderTypeMatches = true;
@@ -222,41 +219,7 @@ public:
 	/**
 	 * Should shaders compiled for this material be saved to disk?
 	 */
-	virtual bool IsPersistent() const { return false; }
-
-	// FMaterialRenderProxy interface
-	virtual const FMaterial& GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const override
-	{
-		if(GetRenderingThreadShaderMap())
-		{
-			return *this;
-		}
-		else
-		{
-			OutFallbackMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-			return OutFallbackMaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, OutFallbackMaterialRenderProxy);
-		}
-	}
-
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Material->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Material->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Material->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Material->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
-	}
+	virtual bool IsPersistent() const override { return false; }
 };
 
 /** Implementation of Preview Material functions*/
@@ -306,27 +269,26 @@ void  UMaterialEditorPreviewParameters::AssignParameterToGroup(UMaterial* Parent
 		ParameterGroupName = TEXT("None");
 	}
 	IMaterialEditorModule* MaterialEditorModule = &FModuleManager::LoadModuleChecked<IMaterialEditorModule>("MaterialEditor");
-	if (MaterialEditorModule->MaterialLayersEnabled())
+	
+	// Material layers
+	UDEditorMaterialLayersParameterValue* MaterialLayerParam = Cast<UDEditorMaterialLayersParameterValue>(ParameterValue);
+	if (ParameterValue->ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
 	{
-		UDEditorMaterialLayersParameterValue* MaterialLayerParam = Cast<UDEditorMaterialLayersParameterValue>(ParameterValue);
-		if (ParameterValue->ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
+		if (MaterialLayerParam)
 		{
-			if (MaterialLayerParam)
+			ParameterGroupName = FMaterialPropertyHelpers::LayerParamName;
+		}
+		else
+		{
+			FString AppendedGroupName = GlobalGroupPrefix.ToString();
+			if (ParameterGroupName != TEXT("None"))
 			{
-				ParameterGroupName = FMaterialPropertyHelpers::LayerParamName;
+				ParameterGroupName.AppendString(AppendedGroupName);
+				ParameterGroupName = FName(*AppendedGroupName);
 			}
 			else
 			{
-				FString AppendedGroupName = GlobalGroupPrefix.ToString();
-				if (ParameterGroupName != TEXT("None"))
-				{
-					ParameterGroupName.AppendString(AppendedGroupName);
-					ParameterGroupName = FName(*AppendedGroupName);
-				}
-				else
-				{
-					ParameterGroupName = TEXT("Global");
-				}
+				ParameterGroupName = TEXT("Global");
 			}
 		}
 	}
@@ -342,6 +304,9 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 	ParameterGroups.Empty();
 	if (PreviewMaterial)
 	{
+		// This can run before UMaterial::PostEditChangeProperty has a chance to run, so explicitly call UpdateCachedExpressionData here
+		PreviewMaterial->UpdateCachedExpressionData();
+
 		// Only operate on base materials
 		UMaterial* ParentMaterial = PreviewMaterial;
 
@@ -936,20 +901,19 @@ void  UMaterialEditorInstanceConstant::AssignParameterToGroup(UMaterial* ParentM
 		}
 
 		IMaterialEditorModule* MaterialEditorModule = &FModuleManager::LoadModuleChecked<IMaterialEditorModule>("MaterialEditor");
-		if (MaterialEditorModule->MaterialLayersEnabled())
+
+		// Material layers
+		if (ParameterValue->ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
 		{
-			if (ParameterValue->ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
+			FString AppendedGroupName = GlobalGroupPrefix.ToString();
+			if (ParameterGroupName != TEXT("None"))
 			{
-				FString AppendedGroupName = GlobalGroupPrefix.ToString();
-				if (ParameterGroupName != TEXT("None"))
-				{
-					ParameterGroupName.AppendString(AppendedGroupName);
-					ParameterGroupName = FName(*AppendedGroupName);
-				}
-				else
-				{
-					ParameterGroupName = TEXT("Global");
-				}
+				ParameterGroupName.AppendString(AppendedGroupName);
+				ParameterGroupName = FName(*AppendedGroupName);
+			}
+			else
+			{
+				ParameterGroupName = TEXT("Global");
 			}
 		}
 	}
@@ -1082,11 +1046,6 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 			{
 				FTextureParameterValue& SourceParam = SourceInstance->TextureParameterValues[TextureParameterIdx];
 				if(ParameterInfo == SourceParam.ParameterInfo)
-				{
-					ParameterValue.bOverride = true;
-					ParameterValue.ParameterValue = SourceParam.ParameterValue;
-				}
-				if(ParameterInfo.Name.IsEqual(SourceParam.ParameterInfo.Name) && ParameterInfo.Association == SourceParam.ParameterInfo.Association && ParameterInfo.Index == SourceParam.ParameterInfo.Index)
 				{
 					ParameterValue.bOverride = true;
 					ParameterValue.ParameterValue = SourceParam.ParameterValue;
@@ -1380,7 +1339,7 @@ void UMaterialEditorInstanceConstant::ResetOverrides(int32 Index, EMaterialParam
 
 void UMaterialEditorInstanceConstant::CopyToSourceInstance(const bool bForceStaticPermutationUpdate)
 {
-	if (!SourceInstance->IsTemplate(RF_ClassDefaultObject))
+	if (SourceInstance && !SourceInstance->IsTemplate(RF_ClassDefaultObject))
 	{
 		if (bIsFunctionPreviewMaterial)
 		{

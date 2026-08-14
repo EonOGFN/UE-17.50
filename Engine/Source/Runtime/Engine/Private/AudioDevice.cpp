@@ -39,6 +39,7 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
+#include "AudioMixerDevice.h"
 
 #if WITH_EDITOR
 #include "AudioEditorModule.h"
@@ -395,8 +396,8 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources)
 
 	const UAudioSettings* AudioSettings = GetDefault<UAudioSettings>();
 
-	GlobalMinPitch = FMath::Clamp(AudioSettings->GlobalMinPitchScale, 0.0001f, 4.0f);
-	GlobalMaxPitch = FMath::Clamp(AudioSettings->GlobalMaxPitchScale, 0.0001f, 4.0f);
+	GlobalMinPitch = FMath::Max(AudioSettings->GlobalMinPitchScale, 0.0001f);
+	GlobalMaxPitch = FMath::Max(AudioSettings->GlobalMaxPitchScale, 0.0001f);
 	bAllowCenterChannel3DPanning = AudioSettings->bAllowCenterChannel3DPanning;
 	bAllowPlayWhenSilent = AudioSettings->bAllowPlayWhenSilent;
 	DefaultReverbSendLevel = AudioSettings->DefaultReverbSendLevel_DEPRECATED;
@@ -430,80 +431,80 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources)
 	{
 		LLM_SCOPE(ELLMTag::AudioMixerPlugins);
 
-		// Cache any plugin settings objects we have loaded
-		UpdateAudioPluginSettingsObjectCache();
+	// Cache any plugin settings objects we have loaded
+	UpdateAudioPluginSettingsObjectCache();
 
-		//Get the requested spatialization plugin and set it up.
-		IAudioSpatializationFactory* SpatializationPluginFactory = AudioPluginUtilities::GetDesiredSpatializationPlugin();
-		if (SpatializationPluginFactory != nullptr)
+	//Get the requested spatialization plugin and set it up.
+	IAudioSpatializationFactory* SpatializationPluginFactory = AudioPluginUtilities::GetDesiredSpatializationPlugin();
+	if (SpatializationPluginFactory != nullptr)
+	{
+		SpatializationPluginInterface = SpatializationPluginFactory->CreateNewSpatializationPlugin(this);
+		if (!IsAudioMixerEnabled())
 		{
-			SpatializationPluginInterface = SpatializationPluginFactory->CreateNewSpatializationPlugin(this);
-			if (!IsAudioMixerEnabled())
-			{
-				//Set up initialization parameters for system level effect plugins:
-				FAudioPluginInitializationParams PluginInitializationParams;
-				PluginInitializationParams.SampleRate = SampleRate;
-				PluginInitializationParams.NumSources = GetMaxSources();
-				PluginInitializationParams.BufferLength = PlatformSettings.CallbackBufferFrameSize;
-				PluginInitializationParams.AudioDevicePtr = this;
-
-				SpatializationPluginInterface->Initialize(PluginInitializationParams);
-			}
-
-			bSpatializationInterfaceEnabled = true;
-			bSpatializationIsExternalSend = SpatializationPluginFactory->IsExternalSend();
-			MaxChannelsSupportedBySpatializationPlugin = SpatializationPluginFactory->GetMaxSupportedChannels();
-			UE_LOG(LogAudio, Log, TEXT("Using Audio Spatialization Plugin: %s is external send: %d"), *(SpatializationPluginFactory->GetDisplayName()), bSpatializationIsExternalSend);
-		}
-		else
-		{
-			UE_LOG(LogAudio, Log, TEXT("Using built-in audio spatialization."));
-		}
-
-		//Get the requested reverb plugin and set it up:
-		IAudioReverbFactory* ReverbPluginFactory = AudioPluginUtilities::GetDesiredReverbPlugin();
-		if (ReverbPluginFactory != nullptr)
-		{
-			ReverbPluginInterface = ReverbPluginFactory->CreateNewReverbPlugin(this);
-			bReverbInterfaceEnabled = true;
-			bReverbIsExternalSend = ReverbPluginFactory->IsExternalSend();
-			UE_LOG(LogAudio, Log, TEXT("Audio Reverb Plugin: %s"), *(ReverbPluginFactory->GetDisplayName()));
-		}
-		else
-		{
-			UE_LOG(LogAudio, Log, TEXT("Using built-in audio reverb."));
-		}
-
-		//Get the requested occlusion plugin and set it up.
-		IAudioOcclusionFactory* OcclusionPluginFactory = AudioPluginUtilities::GetDesiredOcclusionPlugin();
-		if (OcclusionPluginFactory != nullptr)
-		{
-			OcclusionInterface = OcclusionPluginFactory->CreateNewOcclusionPlugin(this);
-			bOcclusionInterfaceEnabled = true;
-			bOcclusionIsExternalSend = OcclusionPluginFactory->IsExternalSend();
-			UE_LOG(LogAudio, Display, TEXT("Audio Occlusion Plugin: %s"), *(OcclusionPluginFactory->GetDisplayName()));
-		}
-		else
-		{
-			UE_LOG(LogAudio, Display, TEXT("Using built-in audio occlusion."));
-		}
-
-		//Get the requested modulation plugin and set it up.
-		if (IAudioModulationFactory* ModulationPluginFactory = AudioPluginUtilities::GetDesiredModulationPlugin())
-		{
-			ModulationInterface = ModulationPluginFactory->CreateNewModulationPlugin(this);
-
 			//Set up initialization parameters for system level effect plugins:
 			FAudioPluginInitializationParams PluginInitializationParams;
 			PluginInitializationParams.SampleRate = SampleRate;
-			PluginInitializationParams.NumSources = GetMaxSources();
+				PluginInitializationParams.NumSources = GetMaxSources();
 			PluginInitializationParams.BufferLength = PlatformSettings.CallbackBufferFrameSize;
 			PluginInitializationParams.AudioDevicePtr = this;
-			ModulationInterface->Initialize(PluginInitializationParams);
 
-			bModulationInterfaceEnabled = true;
-			UE_LOG(LogAudio, Display, TEXT("Audio Modulation Plugin: %s"), *(ModulationPluginFactory->GetDisplayName().ToString()));
+			SpatializationPluginInterface->Initialize(PluginInitializationParams);
 		}
+
+		bSpatializationInterfaceEnabled = true;
+		bSpatializationIsExternalSend = SpatializationPluginFactory->IsExternalSend();
+		MaxChannelsSupportedBySpatializationPlugin = SpatializationPluginFactory->GetMaxSupportedChannels();
+		UE_LOG(LogAudio, Log, TEXT("Using Audio Spatialization Plugin: %s is external send: %d"), *(SpatializationPluginFactory->GetDisplayName()), bSpatializationIsExternalSend);
+	}
+	else
+	{
+		UE_LOG(LogAudio, Log, TEXT("Using built-in audio spatialization."));
+	}
+
+	//Get the requested reverb plugin and set it up:
+	IAudioReverbFactory* ReverbPluginFactory = AudioPluginUtilities::GetDesiredReverbPlugin();
+	if (ReverbPluginFactory != nullptr)
+	{
+		ReverbPluginInterface = ReverbPluginFactory->CreateNewReverbPlugin(this);
+		bReverbInterfaceEnabled = true;
+		bReverbIsExternalSend = ReverbPluginFactory->IsExternalSend();
+		UE_LOG(LogAudio, Log, TEXT("Audio Reverb Plugin: %s"), *(ReverbPluginFactory->GetDisplayName()));
+	}
+	else
+	{
+		UE_LOG(LogAudio, Log, TEXT("Using built-in audio reverb."));
+	}
+
+	//Get the requested occlusion plugin and set it up.
+	IAudioOcclusionFactory* OcclusionPluginFactory = AudioPluginUtilities::GetDesiredOcclusionPlugin();
+	if (OcclusionPluginFactory != nullptr)
+	{
+		OcclusionInterface = OcclusionPluginFactory->CreateNewOcclusionPlugin(this);
+		bOcclusionInterfaceEnabled = true;
+		bOcclusionIsExternalSend = OcclusionPluginFactory->IsExternalSend();
+		UE_LOG(LogAudio, Display, TEXT("Audio Occlusion Plugin: %s"), *(OcclusionPluginFactory->GetDisplayName()));
+	}
+	else
+	{
+		UE_LOG(LogAudio, Display, TEXT("Using built-in audio occlusion."));
+	}
+
+	//Get the requested modulation plugin and set it up.
+	if (IAudioModulationFactory* ModulationPluginFactory = AudioPluginUtilities::GetDesiredModulationPlugin())
+	{
+		ModulationInterface = ModulationPluginFactory->CreateNewModulationPlugin(this);
+
+		//Set up initialization parameters for system level effect plugins:
+		FAudioPluginInitializationParams PluginInitializationParams;
+		PluginInitializationParams.SampleRate = SampleRate;
+			PluginInitializationParams.NumSources = GetMaxSources();
+		PluginInitializationParams.BufferLength = PlatformSettings.CallbackBufferFrameSize;
+		PluginInitializationParams.AudioDevicePtr = this;
+		ModulationInterface->Initialize(PluginInitializationParams);
+
+		bModulationInterfaceEnabled = true;
+		UE_LOG(LogAudio, Display, TEXT("Audio Modulation Plugin: %s"), *(ModulationPluginFactory->GetDisplayName().ToString()));
+	}
 	}
 
 	// allow the platform to startup
@@ -1908,10 +1909,10 @@ bool FAudioDevice::HandleGetDynamicSoundVolumeCommand(const TCHAR* Cmd, FOutputD
 		}
 		else
 		{
-			const float Volume = DeviceManager->GetDynamicSoundVolume(SoundType, SoundName);
-			FString Msg = FString::Printf(TEXT("'%s' Dynamic Volume: %.4f"), *SoundName.GetPlainNameString(), Volume);
-			Ar.Logf(TEXT("%s"), *Msg);
-		}
+		const float Volume = DeviceManager->GetDynamicSoundVolume(SoundType, SoundName);
+		FString Msg = FString::Printf(TEXT("'%s' Dynamic Volume: %.4f"), *SoundName.GetPlainNameString(), Volume);
+		Ar.Logf(TEXT("%s"), *Msg);
+	}
 	}
 	return true;
 }
@@ -3195,12 +3196,12 @@ void FAudioDevice::SetListenerAttenuationOverride(int32 ListenerIndex, const FVe
 			return;
 		}
 
-		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.SetListenerAttenuationOverride"), STAT_AudioSetListenerAttenuationOverride, STATGROUP_AudioThreadCommands);
+	DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.SetListenerAttenuationOverride"), STAT_AudioSetListenerAttenuationOverride, STATGROUP_AudioThreadCommands);
 
 		ListenerProxies[ListenerIndex].AttenuationOverride = AttenuationPosition;
 		ListenerProxies[ListenerIndex].bUseAttenuationOverride = true;
 
-		FAudioDevice* AudioDevice = this;
+	FAudioDevice* AudioDevice = this;
 		FAudioThread::RunCommandOnAudioThread([AudioDevice, ListenerIndex, AttenuationPosition]()
 		{
 			AudioDevice->SetListenerAttenuationOverride(ListenerIndex, AttenuationPosition);
@@ -3216,12 +3217,12 @@ void FAudioDevice::SetListenerAttenuationOverride(int32 ListenerIndex, const FVe
 			Listener.bUseAttenuationOverride = true;
 			Listener.AttenuationOverride = AttenuationPosition;
 
-			if (!bPrevAttenuationOverride)
-			{
+		if (!bPrevAttenuationOverride)
+		{
 				UpdateVirtualLoops(true);
 			}
 		}
-	}
+		}
 }
 
 void FAudioDevice::ClearListenerAttenuationOverride(int32 ListenerIndex)
@@ -3234,20 +3235,20 @@ void FAudioDevice::ClearListenerAttenuationOverride(int32 ListenerIndex)
 	if (!IsInAudioThread())
 	{
 		if (ListenerIndex >= ListenerProxies.Num())
-		{
-			return;
-		}
+	{
+		return;
+	}
 
-		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.ClearListenerAttenuationOverride"), STAT_AudioClearListenerAttenuationOverride, STATGROUP_AudioThreadCommands);
+	DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.ClearListenerAttenuationOverride"), STAT_AudioClearListenerAttenuationOverride, STATGROUP_AudioThreadCommands);
 
 		ListenerProxies[ListenerIndex].AttenuationOverride = FVector::ZeroVector;
 		ListenerProxies[ListenerIndex].bUseAttenuationOverride = false;
 
-		FAudioDevice* AudioDevice = this;
+	FAudioDevice* AudioDevice = this;
 		FAudioThread::RunCommandOnAudioThread([AudioDevice, ListenerIndex]()
-		{
+	{
 			AudioDevice->ClearListenerAttenuationOverride(ListenerIndex);
-		}, GET_STATID(STAT_AudioClearListenerAttenuationOverride));
+	}, GET_STATID(STAT_AudioClearListenerAttenuationOverride));
 	}
 	else
 	{
@@ -3296,6 +3297,7 @@ void FAudioDevice::GetAudioVolumeSettings(const uint32 WorldID, const FVector& L
 				OutSettings.ReverbSettings = Proxy.ReverbSettings;
 				OutSettings.InteriorSettings = Proxy.InteriorSettings;
 				OutSettings.SubmixSendSettings = Proxy.SubmixSendSettings;
+				OutSettings.SubmixOverrideSettings = Proxy.SubmixOverrideSettings;
 				return;
 			}
 		}
@@ -4003,10 +4005,16 @@ void FAudioDevice::StopSources(TArray<FWaveInstance*>& WaveInstances, int32 Firs
 				// Update the pause state of the source.
 				Source->SetPauseManually(WaveInstance->bIsPaused);
 
-				// Need to update the source still so that it gets any volume settings applied to
-				// otherwise the source may play at a very quiet volume and not actually set to 0.0
-				Source->NotifyPlaybackData();
-				Source->Update();
+				// Have to check it again here, because:
+				// - Source->NotifyPlaybackData() does not handle it if it is nullptr
+				// - SetPauseManually might set it to nullptr if the sound is unpaused and is stopping
+				if (WaveInstance != nullptr)
+				{
+					// Need to update the source still so that it gets any volume settings applied to
+					// otherwise the source may play at a very quiet volume and not actually set to 0.0
+					Source->NotifyPlaybackData();
+					Source->Update();
+				}
 			}
 
 #if ENABLE_AUDIO_DEBUG
@@ -4305,32 +4313,7 @@ void FAudioDevice::Update(bool bGameTicking)
 		HandlePause(bGameTicking);
 	}
 
-	bool bHasVolumeSettings = false;
-	float AudioVolumePriority = 0.f;
-	FReverbSettings ReverbSettings;
-	bool bUsingDefaultReverb = true;
-
-	// Gets the current state of the interior settings
-	for (FListener& Listener : Listeners)
-	{
-		FAudioVolumeSettings PlayerAudioVolumeSettings;
-		GetAudioVolumeSettings(Listener.WorldID, Listener.Transform.GetLocation(), PlayerAudioVolumeSettings);
-
-		Listener.ApplyInteriorSettings(PlayerAudioVolumeSettings.AudioVolumeID, PlayerAudioVolumeSettings.InteriorSettings);
-		Listener.UpdateCurrentInteriorSettings();
-
-		if (!bHasVolumeSettings || (PlayerAudioVolumeSettings.AudioVolumeID > 0 && (bUsingDefaultReverb || PlayerAudioVolumeSettings.Priority > AudioVolumePriority)))
-		{
-			bHasVolumeSettings = true;
-			AudioVolumePriority = PlayerAudioVolumeSettings.Priority;
-			ReverbSettings = PlayerAudioVolumeSettings.ReverbSettings;
-
-			if (PlayerAudioVolumeSettings.AudioVolumeID > 0)
-			{
-				bUsingDefaultReverb = false;
-			}
-		}
-	}
+	UpdateAudioVolumeEffects();
 
 #if ENABLE_AUDIO_DEBUG
 	if (GEngine)
@@ -4348,22 +4331,6 @@ void FAudioDevice::Update(bool bGameTicking)
 		}
 	}
 #endif // ENABLE_AUDIO_DEBUG
-
-	if (bHasActivatedReverb)
-	{
-		if (HighestPriorityActivatedReverb.Priority > AudioVolumePriority || bUsingDefaultReverb)
-		{
-			ReverbSettings = HighestPriorityActivatedReverb.ReverbSettings;
-		}
-	}
-
-	if (Effects)
-	{
-		Effects->SetReverbSettings(ReverbSettings);
-
-		// Update the audio effects - reverb, EQ etc
-		Effects->Update();
-	}
 
 	// Gets the current state of the sound classes accounting for sound mix
 	UpdateSoundClassProperties(GetDeviceDeltaTime());
@@ -4432,6 +4399,107 @@ void FAudioDevice::Update(bool bGameTicking)
 	// send any needed information back to the game thread
 	SendUpdateResultsToGameThread(FirstActiveIndex);
 }
+
+void FAudioDevice::UpdateAudioVolumeEffects()
+{
+	bool bHasVolumeSettings = false;
+	FAudioVolumeSettings PlayerAudioVolumeSettings;
+	FAudioVolumeSettings PreviousPlayerAudioVolumeSettings;
+	bool bUsingDefaultReverb = true;
+	bool bAudioVolumeChanged = false;
+
+	// Gets the current state of the interior settings
+	for (FListener& Listener : Listeners)
+	{
+		FAudioVolumeSettings NewPlayerAudioVolumeSettings;
+		GetAudioVolumeSettings(Listener.WorldID, Listener.Transform.GetLocation(), NewPlayerAudioVolumeSettings);
+
+		Listener.ApplyInteriorSettings(NewPlayerAudioVolumeSettings.AudioVolumeID, NewPlayerAudioVolumeSettings.InteriorSettings);
+		Listener.UpdateCurrentInteriorSettings();
+
+		if (!bHasVolumeSettings || (NewPlayerAudioVolumeSettings.AudioVolumeID > 0 && (bUsingDefaultReverb || NewPlayerAudioVolumeSettings.Priority > PlayerAudioVolumeSettings.Priority)))
+		{
+			bHasVolumeSettings = true;
+			PlayerAudioVolumeSettings = NewPlayerAudioVolumeSettings;
+
+			if (NewPlayerAudioVolumeSettings.AudioVolumeID > 0)
+			{
+				bUsingDefaultReverb = false;
+			}
+		}
+	}
+
+	if (PlayerAudioVolumeSettings.AudioVolumeID != CurrentAudioVolumeSettings.AudioVolumeID)
+	{
+		PreviousPlayerAudioVolumeSettings = CurrentAudioVolumeSettings;
+		CurrentAudioVolumeSettings = PlayerAudioVolumeSettings;
+		bAudioVolumeChanged = true;
+	}
+
+	if (Effects)
+	{
+		// Update the master reverb
+		if (bHasActivatedReverb)
+		{
+			if (HighestPriorityActivatedReverb.Priority > PlayerAudioVolumeSettings.Priority || bUsingDefaultReverb)
+			{
+				CurrentAudioVolumeSettings.ReverbSettings = HighestPriorityActivatedReverb.ReverbSettings;
+			}
+		}
+
+		if (bAudioVolumeChanged)
+		{
+			Effects->SetReverbSettings(CurrentAudioVolumeSettings.ReverbSettings);
+		}
+
+		// Update the audio effects - reverb, EQ etc
+		Effects->Update();
+
+		// If we any submix override settings apply those overrides to the indicated submixes
+		if (IsAudioMixerEnabled() && bAudioVolumeChanged)
+		{
+			// Clear out any previous submix effect chain overrides if the audio volume changed
+			if (PreviousPlayerAudioVolumeSettings.SubmixOverrideSettings.Num() > 0)
+			{
+				for (FAudioVolumeSubmixOverrideSettings& OverrideSettings : PreviousPlayerAudioVolumeSettings.SubmixOverrideSettings)
+				{
+					ClearSubmixEffectChainOverride(OverrideSettings.Submix, OverrideSettings.CrossfadeTime);
+				}
+			}
+
+			if (CurrentAudioVolumeSettings.SubmixOverrideSettings.Num() > 0)
+			{
+				for (FAudioVolumeSubmixOverrideSettings& OverrideSettings : CurrentAudioVolumeSettings.SubmixOverrideSettings)
+				{
+					if (OverrideSettings.Submix && OverrideSettings.SubmixEffectChain.Num() > 0)
+					{
+
+						FSoundEffectSubmixInitData InitData;
+						InitData.SampleRate = GetSampleRate();
+
+						TArray<FSoundEffectSubmixPtr> SubmixEffectPresetChainOverride;
+
+						// Build the instances of the new submix preset chain override
+						for (USoundEffectSubmixPreset* SubmixEffectPreset : OverrideSettings.SubmixEffectChain)
+						{
+							if (SubmixEffectPreset)
+							{
+								InitData.ParentPresetUniqueId = SubmixEffectPreset->GetUniqueID();
+
+								TSoundEffectSubmixPtr SoundEffectSubmix = USoundEffectPreset::CreateInstance<FSoundEffectSubmixInitData, FSoundEffectSubmix>(InitData, *SubmixEffectPreset);
+								SoundEffectSubmix->SetEnabled(true);
+								SubmixEffectPresetChainOverride.Add(SoundEffectSubmix);
+							}
+						}
+
+						SetSubmixEffectChainOverride(OverrideSettings.Submix, SubmixEffectPresetChainOverride, OverrideSettings.CrossfadeTime);
+					}
+				}
+			}
+		}
+	}
+}
+
 
 void FAudioDevice::SendUpdateResultsToGameThread(const int32 FirstActiveIndex)
 {
@@ -5061,12 +5129,12 @@ bool FAudioDevice::LocationIsAudible(const FVector& Location, const float MaxDis
 
 	const int32 ListenerCount = bInAudioThread ? Listeners.Num() : ListenerProxies.Num();
 	for (int32 i = 0; i < ListenerCount; ++i)
-	{
-		if (LocationIsAudible(Location, i, MaxDistance))
 		{
-			return true;
+		if (LocationIsAudible(Location, i, MaxDistance))
+			{
+				return true;
+			}
 		}
-	}
 
 	return false;
 }
@@ -5095,16 +5163,16 @@ bool FAudioDevice::LocationIsAudible(const FVector& Location, const FTransform& 
 bool FAudioDevice::LocationIsAudible(const FVector& Location, int32 ListenerIndex, float MaxDistance) const
 {
 	if (MaxDistance >= WORLD_MAX)
-	{
-		return true;
-	}
+			{
+				return true;
+			}
 	
 	FVector ListenerTranslation;
 	const bool bAllowOverride = true;
 	if (ListenerIndex == INDEX_NONE || !GetListenerPosition(ListenerIndex, ListenerTranslation, bAllowOverride))
 	{
 		return false;
-	}
+		}
 	
 	const float MaxDistanceSquared = MaxDistance * MaxDistance;
 	return (ListenerTranslation - Location).SizeSquared() < MaxDistanceSquared;
@@ -5173,24 +5241,24 @@ bool FAudioDevice::GetListenerPosition(int32 ListenerIndex, FVector& OutPosition
 {
 	OutPosition = FVector::ZeroVector;
 	if (ListenerIndex == INDEX_NONE)
-	{
+		{
 		return false;
 	}
 
 	if (IsInAudioThread())
-	{
+			{
 		checkf(ListenerIndex < Listeners.Num(), TEXT("Listener Index %u out of range of available Listeners!"), ListenerIndex);
 		const FListener& Listener = Listeners[ListenerIndex];
 		OutPosition = Listener.GetPosition(bAllowOverride);
 		return true;
-	}
+			}
 	else // IsInGameThread()
 	{
 		checkf(ListenerIndex < ListenerProxies.Num(), TEXT("Listener Index %u out of range of available Listeners!"), ListenerIndex);
 		const FListenerProxy& Proxy = ListenerProxies[ListenerIndex];
 		OutPosition = Proxy.GetPosition(bAllowOverride);
 		return true;
-	}
+		}
 	return false;
 }
 
@@ -5208,15 +5276,15 @@ bool FAudioDevice::GetListenerTransform(int32 ListenerIndex, FTransform& OutTran
 		{
 			OutTransform = Listeners[ListenerIndex].Transform;
 			return true;
+			}
 		}
-	}
 	else // IsInGameThread()
 	{
 		if (ListenerIndex < ListenerProxies.Num())
-		{
+	{
 			OutTransform = ListenerProxies[ListenerIndex].Transform;
 			return true;
-		}
+	}
 	}
 	return false;
 }
@@ -5388,13 +5456,13 @@ int32 FAudioDevice::FindClosestListenerIndex(const FVector& Position, float& Out
 
 		const float DistSq = FVector::DistSquared(Position, ListenerPosition);
 		if (DistSq < OutDistanceSq)
-		{
+				{
 			OutDistanceSq = DistSq;
-			ClosestListenerIndex = i;
+					ClosestListenerIndex = i;
+			}
 		}
-	}
 
-	return ClosestListenerIndex;
+		return ClosestListenerIndex;
 }
 
 void FAudioDevice::UnlinkActiveSoundFromComponent(const FActiveSound& InActiveSound)
@@ -5856,6 +5924,12 @@ void FAudioDevice::Flush(UWorld* WorldToFlush, bool bClearActivatedReverb)
 		// Make sure any in-flight audio rendering commands get executed.
 		FlushAudioRenderingCommands();
 	}
+
+	FlushExtended(WorldToFlush, bClearActivatedReverb);
+}
+
+void FAudioDevice::FlushExtended(UWorld* WorldToFlush, bool bClearActivatedReverb)
+{
 }
 
 /**

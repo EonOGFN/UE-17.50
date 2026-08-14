@@ -32,6 +32,7 @@ class IDetailsView;
 class IKeyArea;
 enum class EMapChangeType : uint8;
 class FCurveModel;
+struct FMovieSceneChannelMetaData;
 
 /**
  * Defines auto change modes.
@@ -159,6 +160,7 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnBeginScrubbingEvent);
 	DECLARE_MULTICAST_DELEGATE(FOnEndScrubbingEvent);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovieSceneDataChanged, EMovieSceneDataChangeType);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnChannelChanged, const FMovieSceneChannelMetaData* MetaData, UMovieSceneSection*)
 	DECLARE_MULTICAST_DELEGATE(FOnMovieSceneBindingsChanged);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovieSceneBindingsPasted, const TArray<FMovieSceneBinding>&);
 	
@@ -252,6 +254,13 @@ public:
 	 * unless ObjectBinding points to a valid FGuid.
 	 */
 	virtual void OnAddTrack(const TWeakObjectPtr<UMovieSceneTrack>& InTrack, const FGuid& ObjectBinding) = 0;
+
+	/**
+	* Convert the Possessable to a Spawnable. Returns an array of Spawnable Id's
+	* @param Guid The Possessable Guid.
+	* @return Array of Spawnable Guids
+	*/
+	virtual TArray<FGuid> ConvertToSpawnable(FGuid Guid) = 0;
 
 	/**
 	 * Adds a movie scene as a section inside the current movie scene
@@ -481,6 +490,8 @@ public:
 	/** Get all the keys for the current sequencer selection */
 	virtual void GetKeysFromSelection(TUniquePtr<FSequencerKeyCollection>& KeyCollection, float DuplicateThresoldTime) = 0;
 
+	virtual TArray<FMovieSceneMarkedFrame> GetMarkedFrames() const = 0;
+
 	virtual FSequencerSelection& GetSelection() = 0;
 	virtual FSequencerSelectionPreview& GetSelectionPreview() = 0;
 
@@ -520,6 +531,9 @@ public:
 	/** Selects the nodes that relate to the specified channels */
 	virtual void SelectByChannels(UMovieSceneSection* Section, TArrayView<const FMovieSceneChannelHandle> InChannels, bool bSelectParentInstead, bool bSelect) = 0;
 
+	/** Selects the nodes that relate to the specified channels */
+	virtual void SelectByChannels(UMovieSceneSection* Section, const TArray<FName>& InChannelNames, bool bSelectParentInstead, bool bSelect) = 0;
+
 	/** Selects nodes by the nth category node under a section */
 	virtual void SelectByNthCategoryNode(UMovieSceneSection* Section, int Index, bool bSelect) = 0;
 
@@ -547,6 +561,9 @@ public:
 
 	/** Gets a multicast delegate which is executed whenever the movie scene data is changed. */
 	virtual FOnMovieSceneDataChanged& OnMovieSceneDataChanged() = 0;
+
+	/** Gets a multicast delegate which is executed whenever a channel is changed by Sequencer. */
+	virtual FOnChannelChanged& OnChannelChanged() = 0;
 
 	/** Gets a multicast delegate which is executed whenever the movie scene bindings are changed. */
 	virtual FOnMovieSceneBindingsChanged& OnMovieSceneBindingsChanged() = 0;
@@ -582,7 +599,7 @@ public:
 	virtual void Pause() = 0;
 
 	/** Getter for sequencer settings */
-	virtual USequencerSettings* GetSequencerSettings() = 0;
+	virtual USequencerSettings* GetSequencerSettings() const = 0;
 
 	/** Setter for sequencer settings */
 	virtual void SetSequencerSettings(USequencerSettings*) = 0;
@@ -669,6 +686,20 @@ public:
 	 */
 	SEQUENCER_API FFrameRate GetFocusedDisplayRate() const;
 
+
+	/**
+	* Get the Display Name of the Object Binding Track.
+	* @param InBinding the Binding of the Object
+	* @return The name of the object binding track.
+	*/
+	virtual FText GetDisplayName(FGuid InBinding) = 0;
+
+	/**
+	* Set the Display Name of the Object Binding Track.
+	* @param InBinding the Binding of the Object
+	* @param InDisplayName The new name of the object binding track.
+	*/
+	virtual void SetDisplayName(FGuid InBinding, const FText& InDisplayName) = 0;
 protected:
 	FOnInitializeDetailsPanel InitializeDetailsPanelEvent;
 	FOnGetIsBindingVisible GetIsBindingVisible;

@@ -8,6 +8,7 @@
 #if WITH_SLATE_DEBUGGING
 
 #include "CoreMinimal.h"
+#include "Debugging/ConsoleSlateDebuggerUtility.h"
 #include "Delegates/Delegate.h"
 #include "HAL/IConsoleManager.h"
 
@@ -32,16 +33,12 @@ public:
 
 	void StartDebugging();
 	void StopDebugging();
+	bool IsEnabled() const { return bEnabled; }
 
 	void LoadConfig();
 	void SaveConfig();
 
-private:
-	using TSWidgetId = UPTRINT;
-	using TSWindowId = UPTRINT;
-	static const TSWidgetId InvalidWidgetId = 0;
-	static const TSWindowId InvalidWindowId = 0;
-	
+private:	
 	struct FInvalidationInfo
 	{
 		FInvalidationInfo(const FSlateDebuggingInvalidateArgs& Args, int32 InvalidationPriority, bool bBuildWidgetName, bool bUseWidgetPathAsName);
@@ -50,11 +47,11 @@ private:
 		void ReplaceInvalidator(const FSlateDebuggingInvalidateArgs& Args, int32 InvalidationPriority, bool bBuildWidgetName, bool bUseWidgetPathAsName);
 		void UpdateInvalidationReason(const FSlateDebuggingInvalidateArgs& Args, int32 InInvalidationPriority);
 
-		TSWidgetId WidgetInvalidatedId;
-		TSWidgetId WidgetInvalidatorId;
+		FConsoleSlateDebuggerUtility::TSWidgetId WidgetInvalidatedId;
+		FConsoleSlateDebuggerUtility::TSWidgetId WidgetInvalidatorId;
 		TWeakPtr<const SWidget> WidgetInvalidated;
 		TWeakPtr<const SWidget> WidgetInvalidator;
-		TSWindowId WindowId;
+		FConsoleSlateDebuggerUtility::TSWindowId WindowId;
 		FString WidgetInvalidatedName;
 		FString WidgetInvalidatorName;
 		FVector2D InvalidatedPaintLocation;
@@ -73,6 +70,7 @@ private:
 	void ToggleWidgetNameList();
 	void ToggleLogInvalidatedWidget();
 
+	void HandleEnabled(IConsoleVariable* Variable);
 	void HandleSetInvalidateWidgetReasonFilter(const TArray<FString>& Params);
 	void HandleSetInvalidateRootReasonFilter(const TArray<FString>& Params);
 
@@ -80,13 +78,13 @@ private:
 	void HandleWidgetInvalidated(const FSlateDebuggingInvalidateArgs& Args);
 	void HandlePaintDebugInfo(const FPaintArgs& InArgs, const FGeometry& InAllottedGeometry, FSlateWindowElementList& InOutDrawElements, int32& InOutLayerId);
 
-	TSWindowId GetWidgetWindowId(const SWidget* Widget) const;
 	int32 GetInvalidationPriority(EInvalidateWidgetReason InvalidationInfo, ESlateDebuggingInvalidateRootReason InvalidationRootReason) const;
 	const FLinearColor& GetColor(const FInvalidationInfo& InvalidationInfo) const;
 	void ProcessFrameList();
 
 private:
 	bool bEnabled;
+	bool bEnabledCVarValue;
 
 	//~ Settings
 	bool bDisplayWidgetList;
@@ -110,6 +108,7 @@ private:
 	//~ Console objects
 	FAutoConsoleCommand StartCommand;
 	FAutoConsoleCommand StopCommand;
+	FAutoConsoleVariableRef EnabledRefCVar;
 	FAutoConsoleCommand ToggleLegendCommand;
 	FAutoConsoleCommand ToogleWidgetsNameListCommand;
 	FAutoConsoleCommand ToogleLogInvalidatedWidgetCommand;

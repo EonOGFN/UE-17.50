@@ -179,6 +179,15 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Returns SDK string as required by the platform
+		/// </summary>
+		/// <returns>Valid SDK string</returns>
+		public override string GetRequiredSDKString()
+		{
+			return SDK.GetRequiredSDKString();
+		}
+
+		/// <summary>
 		/// Find the default architecture for the given project
 		/// </summary>
 		public override string GetDefaultArchitecture(FileReference ProjectFile)
@@ -635,7 +644,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// This is the SDK version we support
 		/// </summary>
-		static string ExpectedSDKVersion = "v16_clang-9.0.1-centos7";	// now unified for all the architectures
+		static string ExpectedSDKVersion = "v17_clang-10.0.1-centos7";	// now unified for all the architectures
 
 		/// <summary>
 		/// Platform name (embeds architecture for now)
@@ -704,7 +713,7 @@ namespace UnrealBuildTool
 		/// Returns SDK string as required by the platform
 		/// </summary>
 		/// <returns>Valid SDK string</returns>
-		protected override string GetRequiredSDKString()
+		public override string GetRequiredSDKString()
 		{
 			return ExpectedSDKVersion;
 		}

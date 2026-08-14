@@ -38,7 +38,7 @@ LIBFILES=(
 # in the actual lib folder
 pushd . > /dev/null
 
-SCRIPT_DIR="`dirname "${BASH_SOURCE[0]}"`"
+SCRIPT_DIR="$(cd $(dirname "${BASH_SOURCE[0]}") && pwd)"
 cd ${SCRIPT_DIR}/${DROP_TO_LIBROOT}
 LIB_ROOT_DIR=${PWD}
 echo Changed to ${LIB_ROOT_DIR}
@@ -109,6 +109,11 @@ else
 		"x86_64-darwin13-gcc"
 	)
 fi
+
+# Unreal uses the dwarf-2 format.  Updating it will require removing '-gdwarf-2' from:
+#   Engine/Source/Programs/UnrealBuildTool/Platform/Mac/MacToolChain.cs
+export CFLAGS="-gdwarf-2"
+export CXXFLAGS="-gdwarf-2"
 
 for SLICE in "${SLICES[@]}"
 do

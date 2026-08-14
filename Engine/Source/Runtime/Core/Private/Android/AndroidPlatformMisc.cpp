@@ -51,6 +51,7 @@
 #include "Misc/OutputDevice.h"
 #include "Logging/LogMacros.h"
 #include "Misc/OutputDeviceError.h"
+#include "Async/Async.h"
 
 #if USE_ANDROID_JNI
 extern AAssetManager * AndroidThunkCpp_GetAssetManager();
@@ -136,10 +137,17 @@ static char AndroidCpuThermalSensorFileBuf[256] = "";
 static void OverrideCpuThermalSensorFileFromCVar(IConsoleVariable* Var)
 {
 	FString Override = CVarAndroidCPUThermalSensorFilePath.GetValueOnAnyThread();
-	if (Override.Len() < UE_ARRAY_COUNT(AndroidCpuThermalSensorFileBuf))
+	const int32 Len = Override.Len();
+	if (Len == 0)
+	{
+		return;
+	}
+
+	if (Len < UE_ARRAY_COUNT(AndroidCpuThermalSensorFileBuf))
 	{
 		FCStringAnsi::Strcpy(AndroidCpuThermalSensorFileBuf, TCHAR_TO_ANSI(*Override));
-		UE_LOG(LogAndroid, Display, TEXT("Thermal sensor's filepath was set to `%s`"), AndroidCpuThermalSensorFileBuf);
+		UE_LOG(LogAndroid, Display, TEXT("Thermal sensor's filepath was set to `%s`"), *Override);
+		return;
 	}
 
 	UE_LOG(LogAndroid, Display, TEXT("Thermal sensor's filepath is too long, max path is `%u`"), UE_ARRAY_COUNT(AndroidCpuThermalSensorFileBuf));
@@ -153,13 +161,20 @@ static void InitCpuThermalSensor()
 	uint32 Counter = 0;
 	while (true)
 	{
-		char Buf[256];
+		char Buf[256] = "";
 		sprintf(Buf, "/sys/devices/virtual/thermal/thermal_zone%u/type", Counter);
 		if (FILE* File = fopen(Buf, "r"))
 		{
 			fgets(Buf, UE_ARRAY_COUNT(Buf), File);
 			fclose(File);
-			UE_LOG(LogAndroid, Display, TEXT("Detected thermal sensor `%s` at /sys/devices/virtual/thermal/thermal_zone%u/temp"), Buf, Counter);
+			char* Ptr = Buf;
+			while (!iscntrl(*Ptr))		// it appears that zone type string ends up with \n symbol
+			{
+				++Ptr;
+			}
+			*Ptr = 0;
+
+			UE_LOG(LogAndroid, Display, TEXT("Detected thermal sensor `%s` at /sys/devices/virtual/thermal/thermal_zone%u/temp"), ANSI_TO_TCHAR(Buf), Counter);
 			++Counter;
 		}
 		else
@@ -177,7 +192,7 @@ static void InitCpuThermalSensor()
 		if (FILE* File = fopen(SensorFilePath, "r"))
 		{
 			FCStringAnsi::Strcpy(AndroidCpuThermalSensorFileBuf, SensorFilePath);
-			UE_LOG(LogAndroid, Display, TEXT("Selecting thermal sensor located at `%s`"), AndroidCpuThermalSensorFileBuf);
+			UE_LOG(LogAndroid, Display, TEXT("Selecting thermal sensor located at `%s`"), ANSI_TO_TCHAR(AndroidCpuThermalSensorFileBuf));
 			fclose(File);
 			return;
 		}
@@ -188,6 +203,16 @@ static void InitCpuThermalSensor()
 
 void FAndroidMisc::RequestExit( bool Force )
 {
+
+#if PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING
+	// Write the PGO profiling file on a clean shutdown.
+	extern void PGO_WriteFile();
+	if (!GIsCriticalError)
+	{
+		PGO_WriteFile();
+	}
+#endif
+
 	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i)"), Force);
 	if (Force)
 	{
@@ -516,6 +541,11 @@ void FAndroidMisc::PlatformInit()
 #endif
 
 	InitCpuThermalSensor();
+
+	UE_LOG(LogInit, Log, TEXT(" - This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
+		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
+		FPlatformMisc::IsPGOEnabled() ? TEXT("yes") : TEXT("no"),
+		PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING ? TEXT("yes") : TEXT("no"));
 }
 
 extern void AndroidThunkCpp_DismissSplashScreen();
@@ -1701,10 +1731,7 @@ bool FAndroidMisc::ShouldDisablePluginAtRuntime(const FString& PluginName)
 
 void FAndroidMisc::SetThreadName(const char* name)
 {
-#if USE_ANDROID_JNI
-	extern void AndroidThunkCpp_SetThreadName(const char * name);
-	AndroidThunkCpp_SetThreadName(name);
-#endif
+	pthread_setname_np(pthread_self(), name);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2450,12 +2477,6 @@ void FAndroidMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR* Text
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif // FRAMEPRO_ENABLED
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
 	{
 		return;
@@ -2483,12 +2504,6 @@ void FAndroidMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* T
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif // FRAMEPRO_ENABLED
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
-	}
-#endif
 	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
 	{
 		return;
@@ -2502,12 +2517,6 @@ void FAndroidMisc::EndNamedEvent()
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PopEvent();
 #endif // FRAMEPRO_ENABLED
-#if CPUPROFILERTRACE_ENABLED
-	if (CpuChannel)
-	{
-		FCpuProfilerTrace::OutputEndEvent();
-	}
-#endif
 	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
 	{
 		return;
@@ -2901,6 +2910,84 @@ int32 FAndroidMisc::GetNativeDisplayRefreshRate()
 
 }
 
+static FAndroidMemoryWarningContext GAndroidMemoryWarningContext;
+void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context) = NULL;
+void FAndroidMisc::UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int value)
+{
+	switch (OSMemoryStatusCategory)
+	{
+		case EOSMemoryStatusCategory::OSTrim:
+			GAndroidMemoryWarningContext.LastTrimMemoryState = value;
+			break;
+		case EOSMemoryStatusCategory::MemoryAdvisorState:
+			GAndroidMemoryWarningContext.LastNativeMemoryAdvisorState = value;
+			break;
+		case EOSMemoryStatusCategory::MemoryAdvisorEstimateMB:
+			GAndroidMemoryWarningContext.MemoryAdvisorEstimatedAvailableMemoryMB = value;
+			break;
+		case EOSMemoryStatusCategory::OomScore:
+			GAndroidMemoryWarningContext.OomScore = value;
+			break;
+		default:
+			checkNoEntry();
+	}
 
+	if (FTaskGraphInterface::IsRunning())
+	{
+		// Run on game thread to avoid mem handler callback getting confused.
+		AsyncTask(ENamedThreads::GameThread, [AndroidMemoryWarningContext = GAndroidMemoryWarningContext]()
+			{
+				if (GMemoryWarningHandler)
+				{
+					// note that we may also call this when recovering from low memory conditions. (i.e. not in low memory state.)
+					GMemoryWarningHandler(AndroidMemoryWarningContext);
+				}
+			});
+	}
+	else
+	{
+		const FAndroidMemoryWarningContext& Context = GAndroidMemoryWarningContext;
+		UE_LOG(LogAndroid, Warning, TEXT("Not calling memory warning handler, received too early. %d, %d %d %d"), Context.LastTrimMemoryState
+			   , Context.LastNativeMemoryAdvisorState, Context.MemoryAdvisorEstimatedAvailableMemoryMB, Context.OomScore);
+	}
+}
 
+void FAndroidMisc::SetMemoryWarningHandler(void (*InHandler)(const FGenericMemoryWarningContext& Context))
+{
+	check(IsInGameThread());
+	GMemoryWarningHandler = InHandler;
+}
 
+bool FAndroidMisc::HasMemoryWarningHandler()
+{
+	check(IsInGameThread());
+	return GMemoryWarningHandler != nullptr;
+}
+
+bool FAndroidMisc::SupportsBackbufferSampling()
+{
+	static int32 CachedAndroidOpenGLSupportsBackbufferSampling = -1;
+	
+	if (CachedAndroidOpenGLSupportsBackbufferSampling == -1)
+	{
+		bool bAndroidOpenGLSupportsBackbufferSampling = false;
+		GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bAndroidOpenGLSupportsBackbufferSampling"), bAndroidOpenGLSupportsBackbufferSampling, GEngineIni);
+
+		CachedAndroidOpenGLSupportsBackbufferSampling = (bAndroidOpenGLSupportsBackbufferSampling || FAndroidMisc::ShouldUseVulkan()) ? 1 : 0;
+	}
+
+	return CachedAndroidOpenGLSupportsBackbufferSampling == 1;
+}
+
+void FAndroidMisc::NonReentrantRequestExit()
+{
+#if UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+	// Cheating here to grab access to this. This function should only be used in extreme cases in which non-reentrant functions are needed (ie. crash handling/signal handler)
+	extern bool GShouldRequestExit;
+	GShouldRequestExit = true;
+#else
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	GIsRequestingExit = true;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+}

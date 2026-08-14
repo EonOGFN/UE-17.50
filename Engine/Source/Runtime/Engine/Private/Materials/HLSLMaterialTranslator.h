@@ -27,6 +27,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Hash/CityHash.h"
 #include "VT/RuntimeVirtualTexture.h"
+#include "Field/FieldSystemTypes.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Materials/MaterialExpressionSceneTexture.h"
@@ -119,6 +120,7 @@ struct FMaterialVTStackEntry
 	int32 DebugMipValue0Index;
 	int32 DebugMipValue1Index;
 	int32 PreallocatedStackTextureIndex;
+	bool bAdaptive;
 	bool bGenerateFeedback;
 	float AspectRatio;
 
@@ -289,6 +291,9 @@ protected:
 	/** True if this material reads any per-instance custom data */
 	uint32 bUsesPerInstanceCustomData : 1;
 
+	/** True if this material write anisotropy material property */
+	uint32 bUsesAnisotropy : 1;
+
 	/** Tracks the texture coordinates used by this material. */
 	TBitArray<> AllocatedUserTexCoords;
 	/** Tracks the texture coordinates used by the vertex shader in this material. */
@@ -332,7 +337,7 @@ public:
 	EMaterialExpressionVisitResult VisitExpressionsForProperty(EMaterialProperty InProperty, IMaterialExpressionVisitor& InVisitor);
 
 	void ValidateVtPropertyLimits();
- 
+	void ValidateShadingModelsForFeatureLevel(const FMaterialShadingModelField& ShadingModels);
 	bool Translate();
 
 	void GetMaterialEnvironment(EShaderPlatform InPlatform, FShaderCompilerEnvironment& OutEnvironment);
@@ -346,7 +351,7 @@ public:
 
 protected:
 
-	bool IsMaterialPropertyUsed(EMaterialProperty Property, int32 PropertyChunkIndex, const FLinearColor& ReferenceValue, int32 NumComponents);
+	bool IsMaterialPropertyUsed(EMaterialProperty Property, int32 PropertyChunkIndex, const FLinearColor& ReferenceValue, int32 NumComponents) const;
 
 	// only used by GetMaterialShaderCode()
 	// @param Index ECompiledMaterialProperty or EMaterialProperty
@@ -466,6 +471,7 @@ protected:
 	virtual ERHIFeatureLevel::Type GetFeatureLevel() override;
 	virtual EShaderPlatform GetShaderPlatform() override;
 	virtual const ITargetPlatform* GetTargetPlatform() const override;
+	virtual bool IsMaterialPropertyUsed(EMaterialProperty Property, int32 PropertyChunkIndex) const override;
 
 	/** 
 	 * Casts the passed in code to DestType, or generates a compile error if the cast is not valid. 
@@ -580,7 +586,14 @@ protected:
 
 	//static const TCHAR* GetVTAddressMode(TextureAddress Address);
 
-	uint32 AcquireVTStackIndex(ETextureMipValueMode MipValueMode, TextureAddress AddressU, TextureAddress AddressV, float AspectRatio, int32 CoordinateIndex, int32 MipValue0Index, int32 MipValue1Index, int32 PreallocatedStackTextureIndex, bool bGenerateFeedback);
+	uint32 AcquireVTStackIndex(
+		ETextureMipValueMode MipValueMode, 
+		TextureAddress AddressU, TextureAddress AddressV, 
+		float AspectRatio, 
+		int32 CoordinateIndex, 
+		int32 MipValue0Index, int32 MipValue1Index, 
+		int32 PreallocatedStackTextureIndex, 
+		bool bAdaptive, bool bGenerateFeedback);
 
 	virtual int32 TextureSample(
 		int32 TextureIndex,
@@ -591,7 +604,8 @@ protected:
 		ETextureMipValueMode MipValueMode = TMVM_None,
 		ESamplerSourceMode SamplerSource = SSM_FromTextureAsset,
 		int32 TextureReferenceIndex = INDEX_NONE,
-		bool AutomaticViewMipBias = false
+		bool AutomaticViewMipBias = false,
+		bool AdaptiveVirtualTexture = false
 	) override;
 
 	virtual int32 TextureProperty(int32 TextureIndex, EMaterialExposedTextureProperty Property) override;
@@ -648,6 +662,9 @@ protected:
 
 	virtual int32 VertexColor() override;
 
+	virtual int32 PreSkinVertexOffset() override;
+	virtual int32 PostSkinVertexOffset() override;
+
 	virtual int32 PreSkinnedPosition() override;
 	virtual int32 PreSkinnedNormal() override;
 
@@ -684,6 +701,7 @@ protected:
 	virtual int32 PrecomputedAOMask() override;
 	virtual int32 GIReplace(int32 Direct, int32 StaticIndirect, int32 DynamicIndirect) override;
 	virtual int32 ShadowReplace(int32 Default, int32 Shadow) override;
+	virtual int32 ReflectionCapturePassSwitch(int32 Default, int32 Reflection) override;
 
 	virtual int32 RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced);
 
@@ -712,12 +730,18 @@ protected:
 	virtual int32 GetHairUV() override;
 	virtual int32 GetHairDimensions() override;
 	virtual int32 GetHairSeed() override;
-	virtual int32 GetHairTangent() override;
+	virtual int32 GetHairTangent(bool bUseTangentSpace) override;
 	virtual int32 GetHairRootUV() override;
 	virtual int32 GetHairBaseColor() override;
 	virtual int32 GetHairRoughness() override;
+	virtual int32 GetHairDepth() override;
+	virtual int32 GetHairCoverage() override;
+	virtual int32 GetHairAuxilaryData() override;
+	virtual int32 GetHairAtlasUVs() override;
+	virtual int32 GetHairColorFromMelanin(int32 Melanin, int32 Redness, int32 DyeColor) override;
 	virtual int32 DistanceToNearestSurface(int32 PositionArg) override;
 	virtual int32 DistanceFieldGradient(int32 PositionArg) override;
+	virtual int32 SamplePhysicsField(int32 PositionArg, const int32 OutputType, const int32 TargetIndex) override;
 	virtual int32 AtmosphericFogColor(int32 WorldPosition) override;
 	virtual int32 AtmosphericLightVector() override;
 	virtual int32 AtmosphericLightColor() override;

@@ -38,7 +38,7 @@ public:
 protected:
 	
 	// Classes must initialize the NetworkPredictionProxy (register with the NetworkPredictionSystem) here. EndPlay will unregister.
-	virtual void InitializeNetworkPredictionProxy() { check(false); }
+	virtual void InitializeNetworkPredictionProxy();
 
 	// Finalizes initialization when NetworkRole changes. Does not need to be overridden.
 	virtual void InitializeForNetworkRole(ENetRole Role, const bool bHasNetConnection);
@@ -58,7 +58,9 @@ protected:
 	UPROPERTY(Replicated, transient)
 	FReplicationProxy ReplicationProxy;
 
+#if WITH_CHAOS
 	FPhysicsActorHandle PhysicsActorHandle = nullptr;
+#endif // WITH_CHAOS
 
 	FReplicationProxySet GetReplicationProxies()
 	{

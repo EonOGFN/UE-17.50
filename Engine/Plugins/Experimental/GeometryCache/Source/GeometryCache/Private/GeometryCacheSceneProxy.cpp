@@ -141,6 +141,17 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 				NewSection->Materials.Add(Material);
 			}
 
+			if (NumTracks == 1)
+			{
+				// When there's only one track, it means there's one mesh (that might have been merged from other meshes and made up of multiple sections)
+				if (NewSection->Materials.Num() != Component->GetMaterials().Num())
+				{
+					// This means that the first frame does not contain all the materials used during the animation
+					// (eg. non-constant topology with increasing number of sections)
+					NewSection->Materials = Component->GetMaterials();
+				}
+			}
+
 			// Save ref to new section
 			Tracks.Add(NewSection);
 		}
@@ -550,7 +561,9 @@ FPrimitiveViewRelevance FGeometryCacheSceneProxy::GetViewRelevance(const FSceneV
 	Result.bRenderCustomDepth = ShouldRenderCustomDepth();
 	Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
 	MaterialRelevance.SetPrimitiveViewRelevance(Result);
+
 	Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+
 	return Result;
 }
 
@@ -1274,12 +1287,18 @@ void FGeomCacheIndexBuffer::Update(const TArray<uint32>& Indices)
 	}
 	else
 	{
-		// Copy the index data into the index buffer.
-		Buffer = RHILockIndexBuffer(IndexBufferRHI, 0, Indices.Num() * sizeof(uint32), RLM_WriteOnly);
+		if (Indices.Num() > 0)
+		{
+			// Copy the index data into the index buffer.
+			Buffer = RHILockIndexBuffer(IndexBufferRHI, 0, Indices.Num() * sizeof(uint32), RLM_WriteOnly);
+		}
 	}
 
-	FMemory::Memcpy(Buffer, Indices.GetData(), Indices.Num() * sizeof(uint32));
-	RHIUnlockIndexBuffer(IndexBufferRHI);
+	if (Buffer)
+	{
+		FMemory::Memcpy(Buffer, Indices.GetData(), Indices.Num() * sizeof(uint32));
+		RHIUnlockIndexBuffer(IndexBufferRHI);
+	}
 }
 
 void FGeomCacheIndexBuffer::UpdateSizeOnly(int32 NewNumIndices)

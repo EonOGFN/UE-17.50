@@ -443,7 +443,8 @@ FPythonScriptPlugin::FPythonScriptPlugin()
 
 bool FPythonScriptPlugin::IsPythonAvailable() const
 {
-	return WITH_PYTHON;
+	static const bool bDisablePython = FParse::Param(FCommandLine::Get(), TEXT("DisablePython"));
+	return WITH_PYTHON && !bDisablePython;
 }
 
 bool FPythonScriptPlugin::ExecPythonCommand(const TCHAR* InPythonCommand)
@@ -455,6 +456,13 @@ bool FPythonScriptPlugin::ExecPythonCommand(const TCHAR* InPythonCommand)
 
 bool FPythonScriptPlugin::ExecPythonCommandEx(FPythonCommandEx& InOutPythonCommand)
 {
+	if (!IsPythonAvailable())
+	{
+		InOutPythonCommand.CommandResult = TEXT("Python is not available!");
+		ensureAlwaysMsgf(false, TEXT("%s"), *InOutPythonCommand.CommandResult);
+		return false;
+	}
+
 #if WITH_PYTHON
 	if (InOutPythonCommand.ExecutionMode == EPythonCommandExecutionMode::ExecuteFile)
 	{
@@ -479,11 +487,7 @@ bool FPythonScriptPlugin::ExecPythonCommandEx(FPythonCommandEx& InOutPythonComma
 	else
 	{
 		return RunString(InOutPythonCommand);
-	}
-#else	// WITH_PYTHON
-	InOutPythonCommand.CommandResult = TEXT("Python is not available!");
-	ensureAlwaysMsgf(false, TEXT("%s"), *InOutPythonCommand.CommandResult);
-	return false;
+	}	
 #endif	// WITH_PYTHON
 }
 
@@ -499,6 +503,11 @@ FSimpleMulticastDelegate& FPythonScriptPlugin::OnPythonShutdown()
 
 void FPythonScriptPlugin::StartupModule()
 {
+	if (!IsPythonAvailable())
+	{
+		return;
+	}
+
 #if WITH_PYTHON
 	InitializePython();
 	IModularFeatures::Get().RegisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), &CmdExec);
@@ -536,6 +545,11 @@ void FPythonScriptPlugin::OnPostEngineInit()
 
 void FPythonScriptPlugin::ShutdownModule()
 {
+	if (!IsPythonAvailable())
+	{
+		return;
+	}
+
 #if WITH_PYTHON
 	FCoreDelegates::OnPreExit.RemoveAll(this);
 
@@ -626,15 +640,15 @@ void FPythonScriptPlugin::InitializePython()
 		const int StdErrMode = _setmode(_fileno(stderr), _O_TEXT);
 #endif	// PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
 
-#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 8
-		// Python 3.8+ changes the C locale which affects UE4 functions using C string APIs
+#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 7
+		// Python 3.7+ changes the C locale which affects UE4 functions using C string APIs
 		// So change the C locale back to its current setting after Py_Initialize has been called
 		FString CurrentLocale;
 		if (const char* CurrentLocalePtr = setlocale(LC_ALL, nullptr))
 		{
 			CurrentLocale = ANSI_TO_TCHAR(CurrentLocalePtr);
 		}
-#endif	// PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 8
+#endif	// PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 7
 
 #if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 4
 		Py_SetStandardStreamEncoding("utf-8", nullptr);
@@ -668,13 +682,13 @@ void FPythonScriptPlugin::InitializePython()
 		}
 #endif	// PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
 
-#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 8
+#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 7
 		// We call setlocale here to restore the previous state
 		if (!CurrentLocale.IsEmpty())
 		{
 			setlocale(LC_ALL, TCHAR_TO_ANSI(*CurrentLocale));
 		}
-#endif	// PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 8
+#endif	// PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 7
 
 		PySys_SetArgvEx(1, NullPyArgPtrs, 0);
 
@@ -1347,31 +1361,32 @@ bool FPythonScriptPlugin::IsDeveloperModeEnabled()
 
 void FPythonScriptPlugin::OnAssetRenamed(const FAssetData& Data, const FString& OldName)
 {
+	FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
 	const FName OldPackageName = *FPackageName::ObjectPathToPackageName(OldName);
-	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(Data.GetAsset());
-	if (AssetPtr)
+	
+	// If this asset has an associated Python type, then we need to rename it
+	if (PyWrapperTypeRegistry.HasWrappedTypeForObjectName(OldPackageName))
 	{
-		// If this asset has an associated Python type, then we need to rename it
-		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
-		if (PyWrapperTypeRegistry.HasWrappedTypeForObjectName(OldPackageName))
+		if (const UObject* AssetPtr = PyGenUtil::GetAssetTypeRegistryType(Data.GetAsset()))
 		{
 			PyWrapperTypeRegistry.UpdateGenerateWrappedTypeForRename(OldPackageName, AssetPtr);
 			OnAssetUpdated(AssetPtr);
+		}
+		else
+		{
+			PyWrapperTypeRegistry.RemoveGenerateWrappedTypeForDelete(OldPackageName);
 		}
 	}
 }
 
 void FPythonScriptPlugin::OnAssetRemoved(const FAssetData& Data)
 {
-	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(Data.GetAsset());
-	if (AssetPtr)
+	FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
+	
+	// If this asset has an associated Python type, then we need to remove it
+	if (PyWrapperTypeRegistry.HasWrappedTypeForObjectName(Data.PackageName))
 	{
-		// If this asset has an associated Python type, then we need to remove it
-		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
-		if (PyWrapperTypeRegistry.HasWrappedTypeForObject(AssetPtr))
-		{
-			PyWrapperTypeRegistry.RemoveGenerateWrappedTypeForDelete(AssetPtr);
-		}
+		PyWrapperTypeRegistry.RemoveGenerateWrappedTypeForDelete(Data.PackageName);
 	}
 }
 
@@ -1389,8 +1404,7 @@ void FPythonScriptPlugin::OnAssetReload(const EPackageReloadPhase InPackageReloa
 
 void FPythonScriptPlugin::OnAssetUpdated(const UObject* InObj)
 {
-	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(InObj);
-	if (AssetPtr)
+	if (const UObject* AssetPtr = PyGenUtil::GetAssetTypeRegistryType(InObj))
 	{
 		// If this asset has an associated Python type, then we need to re-generate it
 		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();

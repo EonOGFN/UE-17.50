@@ -10,6 +10,8 @@
 #include "Input/IPDisplayClusterInputManager.h"
 #include "Render/IPDisplayClusterRenderManager.h"
 
+class UDisplayClusterConfigurationData;
+
 
 /**
  * Display Cluster module implementation
@@ -53,7 +55,7 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	virtual bool Init(EDisplayClusterOperationMode OperationMode) override;
 	virtual void Release() override;
-	virtual bool StartSession(const FString& ConfigPath, const FString& NodeId) override;
+	virtual bool StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& NodeId) override;
 	virtual void EndSession() override;
 	virtual bool StartScene(UWorld* InWorld) override;
 	virtual void EndScene() override;
@@ -100,13 +102,6 @@ private:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
-#if 0
-	virtual void PreUnloadCallback() override;
-	virtual void PostLoadCallback() override;
-	virtual bool SupportsDynamicReloading() override;
-	virtual bool SupportsAutomaticShutdown() override;
-	virtual bool IsGameModule() const override;
-#endif
 
 private:
 	// Is module initialized.

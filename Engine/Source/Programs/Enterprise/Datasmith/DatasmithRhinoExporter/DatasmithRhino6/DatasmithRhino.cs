@@ -19,6 +19,12 @@ namespace DatasmithRhino
 		public DatasmithRhino6()
 		{
 			Instance = this;
+
+			// If we are not on Windows, we need to manually call FDatasmithFacadeScene.Shutdown() when the process ends.
+			if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+			{
+				AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+			}
 		}
 
 		///<summary>Gets the only instance of the DatasmithRhino6 plug-in.</summary>
@@ -32,7 +38,7 @@ namespace DatasmithRhino
 		protected override Rhino.PlugIns.FileTypeList AddFileTypes(Rhino.FileIO.FileWriteOptions options)
 		{
 			var result = new Rhino.PlugIns.FileTypeList();
-			result.AddFileType("Datasmith File (*.udatasmith)", "udatasmith");
+			result.AddFileType("Unreal Datasmith (*.udatasmith)", "udatasmith");
 			return result;
 		}
 
@@ -47,10 +53,13 @@ namespace DatasmithRhino
 		/// <returns>A value that defines success or a specific failure.</returns>
 		protected override Rhino.PlugIns.WriteFileResult WriteFile(string filename, int index, RhinoDoc doc, Rhino.FileIO.FileWriteOptions options)
 		{
-			DatasmithRhinoSceneExporter Exporter = new DatasmithRhinoSceneExporter();
-			bool bSuccess = Exporter.Export(filename, doc);
+			return DatasmithRhinoSceneExporter.Export(filename, doc, options);
+		}
 
-			return bSuccess ? Rhino.PlugIns.WriteFileResult.Success : Rhino.PlugIns.WriteFileResult.Failure;
+		public void OnProcessExit(object sender, EventArgs e)
+		{
+			AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+			FDatasmithFacadeScene.Shutdown();
 		}
 	}
 }

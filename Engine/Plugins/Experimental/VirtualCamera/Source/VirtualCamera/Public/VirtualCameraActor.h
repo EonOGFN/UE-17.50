@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "CineCameraActor.h"
 #include "GameFramework/Actor.h"
 #include "IRemoteSessionRole.h"
 #include "IVirtualCameraController.h"
@@ -18,9 +19,9 @@
 
 struct FVirtualCameraViewportSettings;
 class IRemoteSessionUnmanagedRole;
-class UCineCameraComponent;
 class URemoteSessionMediaCapture;
 class URemoteSessionMediaOutput;
+class USceneCaptureComponent2D;
 class UUserWidget;
 class UVirtualCameraMovement;
 class UVPFullScreenUserWidget;
@@ -33,8 +34,8 @@ struct FCanDeleteAssetResult;
 #endif
 
 
-UCLASS(Blueprintable, BlueprintType, Category="VirtualCamera", DisplayName="VirtualCameraActor")
-class VIRTUALCAMERA_API AVirtualCameraActor : public AActor, public IVirtualCameraController, public IVirtualCameraPresetContainer, public IVirtualCameraOptions
+UCLASS(Abstract, BluePrintable, BlueprintType, Category="VirtualCamera", DisplayName="VirtualCameraActor")
+class VIRTUALCAMERA_API AVirtualCameraActor : public ACineCameraActor, public IVirtualCameraController, public IVirtualCameraPresetContainer, public IVirtualCameraOptions
 {
 	GENERATED_BODY()
 
@@ -45,10 +46,7 @@ public:
 	~AVirtualCameraActor();
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "VirtualCamera | Component")
-	UCineCameraComponent* StreamedCamera;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "VirtualCamera | Component")
-	UCineCameraComponent* RecordingCamera;
+	USceneCaptureComponent2D* SceneCaptureComponent;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VirtualCamera | Movement")
 	FLiveLinkSubjectRepresentation LiveLinkSubject;
@@ -80,23 +78,11 @@ protected:
 	UWorld* ActorWorld;
 
 	UPROPERTY(Transient)
-	USceneComponent* DefaultSceneRoot;
-
-	UPROPERTY(Transient)
-	USceneComponent* SceneOffset;
-
-	UPROPERTY(Transient)
-	USceneComponent* CameraOffset;
-
-	UPROPERTY(Transient)
 	AActor* PreviousViewTarget;
 
 	/** Should focus plane be shown on all touch focus events */
 	UPROPERTY(BlueprintReadOnly, Category = "VirtualCamera | Focus")
 	bool bAllowFocusVisualization;
-
-	UPROPERTY(BlueprintReadOnly, Category = "VirtualCamera | Focus")
-	EVirtualCameraFocusMethod FocusMethod;
 
 	/**
 	 * Delegate that will is triggered before transform is set onto Actor.
@@ -157,8 +143,7 @@ public:
 	virtual UWorld* GetControllerWorld() override;
 protected:
 	virtual UCineCameraComponent* GetStreamedCameraComponent_Implementation() const override;
-	virtual UCineCameraComponent* GetRecordingCameraComponent_Implementation() const override;
-	virtual UCineCameraComponent* GetActiveCameraComponent_Implementation() const override;
+	virtual USceneCaptureComponent2D* GetSceneCaptureComponent_Implementation() const override;
 	virtual ULevelSequencePlaybackController* GetSequenceController_Implementation() const override;
 	virtual TScriptInterface<IVirtualCameraPresetContainer> GetPresetContainer_Implementation() override;
 	virtual TScriptInterface<IVirtualCameraOptions> GetOptions_Implementation() override;
@@ -166,18 +151,10 @@ protected:
 	virtual void SetLiveLinkRepresentation_Implementation(const FLiveLinkSubjectRepresentation& InLiveLinkRepresentation) override;
 	virtual bool IsStreaming_Implementation() const override;
 	virtual void SetSaveSettingsOnStopStreaming_Implementation(bool bShouldSettingsSave) override;
-	virtual void SetRelativeTransform_Implementation(const FTransform& InControllerTransform) override;
 	virtual FTransform GetRelativeTransform_Implementation() const override;
 	virtual void AddBlendableToCamera_Implementation(const TScriptInterface<IBlendableInterface>& InBlendableToAdd, float InWeight) override;
-	virtual void SetFocusDistance_Implementation(float InFocusDistanceCentimeters) override;
 	virtual void SetTrackedActorForFocus_Implementation(AActor* InActorToTrack, const FVector& InTrackingPointOffset) override;
-	virtual void SetFocusMethod_Implementation(EVirtualCameraFocusMethod InNewFocusMethod) override;
-	virtual EVirtualCameraFocusMethod GetFocusMethod_Implementation() const override;
 	virtual void SetFocusVisualization_Implementation(bool bInShowFocusVisualization) override;
-	virtual void SetReticlePosition_Implementation(const FVector2D& InViewportPosition) override;
-	virtual FVector2D GetReticlePosition_Implementation() const override;
-	virtual void UpdateHyperfocalDistance_Implementation() override;
-	virtual float GetHyperfocalDistance_Implementation() const override;
 	virtual bool ShouldSaveSettingsOnStopStreaming_Implementation() const override;
 	virtual void SetBeforeSetVirtualCameraTransformDelegate_Implementation(const FPreSetVirtualCameraTransform& InDelegate) override;
 	virtual void SetOnActorClickedDelegate_Implementation(const FOnActorClickedDelegate& InDelegate) override;
@@ -202,8 +179,9 @@ protected:
 
 private:
 
-	void OnImageChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance, const FString& Type, ERemoteSessionChannelMode Mode);
-	void OnInputChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance, const FString& Type, ERemoteSessionChannelMode Mode);
+	void OnRemoteSessionChannelChange(IRemoteSessionRole* Role, TWeakPtr<IRemoteSessionChannel> Channel, ERemoteSessionChannelChange Change);
+	void OnImageChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance);
+	void OnInputChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance);
 
 	void OnTouchEventOutsideUMG(const FVector2D& InViewportPosition);
 
@@ -211,11 +189,6 @@ private:
 	void SaveSettings();
 	/** Restores settings from save game. */
 	void LoadSettings();
-
-	UCineCameraComponent* GetActiveCameraComponentInternal() const;
-	void SetRelativeTransformInternal(const FTransform& InRelativeTransform);
-
-	void UpdateAutoFocus();
 
 #if WITH_EDITOR
 	void OnMapChanged(UWorld* World, EMapChangeType ChangeType);
@@ -227,10 +200,10 @@ private:
 
 private:
 
+	UPROPERTY(BlueprintGetter = GetCineCameraComponent, Category = "VirtualCamera | Component")
+	UCineCameraComponent* StreamedCamera;
 	bool bIsStreaming;
 	TSharedPtr<IRemoteSessionUnmanagedRole> RemoteSessionHost;
 	TUniquePtr<FVirtualCameraViewportSettings> ViewportSettingsBackup;
 	FHitResult LastViewportTouchResult;
-	FVector2D ReticlePosition;
-	float HyperfocalDistance;
 };

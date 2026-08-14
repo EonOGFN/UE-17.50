@@ -1226,6 +1226,10 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	}
 
 	UWorld* MyWorld = GetWorld();
+	if (MyWorld == nullptr)
+	{
+		return;
+	}
 
 	// Force path tracing view mode, and extern code set path tracer show flags
 	const bool bForcePathTracing = InViewport->GetClient()->GetEngineShowFlags()->PathTracing;
@@ -1248,8 +1252,6 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 		// Force enable view family show flag for HighDPI derived's screen percentage.
 		ViewFamily.EngineShowFlags.ScreenPercentage = true;
 	}
-
-	UpdateDebugViewModeShaders();
 #endif
 
 	ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(InViewport);
@@ -3034,11 +3036,21 @@ bool UGameViewportClient::HandleShowCommand( const TCHAR* Cmd, FOutputDevice& Ar
 			{
 			}
 
-			bool OnEngineShowFlag(uint32 InIndex, const FString& InName)
+			bool HandleShowFlag(uint32 InIndex, const FString& InName)
 			{
 				FString Value = FString::Printf(TEXT("%s=%d"), *InName, EngineShowFlags.GetSingleFlag(InIndex) ? 1 : 0);
 				LinesToSort.Add(Value);
 				return true;
+			}
+
+			bool OnEngineShowFlag(uint32 InIndex, const FString& InName)
+			{
+				return HandleShowFlag(InIndex, InName);
+			}
+
+			bool OnCustomShowFlag(uint32 InIndex, const FString& InName)
+			{
+				return HandleShowFlag(InIndex, InName);
 			}
 
 			TSet<FString>& LinesToSort;

@@ -135,6 +135,30 @@
 			Serializer.EndObject(); \
 		}
 
+#define JSON_SERIALIZE_OPTIONAL_OBJECT_SERIALIZABLE(JsonName, JsonSerializableObject) \
+		if (Serializer.IsLoading()) \
+		{ \
+			using ObjectType = TRemoveReference<decltype(JsonSerializableObject.GetValue())>::Type; \
+			if (Serializer.GetObject()->HasTypedField<EJson::Object>(JsonName)) \
+			{ \
+				TSharedPtr<FJsonObject> JsonObj = Serializer.GetObject()->GetObjectField(JsonName); \
+				if (JsonObj.IsValid()) \
+				{ \
+					JsonSerializableObject = ObjectType{}; \
+					JsonSerializableObject.GetValue().FromJson(JsonObj); \
+				} \
+			} \
+		} \
+		else \
+		{ \
+			if (JsonSerializableObject.IsSet()) \
+			{ \
+				Serializer.StartObject(JsonName); \
+				(JsonSerializableObject.GetValue()).Serialize(Serializer, true); \
+				Serializer.EndObject(); \
+			} \
+		}
+
 #define JSON_SERIALIZE_DATETIME_UNIX_TIMESTAMP(JsonName, JsonDateTime) \
 		if (Serializer.IsLoading()) \
 		{ \
@@ -1038,6 +1062,15 @@ struct FJsonDataBag
 								break;
 							}
 							case EJson::Array:
+							{
+								// if we have an array, serialize to string and write raw
+								FString JsonStr;
+								auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonStr);
+								FJsonSerializer::Serialize(JsonValue->AsArray(), Writer);
+								Serializer.WriteIdentifierPrefix(*It.Key);
+								Serializer.WriteRawJSONValue(*JsonStr);
+								break;
+							}
 							case EJson::Object:
 							{
 								// if we have an object, serialize to string and write raw

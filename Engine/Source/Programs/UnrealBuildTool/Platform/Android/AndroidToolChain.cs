@@ -475,7 +475,7 @@ namespace UnrealBuildTool
 			return GPUArchitectures;
 		}
 
-		public int GetNdkApiLevelInt(int MinNdk = 19)
+		public int GetNdkApiLevelInt(int MinNdk = 21)
 		{
 			string NDKVersion = GetNdkApiLevel();
 			int NDKVersionInt = MinNdk;
@@ -703,6 +703,39 @@ namespace UnrealBuildTool
 			else
 			{
 				Result += " -fno-rtti";
+			}
+
+			// Profile Guided Optimization (PGO) and Link Time Optimization (LTO)
+			if (CompileEnvironment.bPGOOptimize)
+			{
+				//
+				// Clang emits warnings for each compiled object file that doesn't have a matching entry in the profile data.
+				// This can happen when the profile data is older than the binaries we're compiling.
+				//
+				// Disable these warnings. They are far too verbose.
+				//
+				Result += " -Wno-profile-instr-out-of-date";
+				Result += " -Wno-profile-instr-unprofiled";
+
+				// apparently there can be hashing conflicts with PGO which can result in:
+				// 'Function control flow change detected (hash mismatch)' warnings. 
+				Result += " -Wno-backend-plugin";
+
+				Result += string.Format(" -fprofile-use=\"{0}.profdata\"", Path.Combine(CompileEnvironment.PGODirectory, CompileEnvironment.PGOFilenamePrefix));
+
+				//TODO: measure LTO.
+				//Result += " -flto=thin";
+			}
+			else if (CompileEnvironment.bPGOProfile)
+			{
+				// Always enable LTO when generating PGO profile data.
+				// Android supports only LLVM IR-based for instrumentation-based PGO.
+				Result += " -fprofile-generate";
+				//  for sampling-based profile collection to generate minimal debug information:
+				Result += " -gline-tables-only";
+
+				//TODO: check LTO improves perf.
+				//Result += " -flto=thin";
 			}
 
 			//@todo android: these are copied verbatim from UE3 and probably need adjustment
@@ -952,7 +985,31 @@ namespace UnrealBuildTool
 			Result += "	-Wl,--exclude-libs,libgcc_real.a";
 			Result += " -Wl,--exclude-libs,libatomic.a";
 
-			Result += " -Wl,--build-id=sha1";				// add build-id to make debugging easier
+			Result += " -Wl,--build-id=sha1";               // add build-id to make debugging easier
+
+			if (LinkEnvironment.bPGOOptimize)
+			{
+				//
+				// Clang emits warnings for each compiled object file that doesn't have a matching entry in the profile data.
+				// This can happen when the profile data is older than the binaries we're compiling.
+				//
+				// Disable these warnings. They are far too verbose.
+				//
+				Result += " -Wno-profile-instr-out-of-date";
+				Result += " -Wno-profile-instr-unprofiled";
+
+				Result += string.Format(" -fprofile-use=\"{0}.profdata\"", Path.Combine(LinkEnvironment.PGODirectory, LinkEnvironment.PGOFilenamePrefix));
+
+				//TODO: check LTO improves perf.
+				//Result += " -flto=thin";
+			}
+			else if (LinkEnvironment.bPGOProfile)
+			{
+				// Android supports only LLVM IR-based for instrumentation-based PGO.
+				Result += " -fprofile-generate";
+				//  for sampling-based profile collection to generate minimal debug information:
+				Result += " -gline-tables-only";
+			}
 
 			// verbose output from the linker
 			// Result += " -v";

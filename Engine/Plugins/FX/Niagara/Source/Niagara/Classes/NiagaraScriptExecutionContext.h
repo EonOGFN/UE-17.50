@@ -6,11 +6,8 @@ NiagaraEmitterInstance.h: Niagara emitter simulation class
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/WeakObjectPtr.h"
 #include "NiagaraCommon.h"
 #include "NiagaraDataSet.h"
-#include "NiagaraEvents.h"
-#include "NiagaraCollision.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScriptExecutionParameterStore.h"
@@ -176,6 +173,13 @@ struct FNiagaraScriptExecutionContextBase
 	static uint32 TickCounter;
 
 	int32 HasInterpolationParameters : 1;
+	int32 bAllowParallel : 1;
+#if STATS
+	TArray<FStatScopeData> StatScopeData;
+	TMap<TStatIdData const*, float> ExecutionTimings;
+	void CreateStatScopeData();
+	TMap<TStatIdData const*, float> ReportStats();
+#endif
 	
 	FNiagaraScriptExecutionContextBase();
 	virtual ~FNiagaraScriptExecutionContextBase();
@@ -275,6 +279,22 @@ struct FNiagaraGpuSpawnInfo
 	uint32 MaxParticleCount = 0;
 	int32 SpawnInfoStartOffsets[NIAGARA_MAX_GPU_SPAWN_INFOS];
 	FNiagaraGpuSpawnInfoParams SpawnInfoParams[NIAGARA_MAX_GPU_SPAWN_INFOS];
+
+	void Reset()
+	{
+		EventSpawnTotal = 0;
+		SpawnRateInstances = 0;
+		MaxParticleCount = 0;
+		for (int32 i = 0; i < NIAGARA_MAX_GPU_SPAWN_INFOS; ++i)
+		{
+			SpawnInfoStartOffsets[i] = 0;
+
+			SpawnInfoParams[i].IntervalDt = 0;
+			SpawnInfoParams[i].InterpStartDt = 0;
+			SpawnInfoParams[i].SpawnGroup = 0;
+			SpawnInfoParams[i].GroupSpawnStartIndex = 0;
+		}		
+	}
 };
 
 class FNiagaraRHIUniformBufferLayout : public FRHIResource
@@ -285,6 +305,26 @@ public:
 	FRHIUniformBufferLayout UBLayout;
 };
 
+struct FNiagaraComputeSharedContext
+{
+	int32 ScratchIndex = INDEX_NONE;
+	int32 ScratchTickStage = INDEX_NONE;
+
+	uint32 ParticleCountReadFence = 1;
+	uint32 ParticleCountWriteFence = 0;
+};
+
+struct FNiagaraComputeSharedContextDeleter
+{
+	void operator()(FNiagaraComputeSharedContext* Ptr) const
+	{
+		if (Ptr)
+		{
+			ENQUEUE_RENDER_COMMAND(NiagaraDeleteSharedContext)([RT_Ptr=Ptr](FRHICommandListImmediate& RHICmdList) { delete RT_Ptr; });
+		}
+	}
+};
+
 struct FNiagaraComputeExecutionContext
 {
 	FNiagaraComputeExecutionContext();
@@ -293,7 +333,6 @@ struct FNiagaraComputeExecutionContext
 	void Reset(NiagaraEmitterInstanceBatcher* Batcher);
 
 	void InitParams(UNiagaraScript* InGPUComputeScript, ENiagaraSimTarget InSimTarget, const uint32 InDefaultSimulationStageIndex, int32 InMaxUpdateIterations, const TSet<uint32> InSpawnStages);
-	void BakeVariableNamesForIterationLookup();
 	void DirtyDataInterfaces();
 	bool Tick(FNiagaraSystemInstance* ParentSystemInstance);
 
@@ -301,7 +340,7 @@ struct FNiagaraComputeExecutionContext
 
 	void SetDataToRender(FNiagaraDataBuffer* InDataToRender);
 	void SetTranslucentDataToRender(FNiagaraDataBuffer* InTranslucentDataToRender);
-	FNiagaraDataBuffer* GetDataToRender(bool bIsTranslucent) const { return bIsTranslucent && TranslucentDataToRender ? TranslucentDataToRender : DataToRender; }
+	FNiagaraDataBuffer* GetDataToRender(bool bIsLowLatencyTranslucent) const { return bIsLowLatencyTranslucent && TranslucentDataToRender ? TranslucentDataToRender : DataToRender; }
 
 	struct 
 	{
@@ -327,6 +366,9 @@ public:
 
 #if !UE_BUILD_SHIPPING
 	FString DebugSimName;
+#endif
+#if STATS
+	TWeakObjectPtr<UNiagaraEmitter> EmitterPtr; // emitter pointer used to report captured gpu stats
 #endif
 
 	const TArray<UNiagaraDataInterface*>& GetDataInterfaces()const { return CombinedParamStore.GetDataInterfaces(); }
@@ -363,32 +405,15 @@ public:
 	bool HasInterpolationParameters;
 
 	/** Temp data used in NiagaraEmitterInstanceBatcher::ExecuteAll() to avoid creating a map per FNiagaraComputeExecutionContext */
-	mutable int32 ScratchIndex = INDEX_NONE;
 	mutable uint32 ScratchNumInstances = 0;
 	mutable uint32 ScratchMaxInstances = 0;
 
-	TArray < FSimulationStageMetaData> SimStageInfo;
+	TArray<FSimulationStageMetaData> SimStageInfo;
 
 	bool IsOutputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
 	bool IsIterationStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
-	FNiagaraDataInterfaceProxy* FindIterationInterface(const TArray<FNiagaraDataInterfaceProxy*>& InProxies, uint32 SimulationStageIndex) const;
+	FNiagaraDataInterfaceProxyRW* FindIterationInterface(const TArray<FNiagaraDataInterfaceProxyRW*>& InProxies, uint32 SimulationStageIndex) const;
 	const FSimulationStageMetaData* GetSimStageMetaData(uint32 SimulationStageIndex) const;
-
-#if WITH_EDITORONLY_DATA
-	mutable TUniquePtr<FRHIGPUMemoryReadback> GPUDebugDataReadbackFloat;
-	mutable TUniquePtr<FRHIGPUMemoryReadback> GPUDebugDataReadbackInt;
-	mutable TUniquePtr<FRHIGPUMemoryReadback> GPUDebugDataReadbackHalf;
-	mutable TUniquePtr<FRHIGPUMemoryReadback> GPUDebugDataReadbackCounts;
-	mutable uint32 GPUDebugDataFloatSize = 0;
-	mutable uint32 GPUDebugDataIntSize = 0;
-	mutable uint32 GPUDebugDataHalfSize = 0;
-	mutable uint32 GPUDebugDataFloatStride = 0;
-	mutable uint32 GPUDebugDataIntStride = 0;
-	mutable uint32 GPUDebugDataHalfStride = 0;
-	mutable uint32 GPUDebugDataCountOffset = INDEX_NONE;
-	mutable TSharedPtr<struct FNiagaraScriptDebuggerInfo, ESPMode::ThreadSafe> DebugInfo;
-#endif
-
 };
 
 struct FNiagaraDataInterfaceInstanceData
@@ -409,11 +434,12 @@ struct FNiagaraSimStageData
 {
 	FNiagaraDataBuffer* Source = nullptr;
 	FNiagaraDataBuffer* Destination = nullptr;
-	FNiagaraDataInterfaceProxy* AlternateIterationSource = nullptr;
+	FNiagaraDataInterfaceProxyRW* AlternateIterationSource = nullptr;
 	uint32 SourceCountOffset = 0;
 	uint32 DestinationCountOffset = 0;
 	uint32 SourceNumInstances = 0;
 	uint32 DestinationNumInstances = 0;
+	const FSimulationStageMetaData* StageMetaData = nullptr;
 };
 
 struct FNiagaraComputeInstanceData
@@ -423,13 +449,15 @@ struct FNiagaraComputeInstanceData
 	uint8* ExternalParamData = nullptr;
 	FNiagaraComputeExecutionContext* Context = nullptr;
 	TArray<FNiagaraDataInterfaceProxy*> DataInterfaceProxies;
+	TArray<FNiagaraDataInterfaceProxyRW*> IterationDataInterfaceProxies;
+	bool bStartNewOverlapGroup = false;
 	bool bUsesSimStages = false;
 	bool bUsesOldShaderStages = false;
 	TArray<FNiagaraSimStageData, TInlineAllocator<1>> SimStageData;
 
 	bool IsOutputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
 	bool IsIterationStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
-	FNiagaraDataInterfaceProxy* FindIterationInterface(uint32 SimulationStageIndex) const;
+	FNiagaraDataInterfaceProxyRW* FindIterationInterface(uint32 SimulationStageIndex) const;
 };
 
 
@@ -484,6 +512,7 @@ public:
 
 	// data assigned by GT
 	FNiagaraSystemInstanceID SystemInstanceID = 0LL;
+	FNiagaraComputeSharedContext* SharedContext = nullptr;
 	FNiagaraDataInterfaceInstanceData* DIInstanceData = nullptr;
 	uint8* InstanceData_ParamData_Packed = nullptr;
 	uint8* GlobalParamData = nullptr;
@@ -492,6 +521,7 @@ public:
 	uint32 Count = 0;
 	uint32 TotalDispatches = 0;
 	uint32 NumInstancesWithSimStages = 0;
+	uint32 ParticleCountFence = 0;
 	bool bRequiresDistanceFieldData = false;
 	bool bRequiresDepthBuffer = false;
 	bool bRequiresEarlyViewData = false;

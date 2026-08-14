@@ -167,7 +167,13 @@ public:
 		const FString PackageName = InAssetData.PackageName.ToString();
 		const bool bIsWorldAsset = (InAssetData.AssetClass == UWorld::StaticClass()->GetFName());
 		const FString Extension = bIsWorldAsset ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
-		const FString FilePath = FPackageName::LongPackageNameToFilename(PackageName, Extension);
+
+		FString FilePath;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, FilePath, Extension))
+		{
+			return false;
+		}
+
 		const FString FullFilePath = FPaths::ConvertRelativePathToFull(FilePath);
 
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
@@ -290,11 +296,11 @@ bool FFileInfoDatabase::Open(const FString& InSessionPath, const ESQLiteDatabase
 	Database->Execute(TEXT("PRAGMA page_size=65535;"));
 	Database->Execute(TEXT("PRAGMA locking_mode=EXCLUSIVE;"));
 
-	//Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
-	//Database->Execute(TEXT("PRAGMA synchronous=NORMAL;"));
+	Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
+	Database->Execute(TEXT("PRAGMA synchronous=NORMAL;"));
 
-	Database->Execute(TEXT("PRAGMA journal_mode=NORMAL;"));
-	Database->Execute(TEXT("PRAGMA synchronous=OFF;"));
+	/*Database->Execute(TEXT("PRAGMA journal_mode=NORMAL;"));
+	Database->Execute(TEXT("PRAGMA synchronous=OFF;"));*/
 
 	int32 LoadedDatabaseVersion = 0;
 	Database->GetUserVersion(LoadedDatabaseVersion);
@@ -430,3 +436,5 @@ TMap<FName, FAssetFileInfo> FFileInfoDatabase::GetAllFileInfos()
 
 	return FileInfos;
 }
+
+//"database disk image is malformed"

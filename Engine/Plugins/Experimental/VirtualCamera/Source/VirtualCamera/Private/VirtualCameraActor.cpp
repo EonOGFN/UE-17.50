@@ -3,13 +3,13 @@
 #include "VirtualCameraActor.h"
 
 #include "CineCameraComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
 #include "Engine/Engine.h"
 #include "Engine/GameEngine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Features/IModularFeatures.h"
 #include "Framework/Application/SlateApplication.h"
-#include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "ILiveLinkClient.h"
 #include "Channels/RemoteSessionImageChannel.h"
@@ -50,8 +50,6 @@ namespace
 	static const FName DefaultLiveLinkSubjectName(TEXT("CameraTransform"));
 	static const FVector2D DefaultViewportResolution(1536, 1152);
 	static const float MaxFocusTraceDistance = 1000000.0f;
-	//circle of confusion constant used to calculate hyperfocal distance
-	static const float CircleOfConfusion = 0.03f;
 
 	void FindSceneViewport(TWeakPtr<SWindow>& OutInputWindow, TWeakPtr<FSceneViewport>& OutSceneViewport)
 	{
@@ -166,13 +164,13 @@ struct FVirtualCameraViewportSettings
 int32 AVirtualCameraActor::PresetIndex = 1;
 
 AVirtualCameraActor::AVirtualCameraActor(const FObjectInitializer& ObjectInitializer)
-	: LiveLinkSubject{ DefaultLiveLinkSubjectName, ULiveLinkTransformRole::StaticClass() }
+	: Super(ObjectInitializer)
+	, LiveLinkSubject{ DefaultLiveLinkSubjectName, ULiveLinkTransformRole::StaticClass() }
 	, TargetDeviceResolution(DefaultViewportResolution)
 	, RemoteSessionPort(IRemoteSessionModule::kDefaultPort)
 	, ActorWorld(nullptr)
 	, PreviousViewTarget(nullptr)
 	, bAllowFocusVisualization(true)
-	, FocusMethod(EVirtualCameraFocusMethod::Manual)
 	, DesiredDistanceUnits(EUnit::Meters)
 	, bSaveSettingsOnStopStreaming(false)
 	, bIsStreaming(false)
@@ -181,26 +179,27 @@ AVirtualCameraActor::AVirtualCameraActor(const FObjectInitializer& ObjectInitial
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
-	// Create Components
-	DefaultSceneRoot = CreateDefaultSubobject<USceneComponent>("DefaultSceneRoot");
-	SetRootComponent(DefaultSceneRoot);
-
-	SceneOffset = CreateDefaultSubobject<USceneComponent>("SceneOffset");
-	SceneOffset->SetupAttachment(DefaultSceneRoot);
-
-	CameraOffset = CreateDefaultSubobject<USceneComponent>("CameraOffset");
-	CameraOffset->SetupAttachment(SceneOffset);
-
-	RecordingCamera = CreateDefaultSubobject<UCineCameraComponent>("Recording Camera");
-	RecordingCamera->SetupAttachment(CameraOffset);
-	StreamedCamera = CreateDefaultSubobject<UCineCameraComponent>("Streamed Camera");
-	StreamedCamera->SetupAttachment(CameraOffset);
+	StreamedCamera = GetCineCameraComponent();
+	
+	SceneCaptureComponent = CreateDefaultSubobject<USceneCaptureComponent2D>("Scene Capture");
+	SceneCaptureComponent->SetupAttachment(GetCineCameraComponent());
+	SceneCaptureComponent->bCaptureEveryFrame = 0;
+	SceneCaptureComponent->bCaptureOnMovement = 0;
 
 	MovementComponent = CreateDefaultSubobject<UVirtualCameraMovement>("Movement Component");
 	MediaOutput = CreateDefaultSubobject<URemoteSessionMediaOutput>("Media Output");
 	CameraScreenWidget = CreateDefaultSubobject<UVPFullScreenUserWidget>("Camera UMG");
 	CameraScreenWidget->SetDisplayTypes(EVPWidgetDisplayType::PostProcess, EVPWidgetDisplayType::Viewport, EVPWidgetDisplayType::PostProcess);
 	CameraScreenWidget->PostProcessDisplayType.bReceiveHardwareInput = true;
+
+	if (GEngine)
+	{
+		UVirtualCameraSubsystem* SubSystem = GEngine->GetEngineSubsystem<UVirtualCameraSubsystem>();
+		if (SubSystem && !SubSystem->GetVirtualCameraController())
+		{
+			SubSystem->SetVirtualCameraController(this);
+		}
+	}
 }
 
 AVirtualCameraActor::AVirtualCameraActor(FVTableHelper& Helper)
@@ -245,109 +244,44 @@ void AVirtualCameraActor::SetSaveSettingsOnStopStreaming_Implementation(bool bSh
 	bSaveSettingsOnStopStreaming = bShouldSave;
 }
 
-void AVirtualCameraActor::SetRelativeTransform_Implementation(const FTransform& InControllerTransform)
-{
-	SetRelativeTransformInternal(InControllerTransform);
-}
-
 FTransform AVirtualCameraActor::GetRelativeTransform_Implementation() const
 {
-	return StreamedCamera->GetRelativeTransform();
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	return (CineCamera ? CineCamera->GetRelativeTransform() : FTransform::Identity);
 }
 
 void AVirtualCameraActor::AddBlendableToCamera_Implementation(const TScriptInterface<IBlendableInterface>& InBlendableToAdd, float InWeight)
 {
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-	CineCamera->PostProcessSettings.AddBlendable(InBlendableToAdd, InWeight);
-}
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
 
-void AVirtualCameraActor::SetFocusDistance_Implementation(float InFocusDistanceCentimeters)
-{
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-	CineCamera->FocusSettings.ManualFocusDistance = InFocusDistanceCentimeters;
-	CineCamera->FocusSettings.FocusOffset = 0.0f;
+	if (CineCamera)
+	{
+		CineCamera->PostProcessSettings.AddBlendable(InBlendableToAdd, InWeight);
+	}
 }
 
 void AVirtualCameraActor::SetTrackedActorForFocus_Implementation(AActor* InActorToTrack, const FVector& InTrackingPointOffset)
 {
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-	CineCamera->FocusSettings.TrackingFocusSettings.ActorToTrack = InActorToTrack;
-	CineCamera->FocusSettings.TrackingFocusSettings.RelativeOffset = InTrackingPointOffset;
-}
-
-void AVirtualCameraActor::SetFocusMethod_Implementation(EVirtualCameraFocusMethod InNewFocusMethod)
-{
-	FocusMethod = InNewFocusMethod;
-
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-
-	switch (InNewFocusMethod)
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (CineCamera)
 	{
-		case EVirtualCameraFocusMethod::None:
-			CineCamera->FocusSettings.FocusMethod = ECameraFocusMethod::DoNotOverride;
-			break;
-		case EVirtualCameraFocusMethod::Auto:
-			CineCamera->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
-			break;
-		case EVirtualCameraFocusMethod::Manual:
-			CineCamera->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
-			break;
-		case EVirtualCameraFocusMethod::Tracking:
-			CineCamera->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
-			break;
-		default: // Should never be reached, but just in case new focus methods are added
-			UE_LOG(LogVirtualCamera, Warning, TEXT("Specified focus method is not currently supported in Virtual Camera!"))
-			break;
+		CineCamera->FocusSettings.TrackingFocusSettings.ActorToTrack = InActorToTrack;
+		CineCamera->FocusSettings.TrackingFocusSettings.RelativeOffset = InTrackingPointOffset;
 	}
-}
-
-EVirtualCameraFocusMethod AVirtualCameraActor::GetFocusMethod_Implementation() const
-{
-	return FocusMethod;
 }
 
 void AVirtualCameraActor::SetFocusVisualization_Implementation(bool bInShowFocusVisualization)
 {
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-	if (CineCamera->FocusSettings.FocusMethod == ECameraFocusMethod::DoNotOverride)
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (CineCamera)
 	{
-		UE_LOG(LogVirtualCamera, Warning, TEXT("Camera focus mode is currently set to none, cannot display focus plane!"))
-		return;
+		if (CineCamera->FocusSettings.FocusMethod == ECameraFocusMethod::DoNotOverride)
+		{
+			UE_LOG(LogVirtualCamera, Warning, TEXT("Camera focus mode is currently set to none, cannot display focus plane!"))
+				return;
+		}
+		CineCamera->FocusSettings.bDrawDebugFocusPlane = bInShowFocusVisualization;
 	}
-	CineCamera->FocusSettings.bDrawDebugFocusPlane = bInShowFocusVisualization;
-}
-
-void AVirtualCameraActor::SetReticlePosition_Implementation(const FVector2D & InViewportPosition)
-{
-	ReticlePosition = InViewportPosition;
-}
-
-FVector2D AVirtualCameraActor::GetReticlePosition_Implementation() const
-{
-	return ReticlePosition;
-}
-
-void AVirtualCameraActor::UpdateHyperfocalDistance_Implementation()
-{
-	UCineCameraComponent* CineCamera = GetActiveCameraComponentInternal();
-
-	//avoid division by zero
-	if (CineCamera->CurrentAperture == 0.0f)
-	{
-		HyperfocalDistance = 0.0f;
-	}
-	else
-	{
-		//hyperfocal distance formula:((focal length ^2)/(fstop * CoC)) + focal length
-		HyperfocalDistance = ((CineCamera->CurrentFocalLength * CineCamera->CurrentFocalLength) / (CineCamera->CurrentAperture * CircleOfConfusion)) + CineCamera->CurrentFocalLength;
-		//convert from mm to cm
-		HyperfocalDistance *= 0.1f;
-	}
-}
-
-float AVirtualCameraActor::GetHyperfocalDistance_Implementation() const
-{
-	return HyperfocalDistance;
 }
 
 void AVirtualCameraActor::SetBeforeSetVirtualCameraTransformDelegate_Implementation(const FPreSetVirtualCameraTransform& InDelegate)
@@ -374,11 +308,6 @@ void AVirtualCameraActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	if (!bIsStreaming)
-	{
-		return;
-	}
-
 	if (RemoteSessionHost)
 	{
 		RemoteSessionHost->Tick(DeltaSeconds);
@@ -391,29 +320,6 @@ void AVirtualCameraActor::Tick(float DeltaSeconds)
 
 	FMinimalViewInfo ViewInfo;
 	CalcCamera(DeltaSeconds, ViewInfo);
-
-	ILiveLinkClient& LiveLinkClient = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
-	FLiveLinkSubjectFrameData SubjectData;
-	const bool bHasValidData = LiveLinkClient.EvaluateFrame_AnyThread(LiveLinkSubject.Subject, LiveLinkSubject.Role, SubjectData);
-	if (bHasValidData)
-	{
-		const FLiveLinkTransformFrameData& TransformFrameData = *SubjectData.FrameData.Cast<FLiveLinkTransformFrameData>();
-		FVirtualCameraTransform CameraTransform = FVirtualCameraTransform{TransformFrameData.Transform};
-
-		// execute delegates that want to manipulate camera transform before it is set onto the root
-		if (OnPreSetVirtualCameraTransform.IsBound())
-		{
-			FEditorScriptExecutionGuard ScriptGuard;
-			CameraTransform = OnPreSetVirtualCameraTransform.Execute(CameraTransform);
-		}
-
-		SetRelativeTransformInternal(CameraTransform.Transform);
-	}
-
-	if (FocusMethod == EVirtualCameraFocusMethod::Auto)
-	{
-		UpdateAutoFocus();
-	}
 
 	if (OnVirtualCameraUpdatedDelegates.IsBound())
 	{
@@ -508,9 +414,13 @@ bool AVirtualCameraActor::StartStreaming()
 		PlayerController->SetViewTarget(this, TransitionParams);
 	}
 	
-	// use the aspect ratio of the device we're streaming to, so the UMG and the camera capture fit together and span the device's surface
-	StreamedCamera->Filmback.SensorWidth = TargetDeviceResolution.X / 100.0f;
-	StreamedCamera->Filmback.SensorHeight = TargetDeviceResolution.Y / 100.0f;
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (CineCamera)
+	{
+		// use the aspect ratio of the device we're streaming to, so the UMG and the camera capture fit together and span the device's surface
+		CineCamera->Filmback.SensorWidth = TargetDeviceResolution.X / 100.0f;
+		CineCamera->Filmback.SensorHeight = TargetDeviceResolution.Y / 100.0f;
+	}
 
 	if (CameraUMGClass)
 	{
@@ -521,12 +431,14 @@ bool AVirtualCameraActor::StartStreaming()
 	if (IRemoteSessionModule* RemoteSession = FModuleManager::LoadModulePtr<IRemoteSessionModule>("RemoteSession"))
 	{
 		TArray<FRemoteSessionChannelInfo> SupportedChannels;
-		SupportedChannels.Emplace(FRemoteSessionInputChannel::StaticType(), ERemoteSessionChannelMode::Read, FOnRemoteSessionChannelCreated::CreateUObject(this, &AVirtualCameraActor::OnInputChannelCreated));
-		SupportedChannels.Emplace(FRemoteSessionImageChannel::StaticType(), ERemoteSessionChannelMode::Write, FOnRemoteSessionChannelCreated::CreateUObject(this, &AVirtualCameraActor::OnImageChannelCreated));
+		SupportedChannels.Emplace(FRemoteSessionInputChannel::StaticType(), ERemoteSessionChannelMode::Read);
+		SupportedChannels.Emplace(FRemoteSessionImageChannel::StaticType(), ERemoteSessionChannelMode::Write);
 
 		RemoteSessionHost = RemoteSession->CreateHost(MoveTemp(SupportedChannels), RemoteSessionPort);
+
 		if (RemoteSessionHost)
 		{
+			RemoteSessionHost->RegisterChannelChangeDelegate(FOnRemoteSessionChannelChange::FDelegate::CreateUObject(this, &AVirtualCameraActor::OnRemoteSessionChannelChange));
 			RemoteSessionHost->Tick(0.0f);
 		}
 	}
@@ -625,17 +537,12 @@ UWorld* AVirtualCameraActor::GetControllerWorld()
 
 UCineCameraComponent* AVirtualCameraActor::GetStreamedCameraComponent_Implementation() const
 {
-	return StreamedCamera;
+	return GetCineCameraComponent();
 }
 
-UCineCameraComponent* AVirtualCameraActor::GetRecordingCameraComponent_Implementation() const
+USceneCaptureComponent2D * AVirtualCameraActor::GetSceneCaptureComponent_Implementation() const
 {
-	return RecordingCamera;
-}
-
-UCineCameraComponent* AVirtualCameraActor::GetActiveCameraComponent_Implementation() const
-{
-	return GetActiveCameraComponentInternal();
+	return SceneCaptureComponent;
 }
 
 ULevelSequencePlaybackController* AVirtualCameraActor::GetSequenceController_Implementation() const
@@ -681,12 +588,13 @@ FString AVirtualCameraActor::SavePreset_Implementation(const bool bSaveCameraSet
 	PresetToAdd.bIsAxisLockingSettingsSaved = bSaveAxisLocking;
 	PresetToAdd.bIsMotionScaleSettingsSaved = bSaveMotionScale;
 
-	if (StreamedCamera)
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (CineCamera)
 	{
-		PresetToAdd.CameraSettings.FocalLength = StreamedCamera->CurrentFocalLength;
-		PresetToAdd.CameraSettings.Aperture = StreamedCamera->CurrentAperture;
-		PresetToAdd.CameraSettings.FilmbackWidth = StreamedCamera->Filmback.SensorWidth;
-		PresetToAdd.CameraSettings.FilmbackHeight = StreamedCamera->Filmback.SensorHeight;
+		PresetToAdd.CameraSettings.FocalLength = CineCamera->CurrentFocalLength;
+		PresetToAdd.CameraSettings.Aperture = CineCamera->CurrentAperture;
+		PresetToAdd.CameraSettings.FilmbackWidth = CineCamera->Filmback.SensorWidth;
+		PresetToAdd.CameraSettings.FilmbackHeight = CineCamera->Filmback.SensorHeight;
 	}
 
 	SettingsPresets.Add(PresetName, PresetToAdd);
@@ -700,14 +608,15 @@ bool AVirtualCameraActor::LoadPreset_Implementation(const FString& PresetName)
 
 	if (LoadedPreset)
 	{
-		if (StreamedCamera)
+		UCineCameraComponent* CineCamera = GetCineCameraComponent();
+		if (CineCamera)
 		{
 			if (LoadedPreset->bIsCameraSettingsSaved)
 			{
-				StreamedCamera->CurrentAperture = LoadedPreset->CameraSettings.Aperture;
-				StreamedCamera->CurrentFocalLength = LoadedPreset->CameraSettings.FocalLength;
-				StreamedCamera->Filmback.SensorWidth = LoadedPreset->CameraSettings.FilmbackWidth;
-				StreamedCamera->Filmback.SensorHeight = LoadedPreset->CameraSettings.FilmbackHeight;
+				CineCamera->CurrentAperture = LoadedPreset->CameraSettings.Aperture;
+				CineCamera->CurrentFocalLength = LoadedPreset->CameraSettings.FocalLength;
+				CineCamera->Filmback.SensorWidth = LoadedPreset->CameraSettings.FilmbackWidth;
+				CineCamera->Filmback.SensorHeight = LoadedPreset->CameraSettings.FilmbackHeight;
 			}
 		}
 		return true;
@@ -746,7 +655,24 @@ bool AVirtualCameraActor::IsFocusVisualizationAllowed_Implementation()
 	return bAllowFocusVisualization;
 }
 
-void AVirtualCameraActor::OnImageChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance, const FString& Type, ERemoteSessionChannelMode Mode)
+void AVirtualCameraActor::OnRemoteSessionChannelChange(IRemoteSessionRole* InRole, TWeakPtr<IRemoteSessionChannel> Channel, ERemoteSessionChannelChange Change)
+{
+	TSharedPtr<IRemoteSessionChannel> Pinned = Channel.Pin();
+
+	if (Pinned && Change == ERemoteSessionChannelChange::Created)
+	{
+		if (Pinned->GetType() == FRemoteSessionInputChannel::StaticType())
+		{
+			OnInputChannelCreated(Pinned);
+		}
+		else if (Pinned->GetType() == FRemoteSessionImageChannel::StaticType())
+		{
+			OnImageChannelCreated(Pinned);
+		}
+	}
+}
+
+void AVirtualCameraActor::OnImageChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance)
 {
 	TSharedPtr<FRemoteSessionImageChannel> ImageChannel = StaticCastSharedPtr<FRemoteSessionImageChannel>(Instance.Pin());
 	if (ImageChannel)
@@ -765,7 +691,7 @@ void AVirtualCameraActor::OnImageChannelCreated(TWeakPtr<IRemoteSessionChannel> 
 	}
 }
 
-void AVirtualCameraActor::OnInputChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance, const FString& Type, ERemoteSessionChannelMode Mode)
+void AVirtualCameraActor::OnInputChannelCreated(TWeakPtr<IRemoteSessionChannel> Instance)
 {
 	TSharedPtr<FRemoteSessionInputChannel> InputChannel = StaticCastSharedPtr<FRemoteSessionInputChannel>(Instance.Pin());
 	if (InputChannel)
@@ -800,23 +726,25 @@ void AVirtualCameraActor::OnTouchEventOutsideUMG(const FVector2D& InViewportPosi
 
 void AVirtualCameraActor::SaveSettings()
 {
-	if (!StreamedCamera)
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (!CineCamera)
 	{
 		return;
 	}
 
 	UVirtualCameraSaveGame* SaveGameInstance = Cast<UVirtualCameraSaveGame>(UGameplayStatics::CreateSaveGameObject(UVirtualCameraSaveGame::StaticClass()));
 
+
 	// Save focal length and aperture
-	SaveGameInstance->CameraSettings.FocalLength = StreamedCamera->CurrentFocalLength;
-	SaveGameInstance->CameraSettings.Aperture = StreamedCamera->CurrentAperture;
+	SaveGameInstance->CameraSettings.FocalLength = CineCamera->CurrentFocalLength;
+	SaveGameInstance->CameraSettings.Aperture = CineCamera->CurrentAperture;
 	SaveGameInstance->CameraSettings.bAllowFocusVisualization = bAllowFocusVisualization;
-	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = StreamedCamera->FocusSettings.DebugFocusPlaneColor;
+	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = CineCamera->FocusSettings.DebugFocusPlaneColor;
 
 	// Save filmback settings
-	SaveGameInstance->CameraSettings.FilmbackName = StreamedCamera->GetFilmbackPresetName();
-	SaveGameInstance->CameraSettings.FilmbackWidth = StreamedCamera->Filmback.SensorWidth;
-	SaveGameInstance->CameraSettings.FilmbackHeight = StreamedCamera->Filmback.SensorHeight;
+	SaveGameInstance->CameraSettings.FilmbackName = CineCamera->GetFilmbackPresetName();
+	SaveGameInstance->CameraSettings.FilmbackWidth = CineCamera->Filmback.SensorWidth;
+	SaveGameInstance->CameraSettings.FilmbackHeight = CineCamera->Filmback.SensorHeight;
 
 	// Save settings presets
 	SaveGameInstance->SettingsPresets = SettingsPresets;
@@ -834,7 +762,8 @@ void AVirtualCameraActor::SaveSettings()
 
 void AVirtualCameraActor::LoadSettings()
 {
-	if (!StreamedCamera)
+	UCineCameraComponent* CineCamera = GetCineCameraComponent();
+	if (!CineCamera)
 	{
 		return;
 	}
@@ -852,13 +781,13 @@ void AVirtualCameraActor::LoadSettings()
 
 	if (SaveGameInstance->CameraSettings.DebugFocusPlaneColor != FColor())
 	{
-		StreamedCamera->FocusSettings.DebugFocusPlaneColor = SaveGameInstance->CameraSettings.DebugFocusPlaneColor;
+		CineCamera->FocusSettings.DebugFocusPlaneColor = SaveGameInstance->CameraSettings.DebugFocusPlaneColor;
 	}
 
-	StreamedCamera->SetCurrentFocalLength(SaveGameInstance->CameraSettings.FocalLength);
-	StreamedCamera->CurrentAperture = SaveGameInstance->CameraSettings.Aperture;
-	StreamedCamera->Filmback.SensorWidth = SaveGameInstance->CameraSettings.FilmbackWidth;
-	StreamedCamera->Filmback.SensorHeight = SaveGameInstance->CameraSettings.FilmbackHeight;
+	CineCamera->SetCurrentFocalLength(SaveGameInstance->CameraSettings.FocalLength);
+	CineCamera->CurrentAperture = SaveGameInstance->CameraSettings.Aperture;
+	CineCamera->Filmback.SensorWidth = SaveGameInstance->CameraSettings.FilmbackWidth;
+	CineCamera->Filmback.SensorHeight = SaveGameInstance->CameraSettings.FilmbackHeight;
 
 	DesiredDistanceUnits = SaveGameInstance->CameraSettings.DesiredDistanceUnits;
 
@@ -873,40 +802,6 @@ void AVirtualCameraActor::LoadSettings()
 	}
 
 	PresetIndex = FVirtualCameraSettingsPreset::NextIndex;
-}
-
-UCineCameraComponent* AVirtualCameraActor::GetActiveCameraComponentInternal() const
-{
-	return StreamedCamera;
-}
-
-void AVirtualCameraActor::SetRelativeTransformInternal(const FTransform& InRelativeTransform)
-{
-	MovementComponent->SetLocalTransform(InRelativeTransform);
-	const FTransform ModifiedTransform = MovementComponent->GetTransform();
-	SceneOffset->SetRelativeTransform(ModifiedTransform);
-}
-
-void AVirtualCameraActor::UpdateAutoFocus()
-{
-	FVector TraceDirection;
-	FVector CameraWorldLocation;
-	if (!DeprojectScreenToWorld(ReticlePosition, CameraWorldLocation, TraceDirection))
-	{
-		return;
-	}
-
-	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(UpdateAutoFocus), true);
-
-	const FVector TraceEnd = CameraWorldLocation + TraceDirection * MaxFocusTraceDistance;
-	FHitResult Hit;
-	const bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, CameraWorldLocation, TraceEnd, ECC_Visibility, TraceParams);
-
-	//we don't want to set a focus distance bigger than hyperfocal distance
-	float focusDistance = (bHit && Hit.Distance < HyperfocalDistance) ? Hit.Distance : HyperfocalDistance;
-
-	FEditorScriptExecutionGuard ScriptGuard;
-	Execute_SetFocusDistance(this, focusDistance);
 }
 
 #if WITH_EDITOR

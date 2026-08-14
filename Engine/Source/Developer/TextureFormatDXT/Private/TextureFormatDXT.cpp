@@ -12,7 +12,7 @@
 #include "Interfaces/ITextureFormatModule.h"
 #include "TextureCompressorModule.h"
 #include "PixelFormat.h"
-
+#include "EngineLogs.h"
 THIRD_PARTY_INCLUDES_START
 	#include "nvtt/nvtt.h"
 THIRD_PARTY_INCLUDES_END
@@ -439,6 +439,41 @@ class FTextureFormatDXT : public ITextureFormat
 		return FTextureFormatCompressorCaps(); // Default capabilities.
 	}
 
+	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	{
+		if (BuildSettings.TextureFormatName == GTextureFormatNameDXT1)
+		{
+			return PF_DXT1;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT3)
+		{
+			return PF_DXT3;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT5)
+		{
+			return PF_DXT5;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameAutoDXT)
+		{
+			return bImageHasAlphaChannel ? PF_DXT5 : PF_DXT1;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT5n)
+		{
+			return PF_DXT5;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameBC5)
+		{
+			return PF_BC5;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameBC4)
+		{
+			return PF_BC4;
+		}
+
+		UE_LOG(LogTextureFormatDXT, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatDXT::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
+		return PF_Unknown;
+	}
+
 	virtual bool CompressImage(
 		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
@@ -451,55 +486,43 @@ class FTextureFormatDXT : public ITextureFormat
 		FImage Image;
 		InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
 
-		bool bIsNormalMap = false;
-		EPixelFormat CompressedPixelFormat = PF_Unknown;
-		if (BuildSettings.TextureFormatName == GTextureFormatNameDXT1)
-		{
-			CompressedPixelFormat = PF_DXT1;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT3)
-		{
-			CompressedPixelFormat = PF_DXT3;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT5)
-		{
-			CompressedPixelFormat = PF_DXT5;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameAutoDXT)
-		{
-			CompressedPixelFormat = bImageHasAlphaChannel ? PF_DXT5 : PF_DXT1;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameDXT5n)
-		{
-			CompressedPixelFormat = PF_DXT5;
-			bIsNormalMap = true;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameBC5)
-		{
-			CompressedPixelFormat = PF_BC5;
-			bIsNormalMap = true;
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameBC4)
-		{
-			CompressedPixelFormat = PF_BC4;
-		}
+		EPixelFormat CompressedPixelFormat = GetPixelFormatForImage(BuildSettings, InImage, bImageHasAlphaChannel);
+		bool bIsNormalMap = BuildSettings.TextureFormatName == GTextureFormatNameDXT5n || BuildSettings.TextureFormatName == GTextureFormatNameBC5;
 
 		bool bCompressionSucceeded = true;
 		int64 SliceSize = (int64)Image.SizeX * Image.SizeY;
-		for (int32 SliceIndex = 0; SliceIndex < Image.NumSlices && bCompressionSucceeded; ++SliceIndex)
+
+		if (Image.NumSlices == 1 && OutCompressedImage.RawData.Num() == 0)
 		{
-			TArray64<uint8> CompressedSliceData;
+			// Avoid using a temp buffer when it's not needed
 			bCompressionSucceeded = CompressImageUsingNVTT(
-				Image.AsBGRA8() + SliceIndex * SliceSize,
+				(&Image.AsBGRA8()[0]),
 				CompressedPixelFormat,
 				Image.SizeX,
 				Image.SizeY,
 				Image.IsGammaCorrected(),
 				bIsNormalMap,
 				false, // Daniel Lamb: Testing with this set to true didn't give large performance gain to lightmaps.  Encoding of 140 lightmaps was 19.2seconds with preview 20.1 without preview.  11/30/2015
-				CompressedSliceData
+				OutCompressedImage.RawData
 				);
-			OutCompressedImage.RawData.Append(CompressedSliceData);
+		}
+		else
+		{
+			for (int32 SliceIndex = 0; SliceIndex < Image.NumSlices && bCompressionSucceeded; ++SliceIndex)
+			{
+				TArray64<uint8> CompressedSliceData;
+				bCompressionSucceeded = CompressImageUsingNVTT(
+					(&Image.AsBGRA8()[0]) + SliceIndex * SliceSize,
+					CompressedPixelFormat,
+					Image.SizeX,
+					Image.SizeY,
+					Image.IsGammaCorrected(),
+					bIsNormalMap,
+					false, // Daniel Lamb: Testing with this set to true didn't give large performance gain to lightmaps.  Encoding of 140 lightmaps was 19.2seconds with preview 20.1 without preview.  11/30/2015
+					CompressedSliceData
+					);
+				OutCompressedImage.RawData.Append(MoveTemp(CompressedSliceData));
+			}
 		}
 
 		if (bCompressionSucceeded)

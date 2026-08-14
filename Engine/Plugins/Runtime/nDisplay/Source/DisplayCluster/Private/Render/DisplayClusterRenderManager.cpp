@@ -6,19 +6,20 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/GameEngine.h"
 
-#include "Misc/DisplayClusterCommonTypesConverter.h"
 #include "Misc/DisplayClusterGlobals.h"
 #include "Misc/DisplayClusterHelpers.h"
 #include "Misc/DisplayClusterLog.h"
 #include "Misc/DisplayClusterStrings.h"
 
-#include "DisplayClusterCameraComponent.h"
+#include "DisplayClusterConfigurationStrings.h"
+
+#include "Components/DisplayClusterCameraComponent.h"
 #include "DisplayClusterViewportClient.h"
 
-#include "Config/DisplayClusterConfigTypes.h"
-#include "Config/IDisplayClusterConfigManager.h"
+#include "Config/IPDisplayClusterConfigManager.h"
+#include "DisplayClusterConfigurationTypes.h"
 
-#include "Game/IDisplayClusterGameManager.h"
+#include "Game/IPDisplayClusterGameManager.h"
 
 #include "Render/Device/DisplayClusterRenderDeviceFactoryInternal.h"
 #include "Render/Device/Monoscopic/DisplayClusterDeviceMonoscopicDX11.h"
@@ -38,6 +39,9 @@
 #include "UnrealClient.h"
 #include "Kismet/GameplayStatics.h"
 
+#include "CineCameraComponent.h"
+#include "Engine/Scene.h"
+
 
 FDisplayClusterRenderManager::FDisplayClusterRenderManager()
 {
@@ -50,9 +54,9 @@ FDisplayClusterRenderManager::FDisplayClusterRenderManager()
 
 	// Instantiate and register internal sync policy factory
 	TSharedPtr<IDisplayClusterRenderSyncPolicyFactory> NewSyncPolicyFactory(new FDisplayClusterRenderSyncPolicyFactoryInternal);
-	RegisterSynchronizationPolicyFactory(FString("0"), NewSyncPolicyFactory); // 0 - none
-	RegisterSynchronizationPolicyFactory(FString("1"), NewSyncPolicyFactory); // 1 - network sync (soft sync)
-	RegisterSynchronizationPolicyFactory(FString("2"), NewSyncPolicyFactory); // 2 - hardware sync (NVIDIA frame lock and swap sync)
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::None,     NewSyncPolicyFactory); // 0 - none
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Ethernet, NewSyncPolicyFactory); // 1 - network sync (soft sync)
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Nvidia,   NewSyncPolicyFactory); // 2 - hardware sync (NVIDIA frame lock and swap sync)
 }
 
 FDisplayClusterRenderManager::~FDisplayClusterRenderManager()
@@ -75,11 +79,8 @@ void FDisplayClusterRenderManager::Release()
 	//@note: No need to release our RenderDevice. It will be released in a safe way by TSharedPtr.
 }
 
-bool FDisplayClusterRenderManager::StartSession(const FString& InConfigPath, const FString& InNodeId)
+bool FDisplayClusterRenderManager::StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& InNodeId)
 {
-	ConfigPath = InConfigPath;
-	ClusterNodeId = InNodeId;
-
 	if (CurrentOperationMode == EDisplayClusterOperationMode::Disabled)
 	{
 		UE_LOG(LogDisplayClusterRender, Log, TEXT("Operation mode is 'Disabled' so no initialization will be performed"));
@@ -121,16 +122,7 @@ void FDisplayClusterRenderManager::EndSession()
 	}
 #endif
 
-	ConfigPath.Reset();
-	ClusterNodeId.Reset();
-	
-	bWindowAdjusted = false;
-
-	RenderDeviceFactories.Reset();
-	SyncPolicyFactories.Reset();
 	SyncPolicy.Reset();
-	ProjectionPolicyFactories.Reset();
-	PostProcessOperations.Reset();
 }
 
 bool FDisplayClusterRenderManager::StartScene(UWorld* InWorld)
@@ -153,45 +145,6 @@ void FDisplayClusterRenderManager::EndScene()
 
 void FDisplayClusterRenderManager::PreTick(float DeltaSeconds)
 {
-	// Adjust position and size of game window to match window config.
-	// This needs to happen after UGameEngine::SwitchGameWindowToUseGameViewport
-	// is called. In practice that happens from FEngineLoop::Init after a call
-	// to UGameEngine::Start - therefore this is done in PreTick on the first frame.
-	if (!bWindowAdjusted)
-	{
-		bWindowAdjusted = true;
-
-		//#ifdef  DISPLAY_CLUSTER_USE_DEBUG_STANDALONE_CONFIG
-#if 0
-		if (GDisplayCluster->GetPrivateConfigMgr()->IsRunningDebugAuto())
-		{
-			UE_LOG(LogDisplayClusterRender, Log, TEXT("Running in debug auto mode. Adjusting window..."));
-			ResizeWindow(DisplayClusterConstants::misc::DebugAutoWinX, DisplayClusterConstants::misc::DebugAutoWinY, DisplayClusterConstants::misc::DebugAutoResX, DisplayClusterConstants::misc::DebugAutoResY);
-			return;
-		}
-#endif
-
-		if (FParse::Param(FCommandLine::Get(), TEXT("windowed")))
-		{
-			int32 WinX = 0;
-			int32 WinY = 0;
-			int32 ResX = 0;
-			int32 ResY = 0;
-
-			if (FParse::Value(FCommandLine::Get(), TEXT("WinX="), WinX) &&
-				FParse::Value(FCommandLine::Get(), TEXT("WinY="), WinY) &&
-				FParse::Value(FCommandLine::Get(), TEXT("ResX="), ResX) &&
-				FParse::Value(FCommandLine::Get(), TEXT("ResY="), ResY))
-			{
-				ResizeWindow(WinX, WinY, ResX, ResY);
-			}
-			else
-			{
-				UE_LOG(LogDisplayClusterRender, Error, TEXT("Wrong window pos/size arguments"));
-			}
-		}
-	}
-
 	if (RenderDevicePtr)
 	{
 		RenderDevicePtr->PreTick(DeltaSeconds);
@@ -202,6 +155,11 @@ void FDisplayClusterRenderManager::PreTick(float DeltaSeconds)
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterRenderManager
 //////////////////////////////////////////////////////////////////////////////////////////////
+IDisplayClusterRenderDevice* FDisplayClusterRenderManager::GetRenderDevice() const
+{
+	return RenderDevicePtr;
+}
+
 bool FDisplayClusterRenderManager::RegisterRenderDeviceFactory(const FString& InDeviceType, TSharedPtr<IDisplayClusterRenderDeviceFactory>& InFactory)
 {
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering factory for rendering device type: %s"), *InDeviceType);
@@ -213,7 +171,7 @@ bool FDisplayClusterRenderManager::RegisterRenderDeviceFactory(const FString& In
 	}
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (RenderDeviceFactories.Contains(InDeviceType))
 		{
@@ -233,7 +191,7 @@ bool FDisplayClusterRenderManager::UnregisterRenderDeviceFactory(const FString& 
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for rendering device type: %s"), *InDeviceType);
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (!RenderDeviceFactories.Contains(InDeviceType))
 		{
@@ -260,7 +218,7 @@ bool FDisplayClusterRenderManager::RegisterSynchronizationPolicyFactory(const FS
 	}
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (SyncPolicyFactories.Contains(InSyncPolicyType))
 		{
@@ -280,7 +238,7 @@ bool FDisplayClusterRenderManager::UnregisterSynchronizationPolicyFactory(const 
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for syncrhonization policy: %s"), *InSyncPolicyType);
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (!SyncPolicyFactories.Contains(InSyncPolicyType))
 		{
@@ -298,7 +256,7 @@ bool FDisplayClusterRenderManager::UnregisterSynchronizationPolicyFactory(const 
 
 TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::GetCurrentSynchronizationPolicy()
 {
-	FScopeLock lock(&CritSecInternals);
+	FScopeLock Lock(&CritSecInternals);
 	return SyncPolicy;
 }
 
@@ -313,7 +271,7 @@ bool FDisplayClusterRenderManager::RegisterProjectionPolicyFactory(const FString
 	}
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (ProjectionPolicyFactories.Contains(InProjectionType))
 		{
@@ -333,7 +291,7 @@ bool FDisplayClusterRenderManager::UnregisterProjectionPolicyFactory(const FStri
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for projection policy: %s"), *InProjectionType);
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (!ProjectionPolicyFactories.Contains(InProjectionType))
 		{
@@ -351,17 +309,23 @@ bool FDisplayClusterRenderManager::UnregisterProjectionPolicyFactory(const FStri
 
 TSharedPtr<IDisplayClusterProjectionPolicyFactory> FDisplayClusterRenderManager::GetProjectionPolicyFactory(const FString& InProjectionType)
 {
-	FScopeLock lock(&CritSecInternals);
+	FScopeLock Lock(&CritSecInternals);
 
-	if (ProjectionPolicyFactories.Contains(InProjectionType))
+	TSharedPtr<IDisplayClusterProjectionPolicyFactory> Factory;
+	if (!DisplayClusterHelpers::map::template ExtractValue(ProjectionPolicyFactories, InProjectionType, Factory))
 	{
-		return ProjectionPolicyFactories[InProjectionType];
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No factory found for projection policy: %s"), *InProjectionType);
 	}
 
-	UE_LOG(LogDisplayClusterRender, Warning, TEXT("No factory found for projection policy: %s"), *InProjectionType);
-
-	return nullptr;
+	return Factory;
 }
+
+void FDisplayClusterRenderManager::GetRegisteredProjectionPolicies(TArray<FString>& OutPolicyIDs) const
+{
+	FScopeLock Lock(&CritSecInternals);
+	ProjectionPolicyFactories.GetKeys(OutPolicyIDs);
+}
+
 
 bool FDisplayClusterRenderManager::RegisterPostprocessOperation(const FString& InName, TSharedPtr<IDisplayClusterPostProcess>& InOperation, int InPriority /* = 0 */)
 {
@@ -386,7 +350,7 @@ bool FDisplayClusterRenderManager::RegisterPostprocessOperation(const FString& I
 	}
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (PostProcessOperations.Contains(InName))
 		{
@@ -414,7 +378,7 @@ bool FDisplayClusterRenderManager::UnregisterPostprocessOperation(const FString&
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering post-process operation: %s"), *InName);
 
 	{
-		FScopeLock lock(&CritSecInternals);
+		FScopeLock Lock(&CritSecInternals);
 
 		if (!PostProcessOperations.Contains(InName))
 		{
@@ -434,140 +398,9 @@ bool FDisplayClusterRenderManager::UnregisterPostprocessOperation(const FString&
 
 TMap<FString, IPDisplayClusterRenderManager::FDisplayClusterPPInfo> FDisplayClusterRenderManager::GetRegisteredPostprocessOperations() const
 {
-	FScopeLock lock(&CritSecInternals);
+	FScopeLock Lock(&CritSecInternals);
 	return PostProcessOperations;
 }
-
-void FDisplayClusterRenderManager::SetViewportCamera(const FString& InCameraId /* = FString() */, const FString& InViewportId /* = FString() */)
-{
-	check(IsInGameThread());
-
-	{
-		FScopeLock lock(&CritSecInternals);
-		if (RenderDevicePtr)
-		{
-			RenderDevicePtr->SetViewportCamera(InCameraId, InViewportId);
-		}
-	}
-}
-
-bool FDisplayClusterRenderManager::GetViewportRect(const FString& InViewportID, FIntRect& Rect)
-{
-
-	if (!RenderDevicePtr)
-	{
-		return false;
-	}
-
-	return RenderDevicePtr->GetViewportRect(InViewportID, Rect);
-}
-
-bool FDisplayClusterRenderManager::SetBufferRatio(const FString& InViewportID, float InBufferRatio)
-{
-	check(IsInGameThread());
-
-	if (!RenderDevicePtr)
-	{
-		return false;
-	}
-
-	return RenderDevicePtr->SetBufferRatio(InViewportID, InBufferRatio);
-}
-
-bool FDisplayClusterRenderManager::GetBufferRatio(const FString& InViewportID, float &OutBufferRatio) const
-{
-	check(IsInGameThread());
-
-	if (!RenderDevicePtr)
-	{
-		return false;
-	}
-
-	return RenderDevicePtr->GetBufferRatio(InViewportID, OutBufferRatio);
-}
-
-void FDisplayClusterRenderManager::SetStartPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& StartPostProcessingSettings)
-{
-	check(IsInGameThread());
-
-	if (!RenderDevicePtr)
-	{
-		return;
-	}
-
-	RenderDevicePtr->SetStartPostProcessingSettings(ViewportID, StartPostProcessingSettings);
-}
-
-void FDisplayClusterRenderManager::SetOverridePostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& OverridePostProcessingSettings, float BlendWeight)
-{
-	check(IsInGameThread());
-
-	if (!RenderDevicePtr)
-	{
-		return;
-	}
-
-	RenderDevicePtr->SetOverridePostProcessingSettings(ViewportID, OverridePostProcessingSettings, BlendWeight);
-}
-
-void FDisplayClusterRenderManager::SetFinalPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& FinalPostProcessingSettings)
-{
-	check(IsInGameThread());
-
-	if (!RenderDevicePtr)
-	{
-		return;
-	}
-
-	RenderDevicePtr->SetFinalPostProcessingSettings(ViewportID, FinalPostProcessingSettings);
-}
-
-void FDisplayClusterRenderManager::SetInterpupillaryDistance(const FString& CameraId, float EyeDistance)
-{
-	check(IsInGameThread());
-
-	UDisplayClusterCameraComponent* const Camera = DisplayClusterHelpers::game::GetCamera(CameraId);
-	if (Camera)
-	{
-		Camera->SetInterpupillaryDistance(EyeDistance);
-	}
-}
-
-float FDisplayClusterRenderManager::GetInterpupillaryDistance(const FString& CameraId) const
-{
-	check(IsInGameThread());
-
-	UDisplayClusterCameraComponent* const Camera = DisplayClusterHelpers::game::GetCamera(CameraId);
-	return (Camera ? Camera->GetInterpupillaryDistance() : 0.f);
-}
-
-void FDisplayClusterRenderManager::SetEyesSwap(const FString& CameraId, bool EyeSwapped)
-{
-	check(IsInGameThread());
-
-	UDisplayClusterCameraComponent* const Camera = DisplayClusterHelpers::game::GetCamera(CameraId);
-	if (Camera)
-	{
-		Camera->SetEyesSwap(EyeSwapped);
-	}
-}
-
-bool FDisplayClusterRenderManager::GetEyesSwap(const FString& CameraId) const
-{
-	check(IsInGameThread());
-
-	UDisplayClusterCameraComponent* const Camera = DisplayClusterHelpers::game::GetCamera(CameraId);
-	return (Camera ? Camera->GetEyesSwap() : false);
-}
-
-bool FDisplayClusterRenderManager::ToggleEyesSwap(const FString& CameraId)
-{
-	check(IsInGameThread());
-
-	UDisplayClusterCameraComponent* const Camera = DisplayClusterHelpers::game::GetCamera(CameraId);
-	return (Camera ? Camera->ToggleEyesSwap() : false);
-}
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // FDisplayClusterRenderManager
@@ -576,7 +409,7 @@ TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> FDisplayClusterRend
 {
 	TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> NewRenderDevice;
 
-	if (CurrentOperationMode == EDisplayClusterOperationMode::Cluster || CurrentOperationMode == EDisplayClusterOperationMode::Standalone)
+	if (CurrentOperationMode == EDisplayClusterOperationMode::Cluster)
 	{
 		if (GDynamicRHI == nullptr)
 		{
@@ -610,7 +443,7 @@ TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> FDisplayClusterRend
 		// Leave native render but inject custom present for cluster synchronization
 		else
 		{
-			UE_LOG(LogDisplayClusterRender, Log, TEXT("A native present handler will be instantiated when viewport is available"));
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("No rendering device specified! A native present handler will be instantiated when viewport is available"));
 			UGameViewportClient::OnViewportCreated().AddRaw(const_cast<FDisplayClusterRenderManager*>(this), &FDisplayClusterRenderManager::OnViewportCreatedHandler_SetCustomPresent);
 		}
 	}
@@ -618,7 +451,7 @@ TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> FDisplayClusterRend
 	{
 #if 0
 		UE_LOG(LogDisplayClusterRender, Log, TEXT("Instantiating DX11 mono device for PIE"));
-		NewRenderDevice = MakeShareable(new FDisplayClusterDeviceMonoscopicDX11());
+		NewRenderDevice = MakeShared<FDisplayClusterDeviceMonoscopicDX11>();
 #endif
 	}
 	else if (CurrentOperationMode == EDisplayClusterOperationMode::Disabled)
@@ -641,7 +474,7 @@ TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> FDisplayClusterRend
 
 TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::CreateRenderSyncPolicy() const
 {
-	if (CurrentOperationMode != EDisplayClusterOperationMode::Cluster && CurrentOperationMode != EDisplayClusterOperationMode::Standalone)
+	if (CurrentOperationMode != EDisplayClusterOperationMode::Cluster)
 	{
 		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Synchronization policy is not available for the current operation mode"));
 		return nullptr;
@@ -653,30 +486,27 @@ TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::Create
 		return nullptr;
 	}
 
-	// Create sync policy specified in a config file
-	FDisplayClusterConfigGeneral CfgGeneral = GDisplayCluster->GetPrivateConfigMgr()->GetConfigGeneral();
-	const FString SyncPolicyType = FDisplayClusterTypesConverter::template ToString(CfgGeneral.SwapSyncPolicy);
-	const FString RHIName = GDynamicRHI->GetName();
-	TSharedPtr<IDisplayClusterRenderSyncPolicy> NewSyncPolicy;
-
+	const UDisplayClusterConfigurationData* ConfigData = GDisplayCluster->GetPrivateConfigMgr()->GetConfig();
+	if (!ConfigData)
 	{
-		if (SyncPolicyFactories.Contains(SyncPolicyType))
-		{
-			UE_LOG(LogDisplayClusterRender, Log, TEXT("A factory for the requested synchronization policy <%s> was found"), *SyncPolicyType);
-			NewSyncPolicy = SyncPolicyFactories[SyncPolicyType]->Create(SyncPolicyType, RHIName);
-		}
-		else
-		{
-			UE_LOG(LogDisplayClusterRender, Log, TEXT("No factory found for the requested synchronization policy <%s>. Using fallback 'None' policy."), *SyncPolicyType);
-			NewSyncPolicy = MakeShareable(new FDisplayClusterRenderSyncPolicyNone);
-		}
+		UE_LOG(LogDisplayClusterRender, Error, TEXT("Couldn't get configuration data"));
+		return nullptr;
 	}
 
-	// Fallback sync policy
-	if (!NewSyncPolicy.IsValid())
+	// Create sync policy specified in a config file
+	const FString SyncPolicyType = ConfigData->Cluster->Sync.RenderSyncPolicy.Type;
+	const FString RHIName = GDynamicRHI->GetName();
+
+	TSharedPtr<IDisplayClusterRenderSyncPolicy> NewSyncPolicy;
+	if (SyncPolicyFactories.Contains(SyncPolicyType))
 	{
-		UE_LOG(LogDisplayClusterRender, Log, TEXT("No factory found for the requested synchronization policy <%s>. Using fallback 'None' policy."), *SyncPolicyType);
-		NewSyncPolicy = MakeShareable(new FDisplayClusterRenderSyncPolicySoftwareGeneric);
+		UE_LOG(LogDisplayClusterRender, Log, TEXT("A factory for the requested synchronization policy <%s> was found"), *SyncPolicyType);
+		NewSyncPolicy = SyncPolicyFactories[SyncPolicyType]->Create(SyncPolicyType, RHIName, ConfigData->Cluster->Sync.RenderSyncPolicy.Parameters);
+	}
+	else
+	{
+		UE_LOG(LogDisplayClusterRender, Log, TEXT("No factory found for the requested synchronization policy <%s>. Using fallback 'generic' policy."), *SyncPolicyType);
+		NewSyncPolicy = MakeShared<FDisplayClusterRenderSyncPolicySoftwareGeneric>(FDisplayClusterRenderSyncPolicySoftwareGeneric::DefaultParameters);
 	}
 
 	return NewSyncPolicy;
@@ -684,14 +514,14 @@ TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::Create
 
 void FDisplayClusterRenderManager::ResizeWindow(int32 WinX, int32 WinY, int32 ResX, int32 ResY)
 {
-	UGameEngine* engine = Cast<UGameEngine>(GEngine);
-	TSharedPtr<SWindow> window = engine->GameViewportWindow.Pin();
-	check(window.IsValid());
+	UGameEngine* Engine = Cast<UGameEngine>(GEngine);
+	TSharedPtr<SWindow> Window = Engine->GameViewportWindow.Pin();
+	check(Window.IsValid());
 
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Adjusting game window: pos [%d, %d],  size [%d x %d]"), WinX, WinY, ResX, ResY);
 
 	// Adjust window position/size
-	window->ReshapeWindow(FVector2D(WinX, WinY), FVector2D(ResX, ResY));
+	Window->ReshapeWindow(FVector2D(WinX, WinY), FVector2D(ResX, ResY));
 }
 
 void FDisplayClusterRenderManager::OnViewportCreatedHandler_SetCustomPresent() const

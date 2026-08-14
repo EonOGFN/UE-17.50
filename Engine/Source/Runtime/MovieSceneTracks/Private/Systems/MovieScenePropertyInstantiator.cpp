@@ -125,14 +125,15 @@ void UMovieScenePropertyInstantiatorSystem::DiscoverInvalidatedProperties(TBitAr
 
 		for (int32 Index = 0; Index < Allocation->Num(); ++Index)
 		{
-			const int32 PropertyIndex = this->ResolveProperty(CustomAccessors, ObjectPtrs[Index], PropertyPtrs[Index]);
+			const int32 PropertyIndex = this->ResolveProperty(CustomAccessors, ObjectPtrs[Index], PropertyPtrs[Index], PropertyDefinitionIndex);
+			
+			// If the property did not resolve, we still add it to the LUT
+			// So that the ensure inside VisitExpiredEntities only fires
+			// for genuine link/unlink disparities
+			this->EntityToProperty.Add(EntityIDs[Index], PropertyIndex);
 
 			if (PropertyIndex != INDEX_NONE)
 			{
-				++PropertyStats[PropertyDefinitionIndex].NumProperties;
-
-				this->ResolvedProperties[PropertyIndex].PropertyDefinitionIndex = PropertyDefinitionIndex;
-				this->EntityToProperty.Add(EntityIDs[Index], PropertyIndex);
 				this->Contributors.Add(PropertyIndex, EntityIDs[Index]);
 				this->NewContributors.Add(PropertyIndex, EntityIDs[Index]);
 
@@ -159,14 +160,18 @@ void UMovieScenePropertyInstantiatorSystem::DiscoverInvalidatedProperties(TBitAr
 	auto VisitExpiredEntities = [this, &OutInvalidatedProperties](FMovieSceneEntityID EntityID)
 	{
 		const int32* PropertyIndexPtr = this->EntityToProperty.Find(EntityID);
-		if (ensureMsgf(PropertyIndexPtr, TEXT("Could not find entity to clean up from linker entity ID - this indicates either FindOrCreatePropertyEntity failed for this entity, or a garbage collection issue.")))
+		if (ensureMsgf(PropertyIndexPtr, TEXT("Could not find entity to clean up from linker entity ID - this indicates VisitNewProperties never got called for this entity, or a garbage collection has somehow destroyed the entity without flushing the ecs.")))
 		{
 			const int32 PropertyIndex = *PropertyIndexPtr;
+			if (PropertyIndex != INDEX_NONE)
+			{
+				OutInvalidatedProperties.PadToNum(PropertyIndex + 1, false);
+				OutInvalidatedProperties[PropertyIndex] = true;
 
-			OutInvalidatedProperties.PadToNum(PropertyIndex + 1, false);
-			OutInvalidatedProperties[PropertyIndex] = true;
+				this->Contributors.Remove(PropertyIndex, EntityID);
+			}
 
-			this->Contributors.Remove(PropertyIndex, EntityID);
+			// Always remove the entity ID from the LUT
 			this->EntityToProperty.Remove(EntityID);
 		}
 	};
@@ -321,8 +326,8 @@ void UMovieScenePropertyInstantiatorSystem::UpdatePropertyInfo(const FPropertyPa
 	// We do not do this if there are no contributors to ensure that stale properties are restored correctly
 	if (NumContributors > 0)
 	{
-		const bool bWasPartial = Params.PropertyInfo->EmptyChannels.Find(false) != INDEX_NONE;
-		const bool bIsPartial  = EmptyChannels.Find(false) != INDEX_NONE;
+		const bool bWasPartial = Params.PropertyInfo->EmptyChannels.Find(true) != INDEX_NONE;
+		const bool bIsPartial  = EmptyChannels.Find(true) != INDEX_NONE;
 
 		if (bWasPartial != bIsPartial)
 		{
@@ -355,7 +360,10 @@ bool UMovieScenePropertyInstantiatorSystem::PropertySupportsFastPath(const FProp
 		}
 
 		FComponentMask Type = Linker->EntityManager.GetEntityType(It.Value());
-		if (Type.Contains(BuiltInComponents->Tags.RelativeBlend) || Type.Contains(BuiltInComponents->Tags.AdditiveBlend) || Type.Contains(BuiltInComponents->WeightAndEasingResult))
+		if (Type.Contains(BuiltInComponents->Tags.RelativeBlend) || 
+				Type.Contains(BuiltInComponents->Tags.AdditiveBlend) || 
+				Type.Contains(BuiltInComponents->Tags.AdditiveFromBaseBlend) || 
+				Type.Contains(BuiltInComponents->WeightAndEasingResult))
 		{
 			return false;
 		}
@@ -570,7 +578,7 @@ TOptional<uint16> UMovieScenePropertyInstantiatorSystem::ComputeFastPropertyPtrO
 	return TOptional<uint16>();
 }
 
-int32 UMovieScenePropertyInstantiatorSystem::ResolveProperty(UE::MovieScene::FCustomAccessorView CustomAccessors, UObject* Object, const FMovieScenePropertyBinding& PropertyBinding)
+int32 UMovieScenePropertyInstantiatorSystem::ResolveProperty(UE::MovieScene::FCustomAccessorView CustomAccessors, UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, int32 PropertyDefinitionIndex)
 {
 	using namespace UE::MovieScene;
 
@@ -585,6 +593,7 @@ int32 UMovieScenePropertyInstantiatorSystem::ResolveProperty(UE::MovieScene::FCu
 
 	NewInfo.BoundObject  = Object;
 	NewInfo.PropertyPath = PropertyBinding.PropertyPath;
+	NewInfo.PropertyDefinitionIndex = PropertyDefinitionIndex;
 
 	UClass* Class = Object->GetClass();
 
@@ -627,6 +636,8 @@ int32 UMovieScenePropertyInstantiatorSystem::ResolveProperty(UE::MovieScene::FCu
 	const int32 NewPropertyIndex = ResolvedProperties.Add(NewInfo);
 
 	ObjectPropertyToResolvedIndex.Add(Key, NewPropertyIndex);
+
+	++PropertyStats[PropertyDefinitionIndex].NumProperties;
 
 	return NewPropertyIndex;
 }

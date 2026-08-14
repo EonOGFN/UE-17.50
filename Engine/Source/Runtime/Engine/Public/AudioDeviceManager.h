@@ -88,7 +88,7 @@ public:
 	FAudioDeviceHandle& operator=(const FAudioDeviceHandle& Other);
 	FAudioDeviceHandle& operator=(FAudioDeviceHandle&& Other);
 
-	
+
 	~FAudioDeviceHandle();
 
 	// gets a pointer to the audio device.
@@ -249,7 +249,7 @@ public:
 
 	/**
 	 * Returns a strong handle to the audio device associated with the given device ID.
-	 * if the device ID is invalid returns an invalid, zeroed handle. 
+	 * if the device ID is invalid returns an invalid, zeroed handle.
 	 */
 	FAudioDeviceHandle GetAudioDevice(Audio::FDeviceId InDeviceID);
 
@@ -271,6 +271,9 @@ public:
 	static bool Initialize();
 	static FAudioDeviceManager* Get();
 	static void Shutdown();
+
+	/** Creates the main audio device. */
+	bool CreateMainAudioDevice();
 
 	/**
 	* Returns a ptr to the active audio device. If there is no active

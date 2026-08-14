@@ -484,6 +484,13 @@ void FUnrealEdMisc::OnInit()
 		InitOptions.bShowFilters = true;
 		MessageLogModule.RegisterLogListing("SlateStyleLog", LOCTEXT("SlateStyleLog", "Slate Style Log"), InitOptions );
 	}
+
+	{
+		FMessageLogInitializationOptions InitOptions;
+		InitOptions.bShowFilters = true;
+		MessageLogModule.RegisterLogListing("HLODResults", LOCTEXT("HLODResults", "HLOD Results"), InitOptions);
+	}
+
 	FCompilerResultsLog::Register();
 	{
 		FMessageLogInitializationOptions InitOptions;
@@ -929,6 +936,7 @@ void FUnrealEdMisc::OnExit()
 	MessageLogModule.UnregisterLogListing("LightingResults");
 	MessageLogModule.UnregisterLogListing("PackagingResults");
 	MessageLogModule.UnregisterLogListing("MapCheck");
+	MessageLogModule.UnregisterLogListing("HLODResults");
 	FCompilerResultsLog::Unregister();
 	MessageLogModule.UnregisterLogListing("PIE");
 
@@ -1096,6 +1104,10 @@ void FUnrealEdMisc::CB_MapChange( uint32 InFlags )
 			// CleanupWorld should only be called before destroying the world
 			// So bCleanupResources is being passed as false
 			World->CleanupWorld(true, false);
+
+			// CleanupWorld will have nulled the FXSystem, create a new one or else the dependent
+			// FXSystemComponents will be left unregistered and/or fail to activate.
+			World->CreateFXSystem();
 		}
 
 		GEditor->EditorUpdateComponents();

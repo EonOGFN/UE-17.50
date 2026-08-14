@@ -13,8 +13,6 @@
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundSubmix.h"
 #include "Sound/SoundSubmixSend.h"
-#include "SubmixEffects/AudioMixerSubmixEffectReverb.h"
-#include "SubmixEffects/AudioMixerSubmixEffectReverbFast.h"
 #include "SubmixEffects/AudioMixerSubmixEffectEQ.h"
 #include "SubmixEffects/AudioMixerSubmixEffectDynamicsProcessor.h"
 #include "UObject/UObjectHash.h"
@@ -38,13 +36,46 @@ FAutoConsoleVariableRef CVarDisableSubmixEQ(
 	TEXT("0: Not Disabled, 1: Disabled"),
 	ECVF_Default);
 
+static int32 DebugGeneratorEnableCVar = 0;
+FAutoConsoleVariableRef CVarDebugGeneratorEnable(
+	TEXT("au.Debug.Generator"),
+	DebugGeneratorEnableCVar,
+	TEXT("Enables/disables debug sound generation.\n")
+	TEXT("0: Disabled, 1: SinTone, 2: WhiteNoise"),
+	ECVF_Default);
+
+static float DebugGeneratorAmpCVar = 0.2f;
+FAutoConsoleVariableRef CVarDebugGeneratorAmp(
+	TEXT("au.Debug.Generator.Amp"),
+	DebugGeneratorAmpCVar,
+	TEXT("Sets.\n")
+	TEXT("Default: 0.2f"),
+	ECVF_Default);
+
+static int32 DebugGeneratorChannelCVar = 0;
+FAutoConsoleVariableRef CVarDebugGeneratorChannel(
+	TEXT("au.Debug.Generator.Channel"),
+	DebugGeneratorChannelCVar,
+	TEXT("Sets channel output index of debug audio.  If number provided is above supported number, uses left.\n")
+	TEXT("0: Left, 1: Right, etc."),
+	ECVF_Default);
+
+static float DebugGeneratorFreqCVar = 440.0f;
+FAutoConsoleVariableRef CVarDebugGeneratorFreq(
+	TEXT("au.Debug.Generator.Freq"),
+	DebugGeneratorFreqCVar,
+	TEXT("Sets debug sound generation frequency.\n")
+	TEXT("0: Not Disabled, 1: SinTone, 2: WhiteNoise"),
+	ECVF_Default);
+
 // Link to "Audio" profiling category
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
 
 namespace Audio
 {
 	FMixerDevice::FMixerDevice(IAudioMixerPlatformInterface* InAudioMixerPlatform)
-		: AudioMixerPlatform(InAudioMixerPlatform)
+		: QuantizedEventClockManager(this)
+		, AudioMixerPlatform(InAudioMixerPlatform)
 		, AudioClockDelta(0.0)
 		, PreviousMasterVolume((float)INDEX_NONE)
 		, GameOrAudioThreadId(INDEX_NONE)
@@ -599,12 +630,16 @@ namespace Audio
 		// Pump the command queue to the audio render thread
 		PumpCommandQueue();
 
+		// update the clock manager
+		QuantizedEventClockManager.Update(SourceManager->GetNumOutputFrames());
+
 		// Compute the next block of audio in the source manager
 		SourceManager->ComputeNextBlockOfSamples();
 
 		FMixerSubmixWeakPtr MasterSubmix = GetMasterSubmix();
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, Submixes);
+			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixes);
 
 			FMixerSubmixPtr MasterSubmixPtr = MasterSubmix.Pin();
 			if (MasterSubmixPtr.IsValid())
@@ -616,6 +651,8 @@ namespace Audio
 
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, EndpointSubmixes);
+			SCOPE_CYCLE_COUNTER(STAT_AudioMixerEndpointSubmixes);
+
 			FScopeLock ScopeLock(&EndpointSubmixesMutationLock);
 			for (FMixerSubmixPtr& Submix : DefaultEndpointSubmixes)
 			{
@@ -644,9 +681,16 @@ namespace Audio
 		SourceManager->ClearStoppingSounds();
 
 		// Do any debug output performing
-		if (bDebugOutputEnabled)
+		if (bDebugOutputEnabled || DebugGeneratorEnableCVar > 0)
 		{
-			SineOscTest(Output);
+			if (DebugGeneratorEnableCVar < 2)
+			{
+				SineOscTest(Output);
+			}
+			else
+			{
+				WhiteNoiseTest(Output);
+			}
 		}
 
 		// Update the audio clock
@@ -664,6 +708,10 @@ namespace Audio
 
 		// Make sure we force any pending release data to happen on shutdown
 		SourceManager->UpdatePendingReleaseData(true);
+
+		// Shutdown all pending clock events, as they may have references to 
+		// the FMixerSourceManager that is about to be destroyed
+		QuantizedEventClockManager.Shutdown();
 	}
 
 	void FMixerDevice::LoadMasterSoundSubmix(EMasterSubmixType::Type InType, const FString& InDefaultName, bool bInDefaultMuteWhenBackgrounded, FSoftObjectPath& InObjectPath)
@@ -787,15 +835,14 @@ namespace Audio
 					FMixerSubmixPtr ReverbPluginMixerSubmixPtr = GetSubmixInstance(ReverbPluginSubmix).Pin();
 					check(ReverbPluginMixerSubmixPtr.IsValid());
 
-					const uint32 ReverbPluginId = Preset->GetUniqueID();
 					const TWeakObjectPtr<USoundSubmix> ReverbPluginSubmixPtr = ReverbPluginSubmix;
 					FMixerSubmixWeakPtr ReverbPluginMixerSubmixWeakPtr = ReverbPluginMixerSubmixPtr;
-					AudioRenderThreadCommand([ReverbPluginMixerSubmixWeakPtr, ReverbPluginSubmixPtr, ReverbPluginEffectSubmix, ReverbPluginId]()
+					AudioRenderThreadCommand([ReverbPluginMixerSubmixWeakPtr, ReverbPluginSubmixPtr, ReverbPluginEffectSubmix]()
 					{
 						FMixerSubmixPtr PluginSubmixPtr = ReverbPluginMixerSubmixWeakPtr.Pin();
 						if (PluginSubmixPtr.IsValid() && ReverbPluginSubmixPtr.IsValid())
 						{
-							PluginSubmixPtr->ReplaceSoundEffectSubmix(0, ReverbPluginId, ReverbPluginEffectSubmix);
+							PluginSubmixPtr->ReplaceSoundEffectSubmix(0, ReverbPluginEffectSubmix);
 						}
 					});
 				}
@@ -935,11 +982,11 @@ namespace Audio
 		return MasterSubmixInstances[EMasterSubmixType::EQ];
 	}
 
-	void FMixerDevice::AddMasterSubmixEffect(uint32 SubmixEffectId, FSoundEffectSubmixPtr SoundEffectSubmix)
+	void FMixerDevice::AddMasterSubmixEffect(FSoundEffectSubmixPtr SoundEffectSubmix)
 	{
-		AudioRenderThreadCommand([this, SubmixEffectId, SoundEffectSubmix]()
+		AudioRenderThreadCommand([this, SoundEffectSubmix]()
 		{
-			MasterSubmixInstances[EMasterSubmixType::Master]->AddSoundEffectSubmix(SubmixEffectId, SoundEffectSubmix);
+			MasterSubmixInstances[EMasterSubmixType::Master]->AddSoundEffectSubmix(SoundEffectSubmix);
 		});
 	}
 
@@ -959,55 +1006,93 @@ namespace Audio
 		});
 	}
 
-	int32 FMixerDevice::AddSubmixEffect(USoundSubmix* InSoundSubmix, uint32 SubmixEffectId, FSoundEffectSubmixPtr SoundEffect)
+	int32 FMixerDevice::AddSubmixEffect(USoundSubmix* InSoundSubmix, FSoundEffectSubmixPtr SoundEffect)
 	{
 		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
-
-		int32 NumEffects = MixerSubmixPtr->GetNumEffects();
-
-		AudioRenderThreadCommand([this, MixerSubmixPtr, SubmixEffectId, SoundEffect]()
+		if (MixerSubmixPtr.IsValid())
 		{
-			MixerSubmixPtr->AddSoundEffectSubmix(SubmixEffectId, SoundEffect);
-		});
+			int32 NumEffects = MixerSubmixPtr->GetNumEffects();
 
-		return ++NumEffects;
+			AudioRenderThreadCommand([this, MixerSubmixPtr, SoundEffect]()
+				{
+					MixerSubmixPtr->AddSoundEffectSubmix(SoundEffect);
+				});
+
+			return ++NumEffects;
+		}
+		return 0;
 	}
 
 	void FMixerDevice::RemoveSubmixEffect(USoundSubmix* InSoundSubmix, uint32 SubmixEffectId)
 	{
 		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
-		AudioRenderThreadCommand([MixerSubmixPtr, SubmixEffectId]()
+		if (MixerSubmixPtr.IsValid())
 		{
-			MixerSubmixPtr->RemoveSoundEffectSubmix(SubmixEffectId);
-		});
+			AudioRenderThreadCommand([MixerSubmixPtr, SubmixEffectId]()
+			{
+				MixerSubmixPtr->RemoveSoundEffectSubmix(SubmixEffectId);
+			});
+		}
 	}
 
 	void FMixerDevice::RemoveSubmixEffectAtIndex(USoundSubmix* InSoundSubmix, int32 SubmixChainIndex)
 	{
 		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
-		AudioRenderThreadCommand([MixerSubmixPtr, SubmixChainIndex]()
+		if (MixerSubmixPtr.IsValid())
 		{
-			MixerSubmixPtr->RemoveSoundEffectSubmixAtIndex(SubmixChainIndex);
-		});
+			AudioRenderThreadCommand([MixerSubmixPtr, SubmixChainIndex]()
+			{
+				MixerSubmixPtr->RemoveSoundEffectSubmixAtIndex(SubmixChainIndex);
+			});
+		}
 	}
 
-	void FMixerDevice::ReplaceSoundEffectSubmix(USoundSubmix* InSoundSubmix, int32 InSubmixChainIndex, int32 SubmixEffectId, FSoundEffectSubmixPtr SoundEffect)
+	void FMixerDevice::ReplaceSoundEffectSubmix(USoundSubmix* InSoundSubmix, int32 InSubmixChainIndex, FSoundEffectSubmixPtr SoundEffect)
 	{
 		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
-		AudioRenderThreadCommand([MixerSubmixPtr, InSubmixChainIndex, SubmixEffectId, SoundEffect]()
+		if (MixerSubmixPtr.IsValid())
 		{
-			MixerSubmixPtr->ReplaceSoundEffectSubmix(InSubmixChainIndex, SubmixEffectId, SoundEffect);
-		});
+			AudioRenderThreadCommand([MixerSubmixPtr, InSubmixChainIndex, SoundEffect]()
+			{
+				MixerSubmixPtr->ReplaceSoundEffectSubmix(InSubmixChainIndex, SoundEffect);
+			});
+		}
 	}
 
 	void FMixerDevice::ClearSubmixEffects(USoundSubmix* InSoundSubmix)
 	{
 		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
-
-		AudioRenderThreadCommand([MixerSubmixPtr]()
+		if (MixerSubmixPtr.IsValid())
 		{
-			MixerSubmixPtr->ClearSoundEffectSubmixes();
-		});
+			AudioRenderThreadCommand([MixerSubmixPtr]()
+			{
+				MixerSubmixPtr->ClearSoundEffectSubmixes();
+			});
+		}
+	}
+
+	void FMixerDevice::SetSubmixEffectChainOverride(USoundSubmix* InSoundSubmix, const TArray<FSoundEffectSubmixPtr>& InSubmixEffectPresetChain, float InFadeTimeSec)
+	{
+		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
+		if (MixerSubmixPtr.IsValid())
+		{
+			AudioRenderThreadCommand([MixerSubmixPtr, InSubmixEffectPresetChain, InFadeTimeSec]()
+			{
+				MixerSubmixPtr->SetSubmixEffectChainOverride(InSubmixEffectPresetChain, InFadeTimeSec);
+			});
+		}
+	}
+
+	void FMixerDevice::ClearSubmixEffectChainOverride(USoundSubmix* InSoundSubmix, float InFadeTimeSec)
+	{
+		FMixerSubmixPtr MixerSubmixPtr = GetSubmixInstance(InSoundSubmix).Pin();
+		if (MixerSubmixPtr.IsValid())
+		{
+			AudioRenderThreadCommand([MixerSubmixPtr, InFadeTimeSec]()
+			{
+				MixerSubmixPtr->ClearSubmixEffectChainOverride(InFadeTimeSec);
+			});
+		}
 	}
 
 	void FMixerDevice::UpdateSourceEffectChain(const uint32 SourceEffectChainId, const TArray<FSourceEffectChainEntry>& SourceEffectChain, const bool bPlayEffectChainTails)
@@ -2049,6 +2134,11 @@ namespace Audio
 			: AsyncTask(ENamedThreads::AudioThread, MoveTemp(UnregisterLambda));
 	}
 
+	void FMixerDevice::FlushExtended(UWorld* WorldToFlush, bool bClearActivatedReverb)
+	{
+		QuantizedEventClockManager.Flush();
+	}
+
 	void FMixerDevice::StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic)
 	{
 		if (IsInGameThread())
@@ -2134,7 +2224,10 @@ namespace Audio
 		const int32 NumFrames = OpenStreamParams.NumFrames;
 		const int32 NumChannels = PlatformInfo.NumChannels;
 
-		static FWhiteNoise WhiteNoise(0.2f);
+		static FWhiteNoise WhiteNoise(DebugGeneratorAmpCVar);
+
+		WhiteNoise.SetScaleAdd(DebugGeneratorAmpCVar, 0.0f);
+
 
 		for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
 		{
@@ -2153,18 +2246,34 @@ namespace Audio
 
 		check(NumChannels > 0);
 
-		static FSineOsc SineOscLeft(PlatformInfo.SampleRate, 440.0f, 0.2f);
-		static FSineOsc SineOscRight(PlatformInfo.SampleRate, 220.0f, 0.2f);
+		// Constrain user setting if channel index not supported
+		const int32 ChannelIndex = FMath::Clamp(DebugGeneratorChannelCVar, 0, NumChannels - 1);
+
+		static FSineOsc SineOscLeft(PlatformInfo.SampleRate, DebugGeneratorFreqCVar, DebugGeneratorAmpCVar);
+		static FSineOsc SineOscRight(PlatformInfo.SampleRate, DebugGeneratorFreqCVar / 2.0f, DebugGeneratorAmpCVar);
+
+		SineOscLeft.SetFrequency(DebugGeneratorFreqCVar);
+		SineOscLeft.SetScale(DebugGeneratorAmpCVar);
+
+		if (!DebugGeneratorEnableCVar)
+		{
+			SineOscRight.SetFrequency(DebugGeneratorFreqCVar / 2.0f);
+			SineOscRight.SetScale(DebugGeneratorAmpCVar);
+		}
 
 		for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
 		{
 			int32 Index = FrameIndex * NumChannels;
 
-			Output[Index] += SineOscLeft.ProcessAudio();
+			Output[Index + ChannelIndex] += SineOscLeft.ProcessAudio();
 
-			if (NumChannels > 1)
+			// Using au. commands for debug only supports discrete channel
+			if (!DebugGeneratorEnableCVar)
 			{
-				Output[Index + 1] += SineOscRight.ProcessAudio();
+				if (NumChannels > 1 && DebugGeneratorChannelCVar == 0)
+				{
+					Output[Index + 1] += SineOscRight.ProcessAudio();
+				}
 			}
 		}
 	}

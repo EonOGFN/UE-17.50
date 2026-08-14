@@ -16,6 +16,8 @@
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
 #include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "MaterialEditor/MaterialEditorInstanceConstant.h"
 #include "RenderingThread.h"
 #include "RHISurfaceDataConversion.h"
 #include "Misc/ScopedSlowTask.h"
@@ -501,9 +503,11 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialData*>& Material
 							SortElement.RenderBatchArray.Empty();
 
 							FTexture2DRHIRef StagingBufferRef = StagingBufferPool.CreateStagingBuffer_RenderThread(RHICmdList, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY(), PerPropertyFormat[Property]);
+							FGPUFenceRHIRef GPUFence = RHICreateGPUFence(TEXT("MaterialBackingFence"));
 
 							FResolveRect Rect(0, 0, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY());
 							RHICmdList.CopyToResolveTarget(RenderTargetResource->GetRenderTargetTexture(), StagingBufferRef, FResolveParams(Rect));	
+							RHICmdList.WriteGPUFence(GPUFence);
 
 							// Prepare a lambda for final processing that will be executed asynchronously
 							NumTasks++;
@@ -565,13 +569,13 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialData*>& Material
 
 							// Generate a texture reading command that will be executed once it reaches the end of the pipeline
 							PipelineContext[PipelineIndex].ReadCommand =
-								[FinalProcessing_AnyThread, StagingBufferRef = MoveTemp(StagingBufferRef)](FRHICommandListImmediate& RHICmdList) mutable
+								[FinalProcessing_AnyThread, StagingBufferRef = MoveTemp(StagingBufferRef), GPUFence = MoveTemp(GPUFence)](FRHICommandListImmediate& RHICmdList) mutable
 								{
 									TRACE_CPUPROFILER_EVENT_SCOPE(MapAndEnqueue)
 
 									void * Data = nullptr;
 									int32 Width; int32 Height;
-									RHICmdList.MapStagingSurface(StagingBufferRef, Data, Width, Height);
+									RHICmdList.MapStagingSurface(StagingBufferRef, GPUFence.GetReference(), Data, Width, Height);
 
 									// Schedule the copy and processing on another thread to free up the render thread as much as possible
 									Async(
@@ -852,10 +856,19 @@ void FMaterialBakingModule::OnObjectModified(UObject* Object)
 
 	if (CVarUseMaterialProxyCaching.GetValueOnAnyThread())
 	{
-		if (Object && Object->IsA<UMaterialInterface>())
+		UMaterialInterface* MaterialToInvalidate = Cast<UMaterialInterface>(Object);
+		if (!MaterialToInvalidate)
 		{
-			UMaterialInterface* MaterialToInvalidate = Cast<UMaterialInterface>(Object);
+			// Check to see if the object is a material editor instance constant and if so, retrieve its source instance
+			UMaterialEditorInstanceConstant* EditorInstance = Cast<UMaterialEditorInstanceConstant>(Object);
+			if (EditorInstance && EditorInstance->SourceInstance)
+			{
+				MaterialToInvalidate = EditorInstance->SourceInstance;
+			}
+		}
 
+		if (MaterialToInvalidate)
+		{
 			// Search our proxy pool for materials or material instances that refer to MaterialToInvalidate
 			for (auto It = MaterialProxyPool.CreateIterator(); It; ++It)
 			{

@@ -78,7 +78,8 @@ public:
 
 bool FUSDStaticMeshImportState::ProcessStaticUSDGeometry(const UE::FUsdPrim& GeomPrim, int32 LODIndex)
 {
-	return UsdToUnreal::ConvertGeomMesh( UE::FUsdTyped( GeomPrim ), *MeshDescription );
+	UsdUtils::FUsdPrimMaterialAssignmentInfo MaterialInfo;
+	return UsdToUnreal::ConvertGeomMesh( UE::FUsdTyped( GeomPrim ), *MeshDescription, MaterialInfo );
 }
 
 void FUSDStaticMeshImportState::ProcessMaterials(int32 LODIndex)
@@ -164,7 +165,7 @@ void FUSDStaticMeshImportState::ProcessMaterials(int32 LODIndex)
 		}
 		else
 		{
-			NewMesh->StaticMaterials.Add(StaticMaterial);
+			NewMesh->GetStaticMaterials().Add(StaticMaterial);
 		}
 	}
 	if (LODIndex > 0)
@@ -218,7 +219,7 @@ UStaticMesh* FUSDStaticMeshImporter::ImportStaticMesh(FUsdImportContext& ImportC
 		NewMesh->AssetImportData->Update(UFactory::GetCurrentFilename());
 	}
 
-	NewMesh->StaticMaterials.Empty();
+	NewMesh->GetStaticMaterials().Empty();
 
 	TArray<FUSDImportMaterialInfo> Materials;
 	FUSDStaticMeshImportState State(ImportContext, Materials);

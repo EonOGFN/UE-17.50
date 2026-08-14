@@ -63,7 +63,7 @@ void UPolygonOnMeshToolActionPropertySet::PostAction(EPolygonOnMeshToolActions A
 
 UPolygonOnMeshTool::UPolygonOnMeshTool()
 {
-	SetToolDisplayName(LOCTEXT("PolygonOnMeshToolName", "Polygon Cut"));
+	SetToolDisplayName(LOCTEXT("PolygonOnMeshToolName", "Polygon Cut Tool"));
 }
 
 void UPolygonOnMeshTool::SetWorld(UWorld* World)
@@ -140,6 +140,10 @@ void UPolygonOnMeshTool::Setup()
 	LastDrawnPolygon = FPolygon2d();
 	UpdatePolygonType();
 	UpdateDrawPlane();
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("PolygonOnMeshToolDescription", "Cut the Mesh with a swept Polygon, creating a Hole or new Polygroup. Use the Draw Polygon button to draw a custom polygon on the work plane. Ctrl-click to reposition the work plane."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -294,6 +298,8 @@ void UPolygonOnMeshTool::Render(IToolsContextRenderAPI* RenderAPI)
 
 void UPolygonOnMeshTool::OnTick(float DeltaTime)
 {
+	GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(this->CameraState);
+
 	PlaneMechanic->Tick(DeltaTime);
 	Preview->Tick(DeltaTime);
 
@@ -376,14 +382,9 @@ void UPolygonOnMeshTool::CompleteDrawPolygon()
 
 
 
-bool UPolygonOnMeshTool::HasAccept() const
-{
-	return true;
-}
-
 bool UPolygonOnMeshTool::CanAccept() const
 {
-	return Preview != nullptr && Preview->HaveValidResult();
+	return Super::CanAccept() && Preview != nullptr && Preview->HaveValidResult();
 }
 
 

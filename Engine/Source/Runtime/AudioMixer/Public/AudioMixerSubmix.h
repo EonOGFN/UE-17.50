@@ -11,12 +11,39 @@
 #include "DSP/SpectrumAnalyzer.h"
 #include "Templates/SharedPointer.h"
 #include "AudioDynamicParameter.h"
+#include "Stats/Stats.h"
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph"), STAT_AudioMixerSubmixes, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the endpoint submixes.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Endpoint"), STAT_AudioMixerEndpointSubmixes, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Child Processing"), STAT_AudioMixerSubmixChildren, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Source Mixing"), STAT_AudioMixerSubmixSource, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Effect Processing"), STAT_AudioMixerSubmixEffectProcessing, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix buffer listeners. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Buffer Listeners"), STAT_AudioMixerSubmixBufferListeners, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield child submixes. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Children"), STAT_AudioMixerSubmixSoundfieldChildren, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield sources. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Sources"), STAT_AudioMixerSubmixSoundfieldSources, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield processors.. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Processors"), STAT_AudioMixerSubmixSoundfieldProcessors, STATGROUP_AudioMixer, AUDIOMIXER_API);
 
 // Forward Declarations
 class FOnSubmixEnvelopeBP;
 class USoundEffectSubmix;
 class USoundSubmix;
-
 
 namespace Audio
 {
@@ -128,7 +155,7 @@ namespace Audio
 		void RemoveSourceVoice(FMixerSourceVoice* InSourceVoice);
 
 		/** Appends the effect submix to the effect submix chain. */
-		void AddSoundEffectSubmix(uint32 SubmixPresetId, FSoundEffectSubmixPtr InSoundEffectSubmix);
+		void AddSoundEffectSubmix(FSoundEffectSubmixPtr InSoundEffectSubmix);
 
 		/** Removes the submix effect from the effect submix chain. */
 		void RemoveSoundEffectSubmix(uint32 SubmixPresetId);
@@ -139,8 +166,14 @@ namespace Audio
 		/** Clears all submix effects from the effect submix chain. */
 		void ClearSoundEffectSubmixes();
 
+		/** Sets a submix effect chain override with the given fade time in seconds. */
+		void SetSubmixEffectChainOverride(const TArray<FSoundEffectSubmixPtr>& InSubmixEffectPresetChain, float InFadeTimeSec);
+
+		/** Clears any submix effect chain overrides in the given fade time in seconds. */
+		void ClearSubmixEffectChainOverride(float InFadeTimeSec);
+
 		/** Swaps effect for provided submix at the given index.  Fails if effect at index doesn't exist */
-		void ReplaceSoundEffectSubmix(int32 InIndex, int32 InPresetId, FSoundEffectSubmixPtr InEffectInstance);
+		void ReplaceSoundEffectSubmix(int32 InIndex, FSoundEffectSubmixPtr InEffectInstance);
 
 		/** Whether or not this submix instance is muted. */
 		void SetBackgroundMuted(bool bInMuted);
@@ -160,7 +193,7 @@ namespace Audio
 		int32 GetNumOutputChannels() const;
 
 		// Returns the number of effects in this submix's effect chain
-		int32 GetNumChainEffects() const;
+		int32 GetNumChainEffects();
 
 		// Returns the submix effect at the given effect chain index
 		FSoundEffectSubmixPtr GetSubmixEffect(const int32 InIndex);
@@ -290,6 +323,9 @@ namespace Audio
 		// Add command to the command queue
 		void SubmixCommand(TFunction<void()> Command);
 
+		// Generates audio from the given effect chain into the given buffer
+		bool GenerateEffectChainAudio(FSoundEffectSubmixInputData& InputData, AlignedFloatBuffer& InAudioBuffer, TArray<FSoundEffectSubmixPtr>& InEffectChain, AlignedFloatBuffer& OutBuffer);
+
 		// This mixer submix's Id
 		uint32 Id;
 
@@ -299,23 +335,23 @@ namespace Audio
 		// Child submixes
 		TMap<uint32, FChildSubmixInfo> ChildSubmixes;
 
-		// Info struct for a submix effect instance
-		struct FSubmixEffectInfo
+		// Struct to hold record keeping data about effect chain overrides
+		struct FSubmixEffectFadeInfo
 		{
-			// The preset object id used to spawn this effect instance
-			uint32 PresetId;
+			TArray<FSoundEffectSubmixPtr> EffectChain;
 
-			// The effect instance ptr
-			FSoundEffectSubmixPtr EffectInstance;
+			FDynamicParameter FadeVolume = FDynamicParameter(1.0f);
 
-			FSubmixEffectInfo()
-				: PresetId(INDEX_NONE)
-			{
-			}
+			// If true, this effect override will be fading in or all the way faded in
+			bool bIsCurrentChain = false;
+
+			// If this effect fade info is the base effect
+			bool bIsBaseEffect = false;
 		};
 
-		// The effect chain of this submix, based on the sound submix preset chain
-		TArray<FSubmixEffectInfo> EffectSubmixChain;
+		// The array of submix effect overrides. There may be more than one if multiple are fading out. There should be only one fading in (the current override).
+		TArray<FSubmixEffectFadeInfo> EffectChains;
+		AlignedFloatBuffer EffectChainOutputBuffer;
 
 		// Owning mixer device. 
 		FMixerDevice* MixerDevice;
@@ -324,6 +360,7 @@ namespace Audio
 		TMap<FMixerSourceVoice*, FSubmixVoiceData> MixerSourceVoices;
 
 		AlignedFloatBuffer ScratchBuffer;
+		AlignedFloatBuffer SubmixChainMixBuffer;
 		AlignedFloatBuffer InputBuffer;
 		AlignedFloatBuffer DownmixedBuffer;
 		AlignedFloatBuffer SourceInputBuffer;
@@ -465,7 +502,7 @@ namespace Audio
 		// Spectrum analyzer. Created and destroyed on the audio thread.
 		FCriticalSection SpectrumAnalyzerCriticalSection;
 		FSoundSpectrumAnalyzerSettings SpectrumAnalyzerSettings;
-		TUniquePtr<FSpectrumAnalyzer> SpectrumAnalyzer;
+		TSharedPtr<FAsyncSpectrumAnalyzer, ESPMode::ThreadSafe> SpectrumAnalyzer;
 		
 		// This buffer is used to downmix the submix output to mono before submitting it to the SpectrumAnalyzer.
 		AlignedFloatBuffer MonoMixBuffer;
@@ -521,7 +558,7 @@ namespace Audio
 			{
 			}
 
-			FSpectrumAnalysisDelegateInfo(FSpectrumAnalysisDelegateInfo& Other)
+			FSpectrumAnalysisDelegateInfo(FSpectrumAnalysisDelegateInfo&& Other)
 			{
 				OnSubmixSpectralAnalysis = Other.OnSubmixSpectralAnalysis;
 				SpectrumBandExtractor.Reset(Other.SpectrumBandExtractor.Release());

@@ -79,7 +79,7 @@ public class Engine : ModuleRules
 				"AnalyticsET",
 				"RHI",
 				"Sockets",
-				"AssetRegistry", // Here until FAssetData is moved to engine
+				"AssetRegistry", // Here until we update all modules using AssetRegistry to add a dependency on it
 				"EngineMessages",
 				"EngineSettings",
 				"SynthBenchmark",
@@ -94,6 +94,7 @@ public class Engine : ModuleRules
                 "SignalProcessing",
                 "AudioExtensions",
 				"DeveloperSettings",
+				"PropertyAccess",
 			}
 		);
 
@@ -125,14 +126,6 @@ public class Engine : ModuleRules
 			);
 
 		DynamicallyLoadedModuleNames.Add("EyeTracker");
-
-		
-		if (Target.bUseXGEController &&
-			Target.Type == TargetType.Editor &&
-			(Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32))
-		{
-			PrivateDependencyModuleNames.Add("XGEController");
-		}
 
 		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
 		{
@@ -346,7 +339,7 @@ public class Engine : ModuleRules
 					"UnrealEd",
 					"Kismet"
 				}
-			);	// @todo api: Only public because of WITH_EDITOR and UNREALED_API
+			);  // @todo api: Only public because of WITH_EDITOR and UNREALED_API
 
 			CircularlyReferencedDependentModules.AddRange(
 				new string[] {
@@ -370,7 +363,7 @@ public class Engine : ModuleRules
 		}
 
 		SetupModulePhysicsSupport(Target);
-		
+
 		if (Target.bCompilePhysX && (Target.bBuildEditor || Target.bCompileAPEX))
 		{
 			DynamicallyLoadedModuleNames.Add("PhysXCooking");
@@ -390,8 +383,8 @@ public class Engine : ModuleRules
 			(Target.Platform == UnrealTargetPlatform.Win32))
 		{
 			// Head Mounted Display support
-//			PrivateIncludePathModuleNames.AddRange(new string[] { "HeadMountedDisplay" });
-//			DynamicallyLoadedModuleNames.AddRange(new string[] { "HeadMountedDisplay" });
+			//			PrivateIncludePathModuleNames.AddRange(new string[] { "HeadMountedDisplay" });
+			//			DynamicallyLoadedModuleNames.AddRange(new string[] { "HeadMountedDisplay" });
 		}
 
 		if (Target.Platform == UnrealTargetPlatform.Mac)
@@ -412,6 +405,11 @@ public class Engine : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 		{
+			PublicIncludePaths.AddRange(
+            	new string[] {
+               		"Runtime/IOS/IOSPlatformFeatures/Public"
+                });
+
 			PrivateIncludePathModuleNames.Add("IOSRuntimeSettings");
 		}
 
@@ -433,9 +431,18 @@ public class Engine : ModuleRules
 		PublicDefinitions.Add("GPUPARTICLE_LOCAL_VF_ONLY=0");
 
 		// Add a reference to the stats HTML files referenced by UEngine::DumpFPSChartToHTML. Previously staged by CopyBuildToStagingDirectory.
-	if (Target.bBuildEditor || Target.Configuration != UnrealTargetConfiguration.Shipping)
+		if (Target.bBuildEditor || Target.Configuration != UnrealTargetConfiguration.Shipping)
 		{
 			RuntimeDependencies.Add("$(EngineDir)/Content/Stats/...", StagedFileType.UFS);
+		}
+
+		if (Target.bBuildEditor == false && Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PublicDefinitions.Add("WITH_ODSC=1");
+		}
+        else
+        {
+			PublicDefinitions.Add("WITH_ODSC=0");
 		}
 	}
 }

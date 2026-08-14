@@ -6,11 +6,14 @@
 #include "LiveLinkSourceSettings.h"
 #include "Roles/LiveLinkTransformTypes.h"
 
+#include "Delegates/IDelegateInstance.h"
 #include "MessageEndpoint.h"
 #include "IMessageContext.h"
 #include "HAL/ThreadSafeBool.h"
 
 #include "IXRTrackingSystem.h"		// for GEngine->XRSystem and EXRTrackedDeviceType
+
+#include "HAL/Runnable.h"
 
 struct FLiveLinkXRSettings;
 
@@ -51,6 +54,11 @@ public:
 
 	void Send(TSharedRef<FLiveLinkTransformFrameData> FrameDataToSend, FName SubjectName);
 	const FString GetDeviceTypeName(EXRTrackedDeviceType DeviceType);
+
+private:
+
+	// Enumerate tracked devices
+	void EnumerateTrackedDevices();
 
 private:
 	ILiveLinkClient* Client;
@@ -99,4 +107,7 @@ private:
 
 	// Array of Tracker Subject Names
 	TArray<FString> TrackedSubjectNames;
+
+	// Deferred start delegate handle.
+	FDelegateHandle DeferredStartDelegateHandle;
 };

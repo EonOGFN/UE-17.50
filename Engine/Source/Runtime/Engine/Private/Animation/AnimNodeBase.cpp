@@ -5,7 +5,7 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimTrace.h"
 #include "UObject/CoreObjectVersion.h"
-#include "IPropertyAccess.h"
+#include "PropertyAccess.h"
 
 /////////////////////////////////////////////////////
 // FAnimationBaseContext
@@ -375,12 +375,19 @@ void FPoseLink::Evaluate(FPoseContext& Output)
 	if (Output.ContainsNaN())
 	{
 		// Show bone transform with some useful debug info
-		for (const FTransform& Bone : Output.Pose.GetBones())
+		const auto& Bones = Output.Pose.GetBones();
+		for (int32 CPIndex = 0; CPIndex < Bones.Num(); ++CPIndex)
 		{
+			const FTransform& Bone = Bones[CPIndex];
 			if (Bone.ContainsNaN())
 			{
-				ensureMsgf(!Bone.ContainsNaN(), TEXT("Bone transform contains NaN from AnimInstance:[%s] Node:[%s] Value:[%s]")
-					, *Output.AnimInstanceProxy->GetAnimInstanceName(), LinkedNode ? *LinkedNode->StaticStruct()->GetName() : TEXT("NULL"), *Bone.ToString());
+				const FBoneContainer& BoneContainer = Output.Pose.GetBoneContainer();
+				const FReferenceSkeleton& RefSkel = BoneContainer.GetReferenceSkeleton();
+				const FMeshPoseBoneIndex MeshBoneIndex = BoneContainer.MakeMeshPoseIndex(FCompactPoseBoneIndex(CPIndex));
+				ensureMsgf(!Bone.ContainsNaN(), TEXT("Bone (%s) contains NaN from AnimInstance:[%s] Node:[%s] Value:[%s]"),
+					*RefSkel.GetBoneName(MeshBoneIndex.GetInt()).ToString(),
+					*Output.AnimInstanceProxy->GetAnimInstanceName(), LinkedNode ? *LinkedNode->StaticStruct()->GetName() : TEXT("NULL"), 
+					*Bone.ToString());
 			}
 		}
 	}
@@ -388,12 +395,19 @@ void FPoseLink::Evaluate(FPoseContext& Output)
 	if (!Output.IsNormalized())
 	{
 		// Show bone transform with some useful debug info
-		for (const FTransform& Bone : Output.Pose.GetBones())
+		const auto& Bones = Output.Pose.GetBones();
+		for (int32 CPIndex = 0; CPIndex < Bones.Num(); ++CPIndex)
 		{
+			const FTransform& Bone = Bones[CPIndex];
 			if (!Bone.IsRotationNormalized())
 			{
-				ensureMsgf(Bone.IsRotationNormalized(), TEXT("Bone Rotation not normalized from AnimInstance:[%s] Node:[%s] Rotation:[%s]")
-					, *Output.AnimInstanceProxy->GetAnimInstanceName(), LinkedNode ? *LinkedNode->StaticStruct()->GetName() : TEXT("NULL"), *Bone.GetRotation().ToString());
+				const FBoneContainer& BoneContainer = Output.Pose.GetBoneContainer();
+				const FReferenceSkeleton& RefSkel = BoneContainer.GetReferenceSkeleton();
+				const FMeshPoseBoneIndex MeshBoneIndex = BoneContainer.MakeMeshPoseIndex(FCompactPoseBoneIndex(CPIndex));
+				ensureMsgf(Bone.IsRotationNormalized(), TEXT("Bone (%s) Rotation not normalized from AnimInstance:[%s] Node:[%s] Rotation:[%s]"), 
+					*RefSkel.GetBoneName(MeshBoneIndex.GetInt()).ToString(),
+					*Output.AnimInstanceProxy->GetAnimInstanceName(), LinkedNode ? *LinkedNode->StaticStruct()->GetName() : TEXT("NULL"), 
+					*Bone.GetRotation().ToString());
 			}
 		}
 	}
@@ -541,29 +555,29 @@ void FNodeDebugData::GetFlattenedDebugData(TArray<FFlattenedDebugData>& Flattene
 
 void FExposedValueHandler::DynamicClassInitialization(TArray<FExposedValueHandler>& InHandlers, UDynamicClass* InDynamicClass)
 {
-	IPropertyAccess* PropertyAccess = IAnimClassInterface::FindSubsystemWithInterface<IPropertyAccess>(IAnimClassInterface::GetFromClass(InDynamicClass));
+	const FPropertyAccessLibrary& PropertyAccessLibrary = IAnimClassInterface::GetFromClass(InDynamicClass)->GetPropertyAccessLibrary();
 
 	for(FExposedValueHandler& Handler : InHandlers)
 	{
-		Handler.Initialize(InDynamicClass, PropertyAccess);
+		Handler.Initialize(InDynamicClass, PropertyAccessLibrary);
 	}
 }
 
 void FExposedValueHandler::ClassInitialization(TArray<FExposedValueHandler>& InHandlers, UObject* InClassDefaultObject)
 {
 	UClass* Class = InClassDefaultObject->GetClass();
-	IPropertyAccess* PropertyAccess = IAnimClassInterface::FindSubsystemWithInterface<IPropertyAccess>(IAnimClassInterface::GetFromClass(Class));
+	const FPropertyAccessLibrary& PropertyAccessLibrary = IAnimClassInterface::GetFromClass(Class)->GetPropertyAccessLibrary();
 
 	for(FExposedValueHandler& Handler : InHandlers)
 	{
 		FAnimNode_Base* AnimNode = Handler.ValueHandlerNodeProperty->ContainerPtrToValuePtr<FAnimNode_Base>(InClassDefaultObject);
 		check(AnimNode);
 		AnimNode->SetExposedValueHandler(&Handler);
-		Handler.Initialize(Class, PropertyAccess);
+		Handler.Initialize(Class, PropertyAccessLibrary);
 	}
 }
 
-void FExposedValueHandler::Initialize(UClass* InClass, IPropertyAccess* InPropertyAccess)
+void FExposedValueHandler::Initialize(UClass* InClass, const FPropertyAccessLibrary& InPropertyAccessLibrary)
 {
 	// bInitialized may no longer be necessary, but leaving alone for now:
 	if (bInitialized)
@@ -591,8 +605,8 @@ void FExposedValueHandler::Initialize(UClass* InClass, IPropertyAccess* InProper
 		Function = NULL;
 	}
 
-	// Cache property access
-	PropertyAccess = InPropertyAccess;
+	// Cache property access library
+	PropertyAccessLibrary = &InPropertyAccessLibrary;
 
 	bInitialized = true;
 }
@@ -606,12 +620,12 @@ void FExposedValueHandler::Execute(const FAnimationBaseContext& Context) const
 
 	if(CopyRecords.Num() > 0)
 	{
-		if(PropertyAccess != nullptr)
+		if(PropertyAccessLibrary != nullptr)
 		{
 			UObject* AnimInstanceObject = Context.AnimInstanceProxy->GetAnimInstanceObject();
 			for(const FExposedValueCopyRecord& CopyRecord : CopyRecords)
 			{
-				PropertyAccess->ProcessCopy(AnimInstanceObject, EPropertyAccessCopyBatch::InternalUnbatched, CopyRecord.CopyIndex, [&CopyRecord](const FProperty* InProperty, void* InAddress)
+				PropertyAccess::ProcessCopy(AnimInstanceObject, *PropertyAccessLibrary, EPropertyAccessCopyBatch::InternalUnbatched, CopyRecord.CopyIndex, [&CopyRecord](const FProperty* InProperty, void* InAddress)
 				{
 					if(CopyRecord.PostCopyOperation == EPostCopyOperation::LogicalNegateBool)
 					{

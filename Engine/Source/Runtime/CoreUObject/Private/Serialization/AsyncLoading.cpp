@@ -61,8 +61,6 @@ CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, FileIO);
 
 DECLARE_MEMORY_STAT(TEXT("Streaming Memory Used"),STAT_StreamingAllocSize,STATGROUP_Memory);
 
-DECLARE_STATS_GROUP_VERBOSE(TEXT("Async Load"), STATGROUP_AsyncLoad, STATCAT_Advanced);
-
 DECLARE_CYCLE_STAT(TEXT("Tick AsyncPackage"),STAT_FAsyncPackage_Tick,STATGROUP_AsyncLoad);
 
 DECLARE_CYCLE_STAT(TEXT("CreateLinker AsyncPackage"),STAT_FAsyncPackage_CreateLinker,STATGROUP_AsyncLoad);
@@ -79,15 +77,8 @@ DECLARE_CYCLE_STAT(TEXT("PostLoadObjects AsyncPackage"),STAT_FAsyncPackage_PostL
 DECLARE_CYCLE_STAT(TEXT("FinishObjects AsyncPackage"),STAT_FAsyncPackage_FinishObjects,STATGROUP_AsyncLoad);
 DECLARE_CYCLE_STAT(TEXT("CreateAsyncPackagesFromQueue"), STAT_FAsyncPackage_CreateAsyncPackagesFromQueue, STATGROUP_AsyncLoad);
 DECLARE_CYCLE_STAT(TEXT("ProcessAsyncLoading AsyncLoadingThread"), STAT_FAsyncLoadingThread_ProcessAsyncLoading, STATGROUP_AsyncLoad);
-DECLARE_CYCLE_STAT(TEXT("Async Loading Time"),STAT_AsyncLoadingTime,STATGROUP_AsyncLoad);
 DECLARE_CYCLE_STAT(TEXT("Async Loading Time Detailed"), STAT_AsyncLoadingTimeDetailed, STATGROUP_AsyncLoad);
 
-DECLARE_STATS_GROUP(TEXT("Async Load Game Thread"), STATGROUP_AsyncLoadGameThread, STATCAT_Advanced);
-
-DECLARE_CYCLE_STAT(TEXT("PostLoadObjects GT"), STAT_FAsyncPackage_PostLoadObjectsGameThread, STATGROUP_AsyncLoadGameThread);
-DECLARE_CYCLE_STAT(TEXT("TickAsyncLoading GT"), STAT_FAsyncPackage_TickAsyncLoadingGameThread, STATGROUP_AsyncLoadGameThread);
-DECLARE_CYCLE_STAT(TEXT("Flush Async Loading GT"), STAT_FAsyncPackage_FlushAsyncLoadingGameThread, STATGROUP_AsyncLoadGameThread);
-DECLARE_CYCLE_STAT(TEXT("CreateClusters GT"), STAT_FAsyncPackage_CreateClustersGameThread, STATGROUP_AsyncLoadGameThread);
 DECLARE_FLOAT_ACCUMULATOR_STAT(TEXT("Total PostLoadObjects time GT"), STAT_FAsyncPackage_TotalPostLoadGameThread, STATGROUP_AsyncLoadGameThread);
 
 DECLARE_FLOAT_ACCUMULATOR_STAT( TEXT( "Async loading block time" ), STAT_AsyncIO_AsyncLoadingBlockingTime, STATGROUP_AsyncIO );
@@ -3047,20 +3038,15 @@ void FAsyncPackage::EventDrivenCreateExport(int32 LocalExportIndex)
 						return;
 					}
 
-					Export.Object = StaticConstructObject_Internal
-						(
-							LoadClass,
-							ThisParent,
-							NewName,
-							ObjectLoadFlags,
-							EInternalObjectFlags::None,
-							Template,
-							false,
-							nullptr,
-							true,
-							// if our outer is actually an import, then the package we are an export of is not in our outer chain, set our package in that case
-							Export.OuterIndex.IsImport() ? LinkerRoot : nullptr
-						);
+					FStaticConstructObjectParameters Params(LoadClass);
+					Params.Outer = ThisParent;
+					Params.Name = NewName;
+					Params.SetFlags = ObjectLoadFlags;
+					Params.Template = Template;
+					Params.bAssumeTemplateIsArchetype = true;
+					// if our outer is actually an import, then the package we are an export of is not in our outer chain, set our package in that case
+					Params.ExternalPackage = Export.OuterIndex.IsImport() ? LinkerRoot : nullptr;
+					Export.Object = StaticConstructObject_Internal(Params);
 
 					if (GIsInitialLoad || GUObjectArray.IsOpenForDisregardForGC())
 					{
@@ -5119,6 +5105,14 @@ float FAsyncLoadingThread::GetAsyncLoadPercentage(const FName& PackageName)
  */
 void FAsyncLoadingThread::NotifyConstructedDuringAsyncLoading(UObject* Object, bool bSubObject)
 {
+	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
+	if (!ThreadContext.AsyncPackage)
+	{
+		// Something is creating objects on the async loading thread outside of the actual async loading code
+		// e.g. ShaderCodeLibrary::OnExternalReadCallback doing FTaskGraphInterface::Get().WaitUntilTaskCompletes(Event);
+		return;
+	}
+
 	// Mark objects created during async loading process (e.g. from within PostLoad or CreateExport) as async loaded so they 
 	// cannot be found. This requires also keeping track of them so we can remove the async loading flag later one when we 
 	// finished routing PostLoad to all objects.
@@ -5126,8 +5120,7 @@ void FAsyncLoadingThread::NotifyConstructedDuringAsyncLoading(UObject* Object, b
 	{
 		Object->SetInternalFlags(EInternalObjectFlags::AsyncLoading);
 	}
-	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-	check(ThreadContext.AsyncPackage); // Otherwise something is wrong and we're creating objects outside of async loading code
+
 	FAsyncPackage* AsyncPackage = static_cast<FAsyncPackage*>(ThreadContext.AsyncPackage);
 	AsyncPackage->AddObjectReference(Object);
 	if (GEventDrivenLoaderEnabled)
@@ -5658,7 +5651,7 @@ EAsyncPackageState::Type FAsyncPackage::CreateLinker()
 		{
 			SCOPED_LOADTIMER(CreateLinker_CreatePackage);
 			FGCScopeGuard GCGuard;
-			Package = CreatePackage(nullptr, *Desc.Name.ToString());
+			Package = CreatePackage(*Desc.Name.ToString());
 			if (!Package)
 			{
 				UE_LOG(LogStreaming, Error, TEXT("Failed to create package %s requested by async loading code. NameToLoad: %s"), *Desc.Name.ToString(), *Desc.NameToLoad.ToString());
@@ -7871,9 +7864,13 @@ void FAsyncArchive::StartReadingHeader()
 void FAsyncArchive::EndReadingHeader()
 {
 	LogItem(TEXT("End Header"));
-	check(LoadPhase == ELoadPhase::WaitingForHeader);
-	LoadPhase = ELoadPhase::WaitingForFirstExport;
-	FlushPrecacheBlock();
+	
+	if (!IsError())
+	{
+		check(LoadPhase == ELoadPhase::WaitingForHeader);
+		LoadPhase = ELoadPhase::WaitingForFirstExport;
+		FlushPrecacheBlock();
+	}
 }
 
 bool FAsyncArchive::ReadyToStartReadingHeader(bool bUseTimeLimit, bool bUseFullTimeLimit, double TickStartTime, float TimeLimit)

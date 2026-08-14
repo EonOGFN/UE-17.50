@@ -53,9 +53,8 @@ public:
 	 *
 	 * @param Context				Evaluation context containing the time (or range) to evaluate
 	 * @param Player				The player responsible for playback
-	 * @param OverrideRootID		The ID of the sequence from which to evaluate.
 	 */
-	MOVIESCENE_API void Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player, FMovieSceneSequenceID OverrideRootID = MovieSceneSequenceID::Root);
+	MOVIESCENE_API void Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player);
 
 	/**
 	 * Indicate that we're not going to evaluate this instance again, and that we should tear down any current state
@@ -95,6 +94,10 @@ public:
 
 	MOVIESCENE_API FMovieSceneEntitySystemRunner& GetEntitySystemRunner();
 
+	MOVIESCENE_API const FMovieSceneSequenceHierarchy* GetHierarchy() const;
+
+	MOVIESCENE_API void GetSequenceParentage(const UE::MovieScene::FInstanceHandle InstanceHandle, TArray<UE::MovieScene::FInstanceHandle>& OutParentHandles) const;
+
 	MOVIESCENE_API UE::MovieScene::FSequenceInstance* FindInstance(FMovieSceneSequenceID SequenceID);
 
 	MOVIESCENE_API const UE::MovieScene::FSequenceInstance* FindInstance(FMovieSceneSequenceID SequenceID) const;
@@ -112,6 +115,11 @@ public:
 	MOVIESCENE_API void CopyActuators(FMovieSceneBlendingAccumulator& Accumulator) const;
 
 	MOVIESCENE_API void BeginDestroy();
+
+#if WITH_EDITOR
+	MOVIESCENE_API void SetEmulatedNetworkMask(EMovieSceneServerClientMask InNewMask, IMovieScenePlayer& Player);
+	MOVIESCENE_API EMovieSceneServerClientMask GetEmulatedNetworkMask() const;
+#endif
 
 private:
 
@@ -139,6 +147,10 @@ private:
 	FMovieSceneSequenceID RootID;
 
 	FMovieSceneCompiledDataID CompiledDataID;
+
+#if WITH_EDITOR
+	EMovieSceneServerClientMask EmulatedNetworkMask;
+#endif
 };
 
 template<>

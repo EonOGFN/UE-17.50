@@ -445,7 +445,7 @@ public:
 	CORE_API static void OverrideFromCommandline(FConfigFile* File, const FString& Filename);
 
 	/** Checks the command line for any overridden config file settings */
-	CORE_API static void OverrideFileFromCommandline(FString& Filename);
+	CORE_API static bool OverrideFileFromCommandline(FString& Filename);
 
 	/** Appends a new INI file to the SourceIniHierarchy and combines it */
 	CORE_API void AddDynamicLayerToHeirarchy(const FString& Filename);
@@ -595,7 +595,11 @@ public:
 	bool GetText( const TCHAR* Section, const TCHAR* Key, FText& Value, const FString& Filename );
 	bool GetSection( const TCHAR* Section, TArray<FString>& Result, const FString& Filename );
 	bool DoesSectionExist(const TCHAR* Section, const FString& Filename);
-	FConfigSection* GetSectionPrivate( const TCHAR* Section, bool Force, bool Const, const FString& Filename );
+	/**
+	 * @param Force Whether to create the Section on Filename if it did not exist previously.
+	 * @param Const If Const (and not Force), then it will not modify File->Dirty. If not Const (or Force is true), then File->Dirty will be set to true.
+	 */
+	FConfigSection* GetSectionPrivate( const TCHAR* Section, const bool Force, const bool Const, const FString& Filename );
 	void SetString( const TCHAR* Section, const TCHAR* Key, const TCHAR* Value, const FString& Filename );
 	void SetText( const TCHAR* Section, const TCHAR* Key, const FText& Value, const FString& Filename );
 	bool RemoveKey( const TCHAR* Section, const TCHAR* Key, const FString& Filename );
@@ -913,11 +917,6 @@ public:
 	 * Works even if the variable is registered after the ini file was loaded.
 	 */
 	static void LoadConsoleVariablesFromINI();
-	
-	/**
-	 * Less than ideal solution for allowing user settings to be saved on all platforms
-	 */
-	static FString GetGameUserSettingsDir();
 
 	/**
 	 * Save the current config cache state into a file for bootstrapping other processes.

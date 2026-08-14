@@ -27,9 +27,9 @@
 #include "Misc/OutputDeviceError.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/FeedbackContext.h"
-
 #include "Internationalization/Internationalization.h"
 #include "Internationalization/Culture.h"
+#include "Internationalization/Regex.h"
 
 #if !PLATFORM_TVOS
 #include <AdSupport/ASIdentifierManager.h> 
@@ -42,11 +42,9 @@
 #import <StoreKit/StoreKit.h>
 #import <DeviceCheck/DeviceCheck.h>
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 #import <UserNotifications/UserNotifications.h>
 #include "Async/TaskGraphInterfaces.h"
 #include "Misc/CoreDelegates.h"
-#endif
 
 #if !defined ENABLE_ADVERTISING_IDENTIFIER
 	#define ENABLE_ADVERTISING_IDENTIFIER 0
@@ -337,74 +335,6 @@ bool FIOSPlatformMisc::HasPlatformFeature(const TCHAR* FeatureName)
 	return FGenericPlatformMisc::HasPlatformFeature(FeatureName);
 }
 
-const TCHAR* FIOSPlatformMisc::GetDefaultDeviceProfileName()
-{
-	static const TCHAR* IOSDeviceNames[] =
-	{
-		TEXT("IPhone4"),
-		TEXT("IPhone4S"),
-		TEXT("IPhone5"),
-		TEXT("IPhone5S"),
-		TEXT("IPodTouch5"),
-		TEXT("IPodTouch6"),
-		TEXT("IPad2"),
-		TEXT("IPad3"),
-		TEXT("IPad4"),
-		TEXT("IPadMini"),
-		TEXT("IPadMini2"),
-		TEXT("IPadMini4"),
-		TEXT("IPadAir"),
-		TEXT("IPadAir2"),
-		TEXT("IPhone6"),
-		TEXT("IPhone6Plus"),
-		TEXT("IPhone6S"),
-		TEXT("IPhone6SPlus"),
-		TEXT("IPhone7"),
-		TEXT("IPhone7Plus"),
-		TEXT("IPhone8"),
-		TEXT("IPhone8Plus"),
-		TEXT("IPhoneX"),
-		TEXT("IPadPro"),
-		TEXT("AppleTV"),
-		TEXT("AppleTV4K"),
-		TEXT("IPhoneSE"),
-		TEXT("IPadPro129"),
-		TEXT("IPadPro97"),
-		TEXT("IPadPro105"),
-		TEXT("IPadPro2_129"),
-		TEXT("IPad5"),
-		TEXT("IPhoneXS"),
-		TEXT("IPhoneXSMax"),
-		TEXT("IPhoneXR"),
-		TEXT("IPhone11"),
-		TEXT("IPhone11Pro"),
-		TEXT("IPhone11ProMax"),
-		TEXT("IPad6"),
-		TEXT("IPadPro11"),
-		TEXT("IPadPro3_129"),
-		TEXT("IPadAir3"),
-		TEXT("IPadMini5"),
-		TEXT("IPodTouch7"),
-		TEXT("IPad7"),
-		TEXT("IPhoneSE2"),
-		TEXT("IPadPro2_11"),
-		TEXT("IPadPro4_129"),
-		TEXT("NewIDevice1"),
-		TEXT("NewIDevice2"),
-		TEXT("NewIDevice3"),
-		TEXT("NewIDevice4"),
-		TEXT("NewIDevice5"),
-		TEXT("NewIDevice6"),
-		TEXT("NewIDevice7"),
-		TEXT("NewIDevice8"),
-		TEXT("Unknown"),
-	};
-	static_assert((sizeof(IOSDeviceNames) / sizeof(IOSDeviceNames[0])) == ((int32)IOS_Unknown + 1), "Mismatched IOSDeviceNames and EIOSDevice.");
-
-	// look up into the string array by the enum
-	return IOSDeviceNames[(int32)GetIOSDeviceType()];
-}
-
 FString GetIOSDeviceIDString()
 {
 	static FString CachedResult;
@@ -428,6 +358,46 @@ FString GetIOSDeviceIDString()
 	return CachedResult;
 }
 
+
+const TCHAR* FIOSPlatformMisc::GetDefaultDeviceProfileName()
+{
+	static FString IOSDeviceProfileName;
+	if (IOSDeviceProfileName.Len() == 0)
+	{
+		IOSDeviceProfileName = TEXT("IOS");
+
+		FString DeviceIDString = GetIOSDeviceIDString();
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Device Type: %s") LINE_TERMINATOR, *DeviceIDString);
+
+		TArray<FString> Mappings;
+		if (ensure(GConfig->GetSection(TEXT("IOSDeviceMappings"), Mappings, GDeviceProfilesIni)))
+		{
+			for (const FString& MappingString : Mappings)
+			{
+				FString MappingRegex, ProfileName;
+				if (MappingString.Split(TEXT("="), &MappingRegex, &ProfileName))
+				{
+					const FRegexPattern RegexPattern(MappingRegex);
+					FRegexMatcher RegexMatcher(RegexPattern, *DeviceIDString);
+					if (RegexMatcher.FindNext())
+					{
+						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Matched %s as %s") LINE_TERMINATOR, *MappingRegex, *ProfileName);
+						IOSDeviceProfileName = ProfileName;
+						break;
+					}
+				}
+				else
+				{
+					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Invalid IOSDeviceMappings: %s") LINE_TERMINATOR, *MappingString);
+				}
+			}
+		}
+	}
+
+	return *IOSDeviceProfileName;
+}
+
+// Deprecated in 4.26.
 FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 {
 	// default to unknown
@@ -962,7 +932,11 @@ class IPlatformChunkInstall* FIOSPlatformMisc::GetPlatformChunkInstall()
 
 bool FIOSPlatformMisc::SupportsForceTouchInput()
 {
-	return UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone && GetIOSDeviceType() != IOS_IPhoneSE;
+#if !PLATFORM_TVOS
+	return [[[IOSAppDelegate GetDelegate].IOSView traitCollection] forceTouchCapability];
+#else
+	return false;
+#endif
 }
 
 #if !PLATFORM_TVOS
@@ -1197,7 +1171,6 @@ void FIOSPlatformMisc::RegisterForRemoteNotifications()
 
     dispatch_async(dispatch_get_main_queue(), ^{
 #if !PLATFORM_TVOS && NOTIFICATIONS_ENABLED
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 		UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
 		[Center requestAuthorizationWithOptions:(UNAuthorizationOptionBadge | UNAuthorizationOptionSound | UNAuthorizationOptionAlert)
 							  completionHandler:^(BOOL granted, NSError * _Nullable error) {
@@ -1208,6 +1181,12 @@ void FIOSPlatformMisc::RegisterForRemoteNotifications()
 								  else
 								  {
 									  int32 types = (int32)granted;
+                                      if (granted)
+                                      {
+                                          UIApplication* application = [UIApplication sharedApplication];
+                                          [application registerForRemoteNotifications];
+                                          
+                                      }
 									  FFunctionGraphTask::CreateAndDispatchWhenReady([types]()
 																					 {
 																						 FCoreDelegates::ApplicationRegisteredForUserNotificationsDelegate.Broadcast(types);
@@ -1215,24 +1194,6 @@ void FIOSPlatformMisc::RegisterForRemoteNotifications()
 									  
 								  }
 							  }];
-#else
-	UIApplication* application = [UIApplication sharedApplication];
-	if ([application respondsToSelector : @selector(registerUserNotificationSettings:)])
-	{
-#ifdef __IPHONE_8_0
-		UIUserNotificationSettings * settings = [UIUserNotificationSettings settingsForTypes : (UIUserNotificationTypeBadge | UIUserNotificationTypeSound | UIUserNotificationTypeAlert) categories:nil];
-		[application registerUserNotificationSettings : settings];
-#endif
-	}
-	else
-	{
-        
-#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_8_0
-		UIRemoteNotificationType myTypes = UIRemoteNotificationTypeBadge | UIRemoteNotificationTypeAlert | UIRemoteNotificationTypeSound;
-		[application registerForRemoteNotificationTypes : myTypes];
-#endif
-	}
-#endif
 #endif
     });
 }
@@ -1245,17 +1206,8 @@ bool FIOSPlatformMisc::IsRegisteredForRemoteNotifications()
 bool FIOSPlatformMisc::IsAllowedRemoteNotifications()
 {
 #if !PLATFORM_TVOS && NOTIFICATIONS_ENABLED
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 	checkf(false, TEXT("For min iOS version >= 10 use FIOSLocalNotificationService::CheckAllowedNotifications."));
 	return true;
-#elif defined(__IPHONE_8_0)
-	UIApplication* application = [UIApplication sharedApplication];
-	UIUserNotificationSettings* Settings = [application currentUserNotificationSettings];
-	int32 AllowedTypes = (int32)[Settings types];
-	return AllowedTypes != UIUserNotificationTypeNone;
-#else
-	return true;
-#endif
 #else
 	return true;
 #endif
@@ -1372,6 +1324,13 @@ FString FIOSPlatformMisc::GetProjectVersion()
 	NSDictionary* infoDictionary = [[NSBundle mainBundle] infoDictionary];
 	FString localVersionString = FString(infoDictionary[@"CFBundleShortVersionString"]);
 	return localVersionString;
+}
+
+FString FIOSPlatformMisc::GetBuildNumber()
+{
+	NSDictionary* infoDictionary = [[NSBundle mainBundle]infoDictionary];
+	FString BuildString = FString(infoDictionary[@"CFBundleVersion"]);
+	return BuildString;
 }
 
 bool FIOSPlatformMisc::RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc)

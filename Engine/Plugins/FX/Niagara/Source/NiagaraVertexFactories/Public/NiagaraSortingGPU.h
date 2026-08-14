@@ -20,7 +20,7 @@ extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUSortingCPUToGPUThreshold;
 #define NIAGARA_KEY_GEN_THREAD_COUNT 64
 #define NIAGARA_COPY_BUFFER_THREAD_COUNT 64
 #define NIAGARA_COPY_BUFFER_BUFFER_COUNT 3
-#define NIAGARA_KEY_GEN_MAX_CULL_PLANES 6
+#define NIAGARA_KEY_GEN_MAX_CULL_PLANES 10
 
 /**
  * Compute shader used to generate particle sort keys.
@@ -65,6 +65,7 @@ public:
 		SHADER_PARAMETER(uint32, RendererVisTagAttributeOffset)
 		SHADER_PARAMETER(FVector2D, CullDistanceRangeSquared)
 		SHADER_PARAMETER(FVector4, LocalBoundingSphere)
+		SHADER_PARAMETER(FVector, CullingWorldSpaceOffset)
 
 		SHADER_PARAMETER_UAV(Buffer, OutKeys)
 		SHADER_PARAMETER_UAV(Buffer, OutParticleIndices)

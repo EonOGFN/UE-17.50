@@ -122,6 +122,8 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 	const float FOVMax = 170.f;
 
 	ViewFOV = FMath::Clamp<float>(ConfigOption->GetAssetEditorOptions(InAssetEditorToolkit->GetEditorName()).ViewportConfigs[ViewportIndex].ViewFOV, FOVMin, FOVMax);
+	CameraSpeedSetting = ConfigOption->GetAssetEditorOptions(InAssetEditorToolkit->GetEditorName()).ViewportConfigs[ViewportIndex].CameraSpeedSetting;
+	CameraSpeedScalar = ConfigOption->GetAssetEditorOptions(InAssetEditorToolkit->GetEditorName()).ViewportConfigs[ViewportIndex].CameraSpeedScalar;
 
 	EngineShowFlags.SetSeparateTranslucency(true);
 	EngineShowFlags.SetCompositeEditorPrimitives(true);
@@ -997,6 +999,10 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			NumberFormatOptions.MinimumFractionalDigits = 2;
 			NumberFormatOptions.MaximumFractionalDigits = 2;
 			TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("SimulationTime", "Simulation Time: {0}ms"), FText::AsNumber(SimulationTime, &NumberFormatOptions)));
+		}
+		if (ClothingSimulation->IsTeleported())
+		{
+			TextValue = ConcatenateLine(TextValue, LOCTEXT("IsTeleported", "*** Warning ***: Max Delta Time Teleport!"));
 		}
 	}
 

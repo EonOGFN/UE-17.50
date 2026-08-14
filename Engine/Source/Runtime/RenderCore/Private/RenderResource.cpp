@@ -307,6 +307,9 @@ FString FTextureReference::GetFriendlyName() const
 /** The global null color vertex buffer, which is set with a stride of 0 on meshes without a color component. */
 TGlobalResource<FNullColorVertexBuffer> GNullColorVertexBuffer;
 
+/** The global null vertex buffer, which is set with a stride of 0 on meshes */
+TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
+
 /*------------------------------------------------------------------------------
 	FGlobalDynamicVertexBuffer implementation.
 ------------------------------------------------------------------------------*/
@@ -842,7 +845,11 @@ bool IsRayTracingEnabled()
 	{
 		FString Commandline = FCommandLine::Get();
 		bool bIsCookCommandlet = IsRunningCommandlet() && Commandline.Contains(TEXT("run=cook"));
-		checkf(!bIsCookCommandlet, TEXT("This function must not be called while cooking."));
+		// This function must not be called while cooking
+		if (bIsCookCommandlet)
+		{
+			return false;
+		}
 	}
 #endif // DO_CHECK && WITH_EDITOR
 

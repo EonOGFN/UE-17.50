@@ -73,6 +73,7 @@ struct FNetworkPredictionDriverBase
 	static constexpr bool HasNpState() { return !TIsVoidType<InputType>::Value || !TIsVoidType<SyncType>::Value || !TIsVoidType<AuxType>::Value; }
 	static constexpr bool HasDriver() { return !TIsVoidType<DriverType>::Value; }
 	static constexpr bool HasSimulation() { return !TIsVoidType<Simulation>::Value; }
+	static constexpr bool HasInput() { return !TIsVoidType<InputType>::Value; }
 	static constexpr bool HasPhysics() { return !TIsVoidType<PhysicsState>::Value; }
 
 	// Defines what the ModelDef can do. This is a compile time thing only.
@@ -286,7 +287,7 @@ struct FNetworkPredictionDriverBase
 	template<bool HasFunc=HasInitializeSimulationState>
 	static typename TEnableIf<!HasFunc>::Type CallInitializeSimulationStateMemberFunc(DriverType* Driver, SyncType* Sync, AuxType* Aux)
 	{
-		npCheckf(!HasNpState(), TEXT("No nitializeSimulationState implementation found. Implement DriverType::ProduceInput or ModelDef::ProduceInput"));
+		npCheckf(!HasNpState(), TEXT("No InitializeSimulationState implementation found. Implement DriverType::ProduceInput or ModelDef::ProduceInput"));
 	}	
 
 	// -----------------------------------------------------------------------------------------------------------------------------------
@@ -751,10 +752,10 @@ struct FNetworkPredictionDriverBase
 	template<bool bEnable=HasPhysics()>
 	static typename TEnableIf<bEnable>::Type TracePhysicsStateRecv(const TConditionalState<PhysicsState>& RecvState, FAnsiStringBuilderBase& Builder)
 	{
-		PhysicsState::ToString(RecvState, Builder);
+		PhysicsState::ToString(RecvState.Get(), Builder);
 	}
 
-	template<bool bEnable =HasPhysics()>
+	template<bool bEnable=HasPhysics()>
 	static typename TEnableIf<!bEnable>::Type TracePhysicsStateRecv(const TConditionalState<PhysicsState>& RecvState, FAnsiStringBuilderBase& Builder) { }
 
 	// Current latest physics state

@@ -84,6 +84,12 @@ void FStaticLightingSystemInterface::EditorTick()
 	}
 }
 
+// For editor -game
+void FStaticLightingSystemInterface::GameTick(float DeltaSeconds)
+{
+	EditorTick();
+}
+
 bool FStaticLightingSystemInterface::IsStaticLightingSystemRunning()
 {
 	if (Get()->GetPreferredImplementation())
@@ -114,6 +120,11 @@ IStaticLightingSystemImpl* FStaticLightingSystemInterface::GetPreferredImplement
 	{
 		return *Implementations.Find(FName(TEXT("GPULightmass")));
 	}
+	
+	if (Implementations.Num() > 0)
+	{
+		return Implementations.CreateIterator().Value();
+	}
 
 	return nullptr;
 }
@@ -126,7 +137,7 @@ bool FStaticLightingSystemInterface::ShouldOperateOnWorld(UWorld* InWorld)
 	const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnGameThread() != 0);
 
 	// IsEditorWorld() is true also for PIE and EditorPreview, which is not what we want
-	return bAllowStaticLighting && InWorld->WorldType == EWorldType::Editor;
+	return bAllowStaticLighting;
 }
 
 ENGINE_API void ToggleLightmapPreview_GameThread(UWorld* InWorld)
@@ -156,6 +167,16 @@ ENGINE_API void ToggleLightmapPreview_GameThread(UWorld* InWorld)
 					{
 						UE_LOG(LogTemp, Log, TEXT("Static lighting system is created for world %s."), *InWorld->GetPathName(InWorld->GetOuter()));
 
+						ULightComponent::ReassignStationaryLightChannels(InWorld, false, NULL);
+#if WITH_EDITOR
+						if (!GIsEditor)
+						{
+							if (GEngine)
+							{
+								GEngine->OnPostEditorTick().AddStatic(&FStaticLightingSystemInterface::GameTick);
+							}
+						}
+#endif // WITH_EDITOR
 						int32 NumPrimitiveComponents = 0;
 						int32 NumLightComponents = 0;
 

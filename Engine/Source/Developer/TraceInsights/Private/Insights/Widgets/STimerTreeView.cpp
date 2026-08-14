@@ -3,8 +3,11 @@
 #include "STimerTreeView.h"
 
 #include "EditorStyleSet.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SToolTip.h"
@@ -13,12 +16,44 @@
 #include "Insights/Table/ViewModels/Table.h"
 #include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/Table/ViewModels/TreeNodeSorting.h"
+#include "Insights/TimingProfilerManager.h"
+#include "Insights/ViewModels/TimerButterflyAggregation.h"
 #include "Insights/ViewModels/TimersViewColumnFactory.h"
+#include "Insights/Widgets/SAggregatorStatus.h"
 #include "Insights/Widgets/STimersViewTooltip.h"
 #include "Insights/Widgets/STimerTableRow.h"
 
 #define LOCTEXT_NAMESPACE "STimerTreeView"
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTimerTreeViewCommands
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FTimerTreeViewCommands : public TCommands<FTimerTreeViewCommands>
+{
+public:
+	FTimerTreeViewCommands()
+		: TCommands<FTimerTreeViewCommands>(TEXT("FTimerTreeViewCommands"), NSLOCTEXT("FTimerTreeViewCommands", "Timer Tree View Commands", "Timer Tree View Commands"), NAME_None, FEditorStyle::Get().GetStyleSetName())
+	{
+	}
+
+	virtual ~FTimerTreeViewCommands()
+	{
+	}
+
+	// UI_COMMAND takes long for the compiler to optimize
+	PRAGMA_DISABLE_OPTIMIZATION
+	virtual void RegisterCommands() override
+	{
+		UI_COMMAND(Command_CopyToClipboard, "Copy To Clipboard", "Copies selection to clipboard", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::C));
+	}
+	PRAGMA_ENABLE_OPTIMIZATION
+
+	TSharedPtr<FUICommandInfo> Command_CopyToClipboard;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// STimerTreeView
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 STimerTreeView::STimerTreeView()
@@ -49,10 +84,21 @@ STimerTreeView::~STimerTreeView()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void STimerTreeView::InitCommandList()
+{
+	FTimerTreeViewCommands::Register();
+	CommandList = MakeShared<FUICommandList>();
+	CommandList->MapAction(FTimerTreeViewCommands::Get().Command_CopyToClipboard, FExecuteAction::CreateSP(this, &STimerTreeView::ContextMenu_CopySelectedToClipboard_Execute), FCanExecuteAction::CreateSP(this, &STimerTreeView::ContextMenu_CopySelectedToClipboard_CanExecute));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void STimerTreeView::Construct(const FArguments& InArgs, const FText& InViewName)
 {
 	ViewName = InViewName;
+
+	TSharedRef<Insights::FTimerButterflyAggregator> TimerButterflyAggregator = FTimingProfilerManager::Get()->GetTimerButterflyAggregator();
 
 	SAssignNew(ExternalScrollbar, SScrollBar)
 	.AlwaysShowScrollbar(true);
@@ -70,10 +116,16 @@ void STimerTreeView::Construct(const FArguments& InArgs, const FText& InViewName
 
 			+ SScrollBox::Slot()
 			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-				.Padding(0.0f)
+				SNew(SOverlay)
+
+				+ SOverlay::Slot()
+				.HAlign(HAlign_Fill)
+				.VAlign(VAlign_Fill)
 				[
+				//SNew(SBorder)
+				//.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				//.Padding(0.0f)
+				//[
 					SAssignNew(TreeView, STreeView<FTimerNodePtr>)
 					.ExternalScrollbar(ExternalScrollbar)
 					.SelectionMode(ESelectionMode::Multi)
@@ -89,6 +141,15 @@ void STimerTreeView::Construct(const FArguments& InArgs, const FText& InViewName
 						SAssignNew(TreeViewHeaderRow, SHeaderRow)
 						.Visibility(EVisibility::Visible)
 					)
+				//]
+				]
+
+				+ SOverlay::Slot()
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Bottom)
+				.Padding(16.0f)
+				[
+					SAssignNew(AggregatorStatus, Insights::SAggregatorStatus, TimerButterflyAggregator)
 				]
 			]
 		]
@@ -108,6 +169,8 @@ void STimerTreeView::Construct(const FArguments& InArgs, const FText& InViewName
 	InitializeAndShowHeaderColumns();
 
 	CreateSortings();
+
+	InitCommandList();
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
@@ -150,7 +213,7 @@ TSharedPtr<SWidget> STimerTreeView::TreeView_GetMenuContent()
 	}
 
 	const bool bShouldCloseWindowAfterMenuSelection = true;
-	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, NULL);
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, CommandList.ToSharedRef());
 
 	// Selection menu
 	MenuBuilder.BeginSection("Selection", LOCTEXT("ContextMenu_Header_Selection", "Selection"));
@@ -176,6 +239,15 @@ TSharedPtr<SWidget> STimerTreeView::TreeView_GetMenuContent()
 
 	MenuBuilder.BeginSection("Misc", LOCTEXT("ContextMenu_Header_Misc", "Miscellaneous"));
 	{
+		MenuBuilder.AddMenuEntry
+		(
+			FTimerTreeViewCommands::Get().Command_CopyToClipboard,
+			NAME_None,
+			TAttribute<FText>(),
+			TAttribute<FText>(),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.CopyToClipboard")
+		);
+
 		MenuBuilder.AddSubMenu
 		(
 			LOCTEXT("ContextMenu_Header_Misc_Sort", "Sort By"),
@@ -366,15 +438,14 @@ TSharedRef<SWidget> STimerTreeView::TreeViewHeaderRow_GenerateColumnMenu(const I
 				FExecuteAction::CreateSP(this, &STimerTreeView::HideColumn, Column.GetId()),
 				FCanExecuteAction::CreateSP(this, &STimerTreeView::CanHideColumn, Column.GetId())
 			);
-
 			MenuBuilder.AddMenuEntry
 			(
 				LOCTEXT("TreeViewHeaderRow_HideColumn", "Hide"),
 				LOCTEXT("TreeViewHeaderRow_HideColumn_Desc", "Hides the selected column"),
 				FSlateIcon(), Action_HideColumn, NAME_None, EUserInterfaceActionType::Button
 			);
-			bIsMenuVisible = true;
 
+			bIsMenuVisible = true;
 			MenuBuilder.EndSection();
 		}
 
@@ -407,8 +478,8 @@ TSharedRef<SWidget> STimerTreeView::TreeViewHeaderRow_GenerateColumnMenu(const I
 				LOCTEXT("ContextMenu_Header_Misc_Sort_SortDescending_Desc", "Sorts descending"),
 				FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortDescending"), Action_SortDescending, NAME_None, EUserInterfaceActionType::RadioButton
 			);
-			bIsMenuVisible = true;
 
+			bIsMenuVisible = true;
 			MenuBuilder.EndSection();
 		}
 	}
@@ -1006,6 +1077,57 @@ void STimerTreeView::ExpandNodesRec(FTimerNodePtr NodePtr, int32 Depth)
 			ExpandNodesRec(StaticCastSharedPtr<FTimerNode>(ChildPtr), Depth + 1);
 		}
 	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool STimerTreeView::ContextMenu_CopySelectedToClipboard_CanExecute() const
+{
+	const TArray<FTimerNodePtr> SelectedNodes = TreeView->GetSelectedItems();
+
+	return SelectedNodes.Num() > 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STimerTreeView::ContextMenu_CopySelectedToClipboard_Execute()
+{
+	if (!Table->IsValid())
+	{
+		return;
+	}
+
+	TArray<Insights::FBaseTreeNodePtr> SelectedNodes;
+	for (FTimerNodePtr TimerPtr : TreeView->GetSelectedItems())
+	{
+		SelectedNodes.Add(TimerPtr);
+	}
+
+	if (SelectedNodes.Num() == 0)
+	{
+		return;
+	}
+
+	FString ClipboardText;
+
+	if (CurrentSorter.IsValid())
+	{
+		CurrentSorter->Sort(SelectedNodes, ColumnSortMode == EColumnSortMode::Ascending ? Insights::ESortMode::Ascending : Insights::ESortMode::Descending);
+	}
+
+	Table->GetVisibleColumnsData(SelectedNodes, ClipboardText);
+
+	if (ClipboardText.Len() > 0)
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*ClipboardText);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FReply STimerTreeView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	return CommandList->ProcessCommandBindings(InKeyEvent) == true ? FReply::Handled() : FReply::Unhandled();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -69,7 +69,7 @@ static int32 GIgnoreThreadToDoGatherOn = 0;
 static FAutoConsoleVariableRef CVarIgnoreThreadToDoGatherOn(
 	TEXT("TaskGraph.IgnoreThreadToDoGatherOn"),
 	GIgnoreThreadToDoGatherOn,
-	TEXT("If 1, then we ignore the hint provided with SetGatherThreadForDontCompleteUntil and just run it on AnyHiPriThreadHiPriTask.")
+	TEXT("DEPRECATED! If 1, then we ignore the hint provided with SetGatherThreadForDontCompleteUntil and just run it on AnyHiPriThreadHiPriTask.")
 );
 
 static int32 GTestDontCompleteUntilForAlreadyComplete = 1;
@@ -79,12 +79,7 @@ static FAutoConsoleVariableRef CVarTestDontCompleteUntilForAlreadyComplete(
 	TEXT("If 1, then we before spawning a gather task, we just check if all of the subtasks are complete, and in that case we can skip the gather.")
 );
 
-CORE_API int32 GEnablePowerSavingThreadPriorityReductionCVar = 0;
-static FAutoConsoleVariableRef CVarEnablePowerSavingThreadPriorityReduction(
-	TEXT("TaskGraph.EnablePowerSavingThreadPriorityReduction"),
-	GEnablePowerSavingThreadPriorityReductionCVar,
-	TEXT("If 1, then high pri thread tasks which are marked EPowerSavingEligibility::Eligible can be dropped to normal priority.")
-);
+UE_DEPRECATED(4.26, "No longer supported") CORE_API int32 GEnablePowerSavingThreadPriorityReductionCVar = 0;
 
 CORE_API bool GAllowTaskGraphForkMultithreading = true;
 static FAutoConsoleVariableRef CVarEnableForkedMultithreading(
@@ -668,10 +663,10 @@ public:
 			ProcessingTasks.Start(StatName);
 		}
 #endif
-		const bool bIsRenderThread = (ENamedThreads::GetThreadIndex(ThreadId) == ENamedThreads::ActualRenderingThread);
+		const bool bIsRenderThreadMainQueue = (ENamedThreads::GetThreadIndex(ThreadId) == ENamedThreads::ActualRenderingThread) && (QueueIndex == 0);
 		while (!Queue(QueueIndex).QuitForReturn)
 		{
-			const bool bIsRenderThreadAndPolling = bIsRenderThread && (GRenderThreadPollPeriodMs >= 0);
+			const bool bIsRenderThreadAndPolling = bIsRenderThreadMainQueue && (GRenderThreadPollPeriodMs >= 0);
 			const bool bStallQueueAllowStall = bAllowStall && !bIsRenderThreadAndPolling;
 			FBaseGraphTask* Task = Queue(QueueIndex).StallQueue.Pop(0, bStallQueueAllowStall);
 			TestRandomizedThreads();
@@ -688,7 +683,7 @@ public:
 				{
 					{
 						FScopeCycleCounter Scope(StallStatId);
-						Queue(QueueIndex).StallRestartEvent->Wait(bIsRenderThread ? GRenderThreadPollPeriodMs : MAX_uint32, bCountAsStall);
+						Queue(QueueIndex).StallRestartEvent->Wait(bIsRenderThreadAndPolling ? GRenderThreadPollPeriodMs : MAX_uint32, bCountAsStall);
 						if (Queue(QueueIndex).QuitForShutdown)
 						{
 							return ProcessedTasks;
@@ -2033,7 +2028,7 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
 	}
 #endif
-	if (GRHIThread_InternalUseOnly)
+	if (IsRHIThreadRunning())
 	{
 		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RHIT"), ENamedThreads::SetTaskPriority(ENamedThreads::RHIThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
 	}

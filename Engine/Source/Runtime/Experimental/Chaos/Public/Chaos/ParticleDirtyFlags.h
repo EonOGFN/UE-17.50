@@ -246,10 +246,19 @@ class FParticleDynamicMisc
 public:
 	void Serialize(FChaosArchive& Ar)
 	{
+		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		Ar << MLinearEtherDrag;
 		Ar << MAngularEtherDrag;
 		Ar << MObjectState;
 		Ar << MGravityEnabled;
+		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
+		{
+			Ar << MOneWayInteraction;
+		}
+		else
+		{
+			MOneWayInteraction = false;
+		}
 	}
 
 	template <typename TOther>
@@ -261,6 +270,7 @@ public:
 		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
 		SetResimType(Other.ResimType());
+		SetOneWayInteraction(Other.OneWayInteraction());
 	}
 
 	template <typename TOther>
@@ -271,7 +281,8 @@ public:
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
 			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
-			&& ResimType() == Other.ResimType();
+			&& ResimType() == Other.ResimType()
+			&& OneWayInteraction() == Other.OneWayInteraction();
 	}
 
 	bool operator==(const FParticleDynamicMisc& Other) const
@@ -297,6 +308,9 @@ public:
 	EResimType ResimType() const { return MResimType; }
 	void SetResimType(EResimType Type) { MResimType = Type; }
 
+	bool OneWayInteraction() const { return MOneWayInteraction; }
+	void SetOneWayInteraction(bool InOneWayInteraction) { MOneWayInteraction = InOneWayInteraction; }
+
 private:
 	FReal MLinearEtherDrag;
 	FReal MAngularEtherDrag;
@@ -306,6 +320,7 @@ private:
 	EResimType MResimType;
 
 	bool MGravityEnabled;
+	bool MOneWayInteraction = false;
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleDynamicMisc& Data)
@@ -318,7 +333,6 @@ class FParticleNonFrequentData
 {
 public:
 	FParticleNonFrequentData()
-	: MUserData(nullptr)
 	{
 
 	}
@@ -332,7 +346,6 @@ public:
 	void CopyFrom(const TOther& Other)
 	{
 		SetGeometry(Other.SharedGeometryLowLevel());
-		SetUserData(Other.UserData());
 		SetUniqueIdx(Other.UniqueIdx());
 		SetSpatialIdx(Other.SpatialIdx());
 #if CHAOS_CHECKED
@@ -344,7 +357,6 @@ public:
 	bool IsEqual(const TOther& Other) const
 	{
 		return Geometry() == Other.SharedGeometryLowLevel()
-			&& UserData() == Other.UserData()
 			&& UniqueIdx() == Other.UniqueIdx()
 			&& SpatialIdx() == Other.SpatialIdx()
 #if CHAOS_CHECKED
@@ -358,12 +370,10 @@ public:
 		return IsEqual(Other);
 	}
 
+	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& AccessGeometry() { return MGeometry; }
 	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& Geometry() const { return MGeometry;}
 	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
 	void SetGeometry(const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
-
-	void* UserData() const { return MUserData; }
-	void SetUserData(void* InData){ MUserData = InData;}
 
 	const FUniqueIdx& UniqueIdx() const { return MUniqueIdx; }
 	void SetUniqueIdx(FUniqueIdx InIdx){ MUniqueIdx = InIdx; }
@@ -377,7 +387,6 @@ public:
 #endif
 private:
 	TSharedPtr<FImplicitObject,ESPMode::ThreadSafe> MGeometry;
-	void* MUserData;
 	FUniqueIdx MUniqueIdx;
 	FSpatialAccelerationIdx MSpatialIdx;
 

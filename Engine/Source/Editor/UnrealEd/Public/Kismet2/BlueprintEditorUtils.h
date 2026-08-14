@@ -22,6 +22,7 @@ class FCompilerResultsLog;
 class INameValidatorInterface;
 class UActorComponent;
 class UBlueprintGeneratedClass;
+class USimpleConstructionScript;
 class UK2Node_Event;
 class UK2Node_Variable;
 class ULevelScriptBlueprint;
@@ -180,9 +181,14 @@ public:
 	static void PreloadMembers(UObject* InObject);
 
 	/**
-	 * Preloads the construction script, and all templates therein
+	 * Preloads the construction script, and all templates therein, for the given Blueprint object
 	 */
 	static void PreloadConstructionScript(UBlueprint* Blueprint);
+
+	/**
+	 * Preloads the given construction script, and all templates therein
+	 */
+	static void PreloadConstructionScript(USimpleConstructionScript* SimpleConstructionScript);
 
 	/** 
 	 * Helper function to patch the new CDO into the linker where the old one existed 
@@ -324,6 +330,14 @@ public:
 	 * @return	null if it fails, else.
 	 */
 	static class UEdGraph* CreateNewGraph(UObject* ParentScope, const FName& GraphName, TSubclassOf<class UEdGraph> GraphClass, TSubclassOf<class UEdGraphSchema> SchemaClass);
+
+	/**
+	 * Creates a new function graph with a signature that matches InNode
+	 *
+	 * @param InNode        Node to copy signature from
+	 * @param InSchemaClass The schema for the new graph
+	 */
+	static void CreateMatchingFunction(UK2Node_CallFunction* InNode, TSubclassOf<class UEdGraphSchema> InSchemaClass);
 
 	/**
 	 * Creates a function graph, but does not add it to the blueprint.  If bIsUserCreated is true, the entry/exit nodes will be editable. 
@@ -1031,6 +1045,19 @@ public:
 	static void ValidateBlueprintChildVariables(UBlueprint* InBlueprint, const FName InVariableName,
 		TFunction<void(UBlueprint* InChildBP, const FName InVariableName, bool bValidatedVariable)> PostValidationCallback = TFunction<void(UBlueprint*, FName, bool)>());
 
+	/**
+	 * Gets AssetData for all child classes of a given blueprint
+	 * 
+	 * @param InBlueprint    Taget Blueprint
+	 * @param OutChildren    AssetData representing the child blueprints
+	 * @param bInRecursive   if true, will return classes derived from child classes as well
+	 * @return Number of child blueprints found
+	 */
+	static int32 GetChildrenOfBlueprint(UBlueprint* InBlueprint, TArray<FAssetData>& OutChildren, bool bInRecursive = true);
+
+	/** Marks all children of a blueprint as modified */
+	static void MarkBlueprintChildrenAsModified(UBlueprint* InBlueprint);
+
 	/** Rename a Timeline. If bRenameNodes is true, will also rename any timeline nodes associated with this timeline */
 	static bool RenameTimeline (UBlueprint* Blueprint, const FName OldVarName, const FName NewVarName);
 
@@ -1176,6 +1203,9 @@ public:
 	/** Gets pointer to PropertyFlags of variable */
 	static uint64* GetBlueprintVariablePropertyFlags(UBlueprint* Blueprint, const FName& VarName);
 
+	/** Gets the variable linked to a RepNotify function, returns nullptr if not found */
+	static FBPVariableDescription* GetVariableFromOnRepFunction(UBlueprint* Blueprint, FName FuncName);
+
 	/** Get RepNotify function name of variable */
 	static FName GetBlueprintVariableRepNotifyFunc(UBlueprint* Blueprint, const FName& VarName);
 
@@ -1258,16 +1288,28 @@ public:
 	/** Indicates if the variable is used on any graphs in this Blueprint*/
 	static bool IsVariableUsed(const UBlueprint* Blueprint, const FName& Name, UEdGraph* LocalGraphScope = nullptr);
 
-	/** Copies the value from the passed in string into a property. ContainerMem points to the Struct or Class containing Property */
+	/** 
+	 * Copies the value from the passed in string into a property. ContainerMem points to the Struct or Class containing Property 
+	 * NOTE: This function does not work correctly with static arrays.
+	 */
 	static bool PropertyValueFromString(const FProperty* Property, const FString& StrValue, uint8* Container, UObject* OwningObject = nullptr);
 
-	/** Copies the value from the passed in string into a property. DirectValue is the raw memory address of the property value */
+	/** 
+	 * Copies the value from the passed in string into a property. DirectValue is the raw memory address of the property value 
+	 * NOTE: This function does not work correctly with static arrays.
+	 */
 	static bool PropertyValueFromString_Direct(const FProperty* Property, const FString& StrValue, uint8* DirectValue, UObject* OwningObject = nullptr);
 
-	/** Copies the value from a property into the string OutForm. ContainerMem points to the Struct or Class containing Property */
+	/** 
+	 * Copies the value from a property into the string OutForm. ContainerMem points to the Struct or Class containing Property 
+	 * NOTE: This function does not work correctly with static arrays.
+	 */
 	static bool PropertyValueToString(const FProperty* Property, const uint8* Container, FString& OutForm, UObject* OwningObject = nullptr);
 
-	/** Copies the value from a property into the string OutForm. DirectValue is the raw memory address of the property value */
+	/** 
+	 * Copies the value from a property into the string OutForm. DirectValue is the raw memory address of the property value 
+	 * NOTE: This function does not work correctly with static arrays.
+	 */
 	static bool PropertyValueToString_Direct(const FProperty* Property, const uint8* DirectValue, FString& OutForm, UObject* OwningObject = nullptr);
 
 	/** Call PostEditChange() on all Actors based on the given Blueprint */

@@ -133,7 +133,8 @@ public:
 
 	/** Replacement for Step that checks the for byte code, and if none exists, then PropertyChainForCompiledIn is used. Also, makes an effort to verify that the params are in the correct order and the types are compatible. **/
 	template<class TProperty>
-	FORCEINLINE_DEBUGGABLE void StepCompiledIn(void*const Result);
+	FORCEINLINE_DEBUGGABLE void StepCompiledIn(void* Result);
+	FORCEINLINE_DEBUGGABLE void StepCompiledIn(void* Result, const FFieldClass* ExpectedPropertyType);
 
 	/** Replacement for Step that checks the for byte code, and if none exists, then PropertyChainForCompiledIn is used. Also, makes an effort to verify that the params are in the correct order and the types are compatible. **/
 	template<class TProperty, typename TNativeType>
@@ -185,8 +186,10 @@ public:
 
 	/**
 	* This will return the StackTrace of the all script frames currently active
+	* 
+	* @param	bReturnEmpty if true, returns empty string when no script callstack found
 	**/
-	COREUOBJECT_API static FString GetScriptCallstack();
+	COREUOBJECT_API static FString GetScriptCallstack(bool bReturnEmpty = false);
 
 	/** 
 	 * This will return a string of the form "ScopeName.FunctionName" associated with this stack frame:
@@ -316,7 +319,12 @@ COREUOBJECT_API void GInitRunaway();
  * Also makes an effort to verify that the params are in the correct order and the types are compatible.
  **/
 template<class TProperty>
-FORCEINLINE_DEBUGGABLE void FFrame::StepCompiledIn(void*const Result)
+FORCEINLINE_DEBUGGABLE void FFrame::StepCompiledIn(void* Result)
+{
+	StepCompiledIn(Result, TProperty::StaticClass());
+}
+
+FORCEINLINE_DEBUGGABLE void FFrame::StepCompiledIn(void* Result, const FFieldClass* ExpectedPropertyType)
 {
 	if (Code)
 	{
@@ -324,8 +332,9 @@ FORCEINLINE_DEBUGGABLE void FFrame::StepCompiledIn(void*const Result)
 	}
 	else
 	{
-		checkSlow(CastField<TProperty>(PropertyChainForCompiledIn) && CastField<FProperty>(PropertyChainForCompiledIn));
-		TProperty* Property = (TProperty*)PropertyChainForCompiledIn;
+		checkSlow(ExpectedPropertyType && ExpectedPropertyType->IsChildOf(FProperty::StaticClass()));
+		checkSlow(PropertyChainForCompiledIn && PropertyChainForCompiledIn->IsA(ExpectedPropertyType));
+		FProperty* Property = (FProperty*)PropertyChainForCompiledIn;
 		PropertyChainForCompiledIn = Property->Next;
 		StepExplicitProperty(Result, Property);
 	}

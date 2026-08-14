@@ -18,6 +18,7 @@
 
 FConsoleSlateDebuggerPaint::FConsoleSlateDebuggerPaint()
 	: bEnabled(false)
+	, bEnabledCVarValue(false)
 	, bDisplayWidgetsNameList(false)
 	, bUseWidgetPathAsName(false)
 	, bDrawBox(false)
@@ -32,12 +33,17 @@ FConsoleSlateDebuggerPaint::FConsoleSlateDebuggerPaint()
 	, CacheDuration(2.0)
 	, ShowPaintWidgetCommand(
 		TEXT("SlateDebugger.Paint.Start")
-		, TEXT("Start the painted widget debug tool. Use to show widget that have been painted this frame.")
+		, TEXT("Start the painted widget debug tool. It shows when widgets are painted.")
 		, FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebuggerPaint::StartDebugging))
 	, HidePaintWidgetCommand(
 		TEXT("SlateDebugger.Paint.Stop")
 		, TEXT("Stop the painted widget debug tool.")
 		, FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebuggerPaint::StopDebugging))
+	, EnabledRefCVar(
+		TEXT("SlateDebugger.Paint.Enable")
+		, bEnabledCVarValue
+		, TEXT("Start/Stop the painted widget debug tool. It shows when widgets are painted.")
+		, FConsoleVariableDelegate::CreateRaw(this, &FConsoleSlateDebuggerPaint::HandleEnabled))
 	, LogPaintedWidgetOnceCommand(
 		TEXT("SlateDebugger.Paint.LogOnce")
 		, TEXT("Log the widgets that has been painted during the last update once")
@@ -112,6 +118,7 @@ void FConsoleSlateDebuggerPaint::StartDebugging()
 		FSlateDebugging::PaintDebugElements.AddRaw(this, &FConsoleSlateDebuggerPaint::HandlePaintDebugInfo);
 		FCoreDelegates::OnEndFrame.AddRaw(this, &FConsoleSlateDebuggerPaint::HandleEndFrame);
 	}
+	bEnabledCVarValue = bEnabled;
 }
 
 void FConsoleSlateDebuggerPaint::StopDebugging()
@@ -124,6 +131,19 @@ void FConsoleSlateDebuggerPaint::StopDebugging()
 
 		PaintedWidgets.Empty();
 		bEnabled = false;
+	}
+	bEnabledCVarValue = bEnabled;
+}
+
+void FConsoleSlateDebuggerPaint::HandleEnabled(IConsoleVariable* Variable)
+{
+	if (bEnabledCVarValue)
+	{
+		StartDebugging();
+	}
+	else
+	{
+		StopDebugging();
 	}
 }
 
@@ -156,8 +176,8 @@ void FConsoleSlateDebuggerPaint::HandleEndWidgetPaint(const SWidget* Widget, con
 	// Use the Widget pointer for the id.
 	//That may introduce bug when a widget is destroyed and the same memory is reused for another widget. We do not care for this debug tool.
 	//We do not keep the widget alive or reuse it later, cache all the info that we need.
-	const TSWidgetId WidgetId = reinterpret_cast<TSWidgetId>(Widget);
-	const TSWindowId WindowId = reinterpret_cast<TSWindowId>(OutDrawElements.GetPaintWindow());
+	const FConsoleSlateDebuggerUtility::TSWidgetId WidgetId = FConsoleSlateDebuggerUtility::GetId(Widget);
+	const FConsoleSlateDebuggerUtility::TSWindowId WindowId = FConsoleSlateDebuggerUtility::GetId(OutDrawElements.GetPaintWindow());
 
 	FPaintInfo* FoundItem = PaintedWidgets.Find(WidgetId);
 	if (FoundItem == nullptr)
@@ -190,7 +210,7 @@ void FConsoleSlateDebuggerPaint::HandlePaintDebugInfo(const FPaintArgs& InArgs, 
 {
 	++InOutLayerId;
 
-	TSWindowId PaintWindow = reinterpret_cast<TSWindowId>(InOutDrawElements.GetPaintWindow());
+	FConsoleSlateDebuggerUtility::TSWindowId PaintWindow = FConsoleSlateDebuggerUtility::GetId(InOutDrawElements.GetPaintWindow());
 
 	int32 NumberOfWidget = 0;
 	const float TextElementY = 36.f;

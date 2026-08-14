@@ -17,12 +17,15 @@
 #include "ContentBrowserDataFilter.h"
 #include "ContentBrowserDelegates.h"
 #include "Delegates/DelegateCombinations.h"
+#include "SFilterList.h"
+#include "ContentBrowserPluginFilters.h"
 
 class FSourcesSearch;
 struct FHistoryData;
 class FTreeItem;
 class FContentBrowserSingleton;
 class FBlacklistPaths;
+class UToolMenu;
 
 typedef TTextFilter< const FString& > FolderTextFilter;
 
@@ -32,6 +35,9 @@ typedef TTextFilter< const FString& > FolderTextFilter;
 class SPathView : public SCompoundWidget
 {
 public:
+	/** Delegate for when plugin filters have changed */
+	DECLARE_DELEGATE( FOnFrontendPluginFilterChanged );
+
 	SLATE_BEGIN_ARGS( SPathView )
 		: _InitialCategoryFilter(EContentBrowserItemCategoryFilter::IncludeAll)
 		, _FocusSearchBoxWhenOpened(true)
@@ -82,6 +88,9 @@ public:
 
 		/** Optional external search. Will hide and replace our internal search UI */
 		SLATE_ARGUMENT( TSharedPtr<FSourcesSearch>, ExternalSearch )
+
+		/** The plugin filter collection */
+		SLATE_ARGUMENT( TSharedPtr<FPluginFilterCollectionType>, PluginPathFilters)
 
 	SLATE_END_ARGS()
 
@@ -162,7 +171,7 @@ public:
 	virtual void LoadSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString);
 
 	/** Populates the tree with all folders that are not filtered out */
-	virtual void Populate();
+	virtual void Populate(const bool bIsRefreshingFilter = false);
 
 	/** Sets an alternate tree title*/
 	void SetTreeTitle(FText InTitle)
@@ -174,6 +183,8 @@ public:
 	{
 		return TreeTitle;
 	}
+
+	void PopulatePathViewFiltersMenu(UToolMenu* Menu);
 
 protected:
 	/** Expands all parents of the specified item */
@@ -262,6 +273,18 @@ private:
 
 	/** One-off active timer to repopulate the path view */
 	EActiveTimerReturnType TriggerRepopulate(double InCurrentTime, float InDeltaTime);
+
+	/** Sets the active state of a filter. */
+	void SetPluginPathFilterActive(const TSharedRef<FContentBrowserPluginFilter>& Filter, bool bActive);
+
+	/** Unchecks all plugin filters. */
+	void ResetPluginPathFilters();
+
+	/** Toggle plugin filter. */
+	void PluginPathFilterClicked(TSharedRef<FContentBrowserPluginFilter> Filter);
+
+	/** Returns true if filter is being used. */
+	bool IsPluginPathFilterInUse(TSharedRef<FContentBrowserPluginFilter> Filter) const;
 
 protected:
 	/** A helper class to manage PreventTreeItemChangedDelegateCount by incrementing it when constructed (on the stack) and decrementing when destroyed */
@@ -356,6 +379,12 @@ private:
 
 	/** The title of this path view */
 	FText TreeTitle;
+
+	/** The filter collection used to filter plugins */
+	TSharedPtr<FPluginFilterCollectionType> PluginPathFilters;
+
+	/** Plugins filters that are currently active */
+	TArray< TSharedRef<FContentBrowserPluginFilter> > AllPluginPathFilters;
 };
 
 
@@ -369,7 +398,7 @@ public:
 	/** Constructs this widget with InArgs */
 	virtual void Construct(const FArguments& InArgs) override;
 
-	virtual void Populate() override;
+	virtual void Populate(const bool bIsRefreshingFilter = false) override;
 
 	/** Saves any settings to config that should be persistent between editor sessions */
 	virtual void SaveSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString) const override;

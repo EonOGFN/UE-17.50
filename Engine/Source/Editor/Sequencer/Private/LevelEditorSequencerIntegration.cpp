@@ -599,6 +599,7 @@ void FLevelEditorSequencerIntegration::OnPreBeginPIE(bool bIsSimulating)
 				In.GetEvaluationTemplate().PlaybackContextChanged(In);
 				In.RestorePreAnimatedState();
 				In.State.ClearObjectCaches(In);
+				In.RequestEvaluate();
 			}
 		}
 	);
@@ -1112,6 +1113,11 @@ void FLevelEditorSequencerIntegration::ActivateRealtimeViewports()
 void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 {
 	// Undo any weird settings to editor level viewports.
+
+	// We don't care if our cinematic viewports still have our override or not because we just want to make sure nobody has
+	// it anymore. It could happen that a viewport doesn't have it if that viewport is an actual Cinematic Viewport, for instance.
+	const bool bCheckMissingOverride = false;
+
 	for(FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
 	{
 		if (LevelVC)
@@ -1119,7 +1125,7 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 			// Turn off realtime when exiting.
 			if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
 			{				
-				LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"));
+				LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"), bCheckMissingOverride);
 			}
 		}
 	}

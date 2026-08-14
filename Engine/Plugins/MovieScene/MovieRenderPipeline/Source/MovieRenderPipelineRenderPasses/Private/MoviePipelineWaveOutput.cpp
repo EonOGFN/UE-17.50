@@ -53,7 +53,7 @@ static bool IsMoviePipelineAudioOutputSupported(const UObject* WorldContextObjec
 	}
 
 	// If there is no audio thread running (e.g. we're in the editor), it's possible to create a new non-realtime audio mixer
-	if (!FAudioThread::IsAudioThreadRunning())
+	if (!IsAudioThreadRunning())
 	{
 		return true;
 	}
@@ -64,11 +64,6 @@ static bool IsMoviePipelineAudioOutputSupported(const UObject* WorldContextObjec
 
 void UMoviePipelineWaveOutput::BeginFinalizeImpl()
 {
-	if (!IsEnabled() || !GetIsUserCustomized())
-	{
-		return;
-	}
-
 	if (!IsMoviePipelineAudioOutputSupported(this))
 	{
 		return;
@@ -159,7 +154,7 @@ void UMoviePipelineWaveOutput::BeginFinalizeImpl()
 		// Create a full absolute path
 		FMoviePipelineFormatArgs FinalFormatArgs;
 		FString FinalFilePath;
-		GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, Segment.OutputState, FormatOverrides, /*Out*/ FinalFilePath, /*Out*/ FinalFormatArgs);
+		GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, /*Out*/ FinalFilePath, /*Out*/ FinalFormatArgs, &Segment.OutputState);
 
 		// Remove the .{ext} string added by resolving the name format. Works for all the other types, but incompatible with our API.
 		if (FinalFilePath.EndsWith(TEXT(".{ext}")))

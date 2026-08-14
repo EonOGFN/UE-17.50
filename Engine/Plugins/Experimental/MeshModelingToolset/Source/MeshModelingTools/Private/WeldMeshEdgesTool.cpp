@@ -80,6 +80,10 @@ void UWeldMeshEdgesTool::Setup()
 	ToolPropertyObjects.Add(this);
 
 	bResultValid = false;
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("WeldMeshEdgesToolDescription", "Weld overlapping/identical border edges of the selected Mesh, by merging the vertices."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -181,15 +185,6 @@ void UWeldMeshEdgesTool::UpdateResult()
 	bResultValid = true;
 }
 
-bool UWeldMeshEdgesTool::HasAccept() const
-{
-	return true;
-}
-
-bool UWeldMeshEdgesTool::CanAccept() const
-{
-	return true;
-}
 
 
 

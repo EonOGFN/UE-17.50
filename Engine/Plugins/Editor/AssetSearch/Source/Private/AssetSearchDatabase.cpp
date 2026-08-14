@@ -127,7 +127,7 @@ public:
 	}
 
 	 SQLITE_PREPARED_STATEMENT(FGetTotalSearchRecords,
-		"SELECT COUNT(rowid) FROM table_asset_properties;",
+		"SELECT COUNT(assetid) FROM table_asset_properties;",
 		SQLITE_PREPARED_STATEMENT_COLUMNS(int64),
 		SQLITE_PREPARED_STATEMENT_BINDINGS()
 	);
@@ -496,11 +496,11 @@ bool FAssetSearchDatabase::Open(const FString& InSessionPath, const ESQLiteDatab
 	Database->Execute(TEXT("PRAGMA page_size=65535;"));
 	Database->Execute(TEXT("PRAGMA locking_mode=EXCLUSIVE;"));
 
-	//Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
-	//Database->Execute(TEXT("PRAGMA synchronous=NORMAL;"));
+	Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
+	Database->Execute(TEXT("PRAGMA synchronous=NORMAL;"));
 
-	Database->Execute(TEXT("PRAGMA journal_mode=NORMAL;"));
-	Database->Execute(TEXT("PRAGMA synchronous=OFF;"));
+	/*Database->Execute(TEXT("PRAGMA journal_mode=NORMAL;"));
+	Database->Execute(TEXT("PRAGMA synchronous=OFF;"));*/
 
 	int32 LoadedDatabaseVersion = 0;
 	Database->GetUserVersion(LoadedDatabaseVersion);

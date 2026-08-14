@@ -17,6 +17,17 @@ class UMovieSceneEntitySystemLinker;
 struct FMovieScenePossessable;
 struct FMovieSceneObjectCache;
 
+enum class ETrackSupport
+{
+	/** This track is not supported */
+	NotSupported,
+	/** This track is supported */
+	Supported,
+	/** Default behavior determined by the track */
+	Default
+};
+
+
 /**
  * Abstract base class for movie scene animations (C++ version).
  */
@@ -181,6 +192,8 @@ public:
 	 */
 	virtual UObject* CreateDirectorInstance(IMovieScenePlayer& Player) { return nullptr; }
 
+	MOVIESCENE_API virtual EMovieSceneServerClientMask OverrideNetworkMask(EMovieSceneServerClientMask InDefaultMask) const;
+
 	/**
 	 * Find the first object binding ID associated with the specified tag name (set up through RMB->Expose on Object bindings from within sequencer)
 	 */
@@ -198,12 +211,9 @@ public:
 	MOVIESCENE_API virtual void PostLoad() override;
 	MOVIESCENE_API virtual void PreSave(const ITargetPlatform* TargetPlatform) override;
 	MOVIESCENE_API virtual void BeginDestroy() override;
+	MOVIESCENE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
 
 	MOVIESCENE_API virtual void Serialize(FArchive& Ar) override;
-
-#if WITH_EDITORONLY_DATA
-	MOVIESCENE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
-#endif
 
 public:
 
@@ -292,5 +302,10 @@ public:
 	 * Get the display name for this movie sequence
 	 */
 	virtual FText GetDisplayName() const { return FText::FromName(GetFName()); }
+	
+	/*
+	 * Sequences can determine whether they support a particular track type
+	 */
+	virtual ETrackSupport IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const { return ETrackSupport::Default; }
 #endif
 };

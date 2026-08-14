@@ -208,6 +208,7 @@ void FSplineCurves::UpdateSpline(bool bClosedLoop, bool bStationaryEndpoints, in
 	}
 
 	ReparamTable.Points.Emplace(AccumulatedLength, static_cast<float>(NumSegments), 0.0f, 0.0f, CIM_Linear);
+	++Version;
 }
 
 void USplineComponent::UpdateSpline()
@@ -465,6 +466,29 @@ FVector USplineComponent::GetScaleAtSplineInputKey(float InKey) const
 	return Scale;
 }
 
+
+float USplineComponent::GetDistanceAlongSplineAtSplineInputKey(float InKey) const
+{
+	const int32 NumPoints = SplineCurves.Position.Points.Num();
+	const int32 NumSegments = bClosedLoop ? NumPoints : NumPoints - 1;
+
+	if ((InKey >= 0) && (InKey < NumSegments))
+	{
+		const int32 PointIndex = FMath::FloorToInt(InKey);
+		const float Fraction = InKey - PointIndex;
+		const int32 ReparamPointIndex = PointIndex * ReparamStepsPerSegment;
+		const float Distance = SplineCurves.ReparamTable.Points[ReparamPointIndex].InVal;
+		return Distance + GetSegmentLength(PointIndex, Fraction);
+	}
+	else if (InKey >= NumSegments)
+	{
+		return SplineCurves.GetSplineLength();
+	}
+
+	return 0.0f;
+}
+
+
 template<class T>
 T GetPropertyValueAtSplineInputKey(const USplineMetadata* Metadata, float InKey, FName PropertyName)
 {
@@ -555,6 +579,13 @@ void USplineComponent::ClearSplinePoints(bool bUpdateSpline)
 	SplineCurves.Position.Points.Reset();
 	SplineCurves.Rotation.Points.Reset();
 	SplineCurves.Scale.Points.Reset();
+
+	USplineMetadata* Metadata = GetSplinePointsMetadata();
+	if (Metadata)
+	{
+		Metadata->Reset(0);
+	}
+
 	if (bUpdateSpline)
 	{
 		UpdateSpline();
@@ -1657,6 +1688,14 @@ void USplineComponent::Draw(FPrimitiveDrawInterface* PDI, const FSceneView* View
 	}
 }
 
+#if WITH_EDITOR
+bool USplineComponent::IgnoreBoundsForEditorFocus() const
+{
+	// Cannot compute proper bounds when there's no point so don't participate to editor focus if that's the case : 
+	return SplineCurves.Position.Points.Num() == 0;
+}
+#endif // WITH_EDITOR
+
 FBoxSphereBounds USplineComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
 	if (!bDrawDebug)
@@ -1679,18 +1718,25 @@ FBoxSphereBounds USplineComponent::CalcBounds(const FTransform& LocalToWorld) co
 
 	FVector Min(WORLD_MAX);
 	FVector Max(-WORLD_MAX);
-	for (int32 Index = 0; Index < NumSegments; Index++)
+	if (NumSegments > 0)
 	{
-		const bool bLoopSegment = (Index == NumPoints - 1);
-		const int32 NextIndex = bLoopSegment ? 0 : Index + 1;
-		const FInterpCurvePoint<FVector>& ThisInterpPoint = SplineCurves.Position.Points[Index];
-		FInterpCurvePoint<FVector> NextInterpPoint = SplineCurves.Position.Points[NextIndex];
-		if (bLoopSegment)
+		for (int32 Index = 0; Index < NumSegments; Index++)
 		{
-			NextInterpPoint.InVal = ThisInterpPoint.InVal + SplineCurves.Position.LoopKeyOffset;
-		}
+			const bool bLoopSegment = (Index == NumPoints - 1);
+			const int32 NextIndex = bLoopSegment ? 0 : Index + 1;
+			const FInterpCurvePoint<FVector>& ThisInterpPoint = SplineCurves.Position.Points[Index];
+			FInterpCurvePoint<FVector> NextInterpPoint = SplineCurves.Position.Points[NextIndex];
+			if (bLoopSegment)
+			{
+				NextInterpPoint.InVal = ThisInterpPoint.InVal + SplineCurves.Position.LoopKeyOffset;
+			}
 
-		CurveVectorFindIntervalBounds(ThisInterpPoint, NextInterpPoint, Min, Max);
+			CurveVectorFindIntervalBounds(ThisInterpPoint, NextInterpPoint, Min, Max);
+		}
+	}
+	else if (NumPoints == 1)
+	{
+		Min = Max = SplineCurves.Position.Points[0].OutVal;
 	}
 
 	return FBoxSphereBounds(FBox(Min, Max).TransformBy(LocalToWorld));

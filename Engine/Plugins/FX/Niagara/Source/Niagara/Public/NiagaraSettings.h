@@ -15,6 +15,7 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "ScriptStruct"))
 	TArray<FSoftObjectPath> AdditionalParameterTypes;
 
@@ -23,6 +24,7 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "Enum"))
 	TArray<FSoftObjectPath> AdditionalParameterEnums;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Default effect type to use for effects that don't define their own. Can be null. */
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "NiagaraEffectType"))
@@ -35,6 +37,14 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	/** Info texts that the component renderer shows the user depending on the selected component class. */
 	UPROPERTY(config, EditAnywhere, Category = Renderer)
 	TMap<FString, FText> ComponentRendererWarningsPerClass;
+
+	/** The default render target format used by all Niagara Render Target Data Interfaces unless overridden. */
+	UPROPERTY(config, EditAnywhere, Category = Renderer)
+	TEnumAsByte<ETextureRenderTargetFormat> DefaultRenderTargetFormat = RTF_RGBA16f;
+
+	/** The default buffer format used by all Niagara Grid Data Interfaces unless overridden. */
+	UPROPERTY(config, EditAnywhere, Category = Renderer)
+	ENiagaraGpuBufferFormat DefaultGridFormat = ENiagaraGpuBufferFormat::HalfFloat;
 
 	// Begin UDeveloperSettings Interface
 	virtual FName GetCategoryName() const override;

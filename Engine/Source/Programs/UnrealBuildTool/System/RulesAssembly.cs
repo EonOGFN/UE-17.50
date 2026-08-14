@@ -598,6 +598,9 @@ namespace UnrealBuildTool
 			{
 				Rules.GlobalDefinitions.Add("DISABLE_UNVERIFIED_CERTIFICATE_LOADING=1");
 			}
+			
+			// workaround for “overflow in constant arithmetic” error using INFINITY macro
+			Rules.GlobalDefinitions.Add("_UCRT_LEGACY_INFINITY=1");
 
 			// Allow the platform to finalize the settings
 			UEBuildPlatform Platform = UEBuildPlatform.GetBuildPlatform(Rules.Platform);

@@ -149,7 +149,6 @@ void UDynamicMeshSculptTool::Setup()
 	BrushIndicator->LineThickness = 1.0;
 	BrushIndicator->bDrawIndicatorLines = true;
 	BrushIndicator->bDrawRadiusCircle = false;
-	BrushIndicator->bDrawFalloffCircle = true;
 	BrushIndicator->LineColor = FLinearColor(0.9f, 0.4f, 0.4f);
 
 	// initialize our properties
@@ -241,6 +240,12 @@ void UDynamicMeshSculptTool::Setup()
 
 void UDynamicMeshSculptTool::Shutdown(EToolShutdownType ShutdownType)
 {
+	if (ShutdownType == EToolShutdownType::Accept && AreAllTargetsValid() == false)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Tool Target has become Invalid (possibly it has been Force Deleted). Aborting Tool."));
+		ShutdownType = EToolShutdownType::Cancel;
+	}
+
 	BrushIndicatorMesh->Disconnect();
 	BrushIndicatorMesh = nullptr;
 
@@ -2373,7 +2378,7 @@ void UDynamicMeshSculptTool::UpdateFixedPlaneGizmoVisibility(bool bVisible)
 			PlaneTransformGizmo->bUseContextCoordinateSystem = false;
 			PlaneTransformGizmo->CurrentCoordinateSystem = EToolContextCoordinateSystem::Local;
 			PlaneTransformGizmo->SetActiveTarget(PlaneTransformProxy, GetToolManager());
-			PlaneTransformGizmo->SetNewGizmoTransform(FTransform(GizmoProperties->Rotation, GizmoProperties->Position));
+			PlaneTransformGizmo->ReinitializeGizmoTransform(FTransform(GizmoProperties->Rotation, GizmoProperties->Position));
 		}
 
 		PlaneTransformGizmo->bSnapToWorldGrid = GizmoProperties->bSnapToGrid;

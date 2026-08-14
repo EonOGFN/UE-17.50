@@ -2,6 +2,48 @@
 //	Network Prediction Plugin
 // --------------------------------------------------------------------------------------------------------------------
 
+10-22-2020:
+
+Sorry for lack of updates again. Development is never as smooth as we'd like. Most of these changes are from bugs/issues discovered
+while working on real world use cases of physics based simulations.
+
+New macro for tracing reasons why corrections happen: UE_NP_TRACE_RECONCILE
+* Use this in ShouldReconcile. When trace is enabled it will trace the given string when reconcile happens.
+*This string will appear in NP Insights and highlight the state the caused the reconcile.
+*(The UI is still not as intuitive as we'd like but this is a good start)
+
+Corrections caused by "local frame offset" changes are now traced
+*These are corrections that usually happen due to input starvation on the server: the client's InputCmd->ServerFrame relationship shifts.
+*This usually causes a corection as the clients local frame number shifts relative to the server frame numbers.
+*In NP Insights Sim Frame View, it wasn't obvious when this happened since in term of server frames, the client was still correct.
+*This is now called out in the "Sim Frame contents view" (bottom pane)
+
+Server-side Input starvation and overflow are now traced
+
+Added option to show number of buffered input commands in NP Insights
+
+Physics Received State now properly traced
+
+
+9-2-2020:
+
+Update for root motion. This improves on the previous implementation:
+-UMockRootMotionSource as a base class for "root motion defining thing".
+-New source types can be added without modifying the root motion simulation or driver code.
+-Sources can have networked internal state and parameters.
+-The root motion source is net serialized as a {SourceID, StartTime, Parameters} tuple via TMockRootMotionSourceProxy
+-Sources define how their internal state/parameters are encoded into the Parameters blob via UMockRootMotionSource::SerializePayloadParameters
+-Encoding SourceID is done through a new 
+
+This pattern is very relevenant for things like custom movement modes or other data-driven extensions of simulations.
+
+Minor updates:
+-Trace local frame offset to Insights. 
+-Store latest simulation time in FNetworkPredictionStateView
+-Fix a couple issues where wrong time/frame was being traced, causing bugs in Insights
+
+
+
 8-10-2020:
 
 Initial mock root motion checked in. This is the begining of root motion networking which will find its way into the new movement system.

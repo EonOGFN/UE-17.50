@@ -1534,7 +1534,7 @@ static ULandscapeLayerInfoObject* GetLandscapeLayerInfoObject(FName LayerName, c
 	UPackage* Package = FindPackage(nullptr, *PackageName);
 	if (Package == nullptr)
 	{
-		Package = CreatePackage(nullptr, *PackageName);
+		Package = CreatePackage( *PackageName);
 	}
 
 	ULandscapeLayerInfoObject* LayerInfo = FindObject<ULandscapeLayerInfoObject>(Package, *LayerObjectName);
@@ -1999,7 +1999,7 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 		const FString LODLevelFileName = FPackageName::LongPackageNameToFilename(LODLevelPackageName) + FPackageName::GetMapPackageExtension();
 
 		// Create a package for a LOD level
-		UPackage* LODPackage = CreatePackage(NULL, *LODLevelPackageName);
+		UPackage* LODPackage = CreatePackage( *LODLevelPackageName);
 		LODPackage->FullyLoad();
 		LODPackage->Modify();
 		// This is a hack to avoid save file dialog when we will be saving LOD map package
@@ -2137,7 +2137,7 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 			UPackage* MeshOuter = AssetsOuter;
 			if (SimplificationDetails.bCreatePackagePerAsset)
 			{
-				MeshOuter = CreatePackage(nullptr, *(AssetsPath + LandscapeMeshAssetName));
+				MeshOuter = CreatePackage( *(AssetsPath + LandscapeMeshAssetName));
 				MeshOuter->FullyLoad();
 				MeshOuter->Modify();
 			}
@@ -2146,7 +2146,7 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 			{
 				StaticMesh->InitResources();
 				// make sure it has a new lighting guid
-				StaticMesh->LightingGuid = FGuid::NewGuid();
+				StaticMesh->SetLightingGuid();
 
 				// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
 				StaticMesh->LightMapResolution = 64;
@@ -2161,7 +2161,7 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 				SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
 
 				//Assign the proxy material to the static mesh
-				StaticMesh->StaticMaterials.Add(FStaticMaterial(StaticLandscapeMaterial));
+				StaticMesh->GetStaticMaterials().Add(FStaticMaterial(StaticLandscapeMaterial));
 
 				//Set the Imported version before calling the build
 				StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;

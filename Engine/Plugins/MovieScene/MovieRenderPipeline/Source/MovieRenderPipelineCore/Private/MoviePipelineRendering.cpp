@@ -31,25 +31,11 @@
 #include "ShaderCompiler.h"
 #include "EngineUtils.h"
 
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+#include "Rendering/IRenderCaptureProvider.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "MoviePipeline"
-
-static TArray<UMoviePipelineRenderPass*> GetAllRenderPasses(const UMoviePipelineMasterConfig* InMasterConfig, const UMoviePipelineExecutorShot* InShot)
-{
-	TArray<UMoviePipelineRenderPass*> RenderPasses;
-
-	// Master Configuration first.
-	RenderPasses.Append(InMasterConfig->FindSettings<UMoviePipelineRenderPass>(true));
-
-	// And then any additional passes requested by the shot.
-	if (InShot->ShotOverrideConfig != nullptr)
-	{
-		RenderPasses.Append(InShot->ShotOverrideConfig->FindSettings<UMoviePipelineRenderPass>(true));
-	}
-
-	return RenderPasses;
-}
-
-
 
 void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* InShot)
 {
@@ -66,8 +52,8 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 	* LeftOffset = floor((1925-1920)/2) = 2
 	* RightOffset = (1925-1920-LeftOffset)
 	*/
-	UMoviePipelineAntiAliasingSetting* AccumulationSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(InShot);
-	UMoviePipelineHighResSetting* HighResSettings = FindOrAddSetting<UMoviePipelineHighResSetting>(InShot);
+	UMoviePipelineAntiAliasingSetting* AccumulationSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(InShot);
+	UMoviePipelineHighResSetting* HighResSettings = FindOrAddSettingForShot<UMoviePipelineHighResSetting>(InShot);
 	UMoviePipelineOutputSetting* OutputSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
 	check(OutputSettings);
 
@@ -95,7 +81,7 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 
 	// Initialize out output passes
 	int32 NumOutputPasses = 0;
-	for (UMoviePipelineRenderPass* RenderPass : GetAllRenderPasses(GetPipelineMasterConfig(), InShot))
+	for (UMoviePipelineRenderPass* RenderPass : FindSettingsForShot<UMoviePipelineRenderPass>(InShot))
 	{
 		RenderPass->Setup(RenderPassInitSettings);
 		NumOutputPasses++;
@@ -106,9 +92,19 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 
 void UMoviePipeline::TeardownRenderingPipelineForShot(UMoviePipelineExecutorShot* InShot)
 {
-	for (UMoviePipelineRenderPass* RenderPass : GetAllRenderPasses(GetPipelineMasterConfig(), InShot))
+	for (UMoviePipelineRenderPass* RenderPass : FindSettingsForShot<UMoviePipelineRenderPass>(InShot))
 	{
 		RenderPass->Teardown();
+	}
+
+	if (OutputBuilder->GetNumOutstandingFrames() > 1)
+	{
+		// The intention behind this warning is to catch when you've created a render pass that doesn't submit as many render passes as you expect. Unfortunately,
+		// it also catches the fact that temporal sampling tends to render an extra frame. When we are submitting frames we only check if the actual evaluation point
+		// surpasses the upper bound, at which point we don't submit anything more. We could check a whole frame in advance and never submit any temporal samples for
+		// the extra frame, but then this would not work with slow-motion. Instead, we will just comprimise here and only warn if there's multiple frames that are missing.
+		// This is going to be true if you have set up your rendering wrong (and are rendering more than one frame) so it will catch enough of the cases to be worth it.
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Not all frames were fully submitted by the time rendering was torn down! Frames will be missing from output!"));
 	}
 }
 
@@ -148,10 +144,13 @@ void UMoviePipeline::RenderFrame()
 	// 
 	// In short, for each output frame, for each accumulation frame, for each tile X/Y, for each jitter, we render a pass. This setup is
 	// designed to maximize the likely hood of deterministic rendering and that different passes line up with each other.
-	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(ActiveShotList[CurrentShotIndex]);
-	UMoviePipelineCameraSetting* CameraSettings = FindOrAddSetting<UMoviePipelineCameraSetting>(ActiveShotList[CurrentShotIndex]);
-	UMoviePipelineHighResSetting* HighResSettings = FindOrAddSetting<UMoviePipelineHighResSetting>(ActiveShotList[CurrentShotIndex]);
+	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(ActiveShotList[CurrentShotIndex]);
+	UMoviePipelineCameraSetting* CameraSettings = FindOrAddSettingForShot<UMoviePipelineCameraSetting>(ActiveShotList[CurrentShotIndex]);
+	UMoviePipelineHighResSetting* HighResSettings = FindOrAddSettingForShot<UMoviePipelineHighResSetting>(ActiveShotList[CurrentShotIndex]);
 	UMoviePipelineOutputSetting* OutputSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
+	
+	// Color settings are optional, so we don't need to do any assertion checks.
+	UMoviePipelineColorSetting* ColorSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineColorSetting>();
 	check(AntiAliasingSettings);
 	check(CameraSettings);
 	check(HighResSettings);
@@ -195,6 +194,8 @@ void UMoviePipeline::RenderFrame()
 		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/pitch"), FrameInfo.PrevViewRotation.Pitch);
 		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/yaw"), FrameInfo.PrevViewRotation.Yaw);
 		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/roll"), FrameInfo.PrevViewRotation.Roll);
+
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/shutterAngle"), CachedOutputState.TimeData.MotionBlurFraction * 360.0f);
 	}
 
 	if (CurrentCameraCut.State != EMovieRenderShotState::Rendering)
@@ -214,12 +215,19 @@ void UMoviePipeline::RenderFrame()
 	int32 NumWarmupSamples = 0;
 	if (CurrentCameraCut.State == EMovieRenderShotState::WarmingUp)
 	{
-		// We should only get this far if we want to render samples, so we'll always overwrite it with NumRenderWarmUpSamples. We should
-		// not change the NumSpatialSamples because that causes side effects to other parts of the rendering.
-		NumWarmupSamples = AntiAliasingSettings->RenderWarmUpCount;
+		// We sometimes render the actual warmup frames, and in this case we only want to render one warmup sample each frame,
+		// and save any RenderWarmUp frames until the last one.
+		if (CurrentCameraCut.NumEngineWarmUpFramesRemaining > 0)
+		{
+			NumWarmupSamples = 1;
+		}
+		else
+		{
+			NumWarmupSamples = AntiAliasingSettings->RenderWarmUpCount;
+		}
 	}
 
-	TArray<UMoviePipelineRenderPass*> InputBuffers = GetAllRenderPasses(GetPipelineMasterConfig(), ActiveShotList[CurrentShotIndex]);
+	TArray<UMoviePipelineRenderPass*> InputBuffers = FindSettingsForShot<UMoviePipelineRenderPass>(ActiveShotList[CurrentShotIndex]);
 
 	// If this is the first sample for a new frame, we want to notify the output builder that it should expect data to accumulate for this frame.
 	if (CachedOutputState.IsFirstTemporalSample())
@@ -233,6 +241,16 @@ void UMoviePipeline::RenderFrame()
 			RenderPass->GatherOutputPasses(OutputFrame.ExpectedRenderPasses);
 		}
 	}
+
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+	if (CachedOutputState.bCaptureRendering)
+	{
+		if (IRenderCaptureProvider::IsAvailable())
+		{
+			IRenderCaptureProvider::Get().StartCapturing();
+		}
+	}
+#endif
 
 	for (int32 TileY = 0; TileY < TileCount.Y; TileY++)
 	{
@@ -333,14 +351,8 @@ void UMoviePipeline::RenderFrame()
 				SampleState.bWorldIsPaused = bWorldIsPaused;
 				SampleState.bCameraCut = bCameraCut;
 				SampleState.AntiAliasingMethod = AntiAliasingMethod;
-				SampleState.SceneCaptureSource = OutputSettings->bDisableToneCurve ? ESceneCaptureSource::SCS_FinalColorHDR : ESceneCaptureSource::SCS_FinalToneCurveHDR;
+				SampleState.SceneCaptureSource = (ColorSettings && ColorSettings->bDisableToneCurve) ? ESceneCaptureSource::SCS_FinalColorHDR : ESceneCaptureSource::SCS_FinalToneCurveHDR;
 				SampleState.OutputState = CachedOutputState;
-				if (CameraSettings->CameraShutterAngle == 0)
-				{
-					// If they're using a zero degree shutter angle we lie about how long a frame is to prevent divide by zeros earlier,
-					// so now we correct for that so that we don't end up with motion blur when the user doesn't want it.
-					SampleState.OutputState.TimeData.MotionBlurFraction = 0.f;
-				}
 				SampleState.ProjectionMatrixJitterAmount = FVector2D((float)(SpatialShiftX) * 2.0f / BackbufferResolution.X, (float)SpatialShiftY * -2.0f / BackbufferResolution.Y);
 				SampleState.TileIndexes = FIntPoint(TileX, TileY);
 				SampleState.TileCounts = TileCount;
@@ -354,8 +366,8 @@ void UMoviePipeline::RenderFrame()
 				SampleState.TileSize = TileResolution;
 				SampleState.FrameInfo = FrameInfo;
 				SampleState.bWriteSampleToDisk = HighResSettings->bWriteAllSamples;
-				SampleState.ExposureCompensation = CameraSettings->bManualExposure ? CameraSettings->ExposureCompensation : TOptional<float>();
 				SampleState.TextureSharpnessBias = HighResSettings->TextureSharpnessBias;
+				SampleState.OCIOConfiguration = ColorSettings ? &ColorSettings->OCIOConfiguration : nullptr;
 				SampleState.GlobalScreenPercentageFraction = FLegacyScreenPercentageDriver::GetCVarResolutionFraction();
 				{
 					SampleState.OverlappedPad = FIntPoint(FMath::CeilToInt(TileResolution.X * HighResSettings->OverlapRatio), 
@@ -380,9 +392,49 @@ void UMoviePipeline::RenderFrame()
 		}
 	}
 
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+	if (CachedOutputState.bCaptureRendering)
+	{
+		if (IRenderCaptureProvider::IsAvailable())
+		{
+			IRenderCaptureProvider::Get().StopCapturing();
+		}
+	}
+#endif
+
 	// Re-enable the progress widget so when the player viewport is drawn to the preview window, it shows.
 	SetProgressWidgetVisible(true);
 }
+
+#if WITH_EDITOR
+void UMoviePipeline::AddFrameToOutputMetadata(const FString& ClipName, const FString& ImageSequenceFileName, const FMoviePipelineFrameOutputState& FrameOutputState, const FString& Extension, const bool bHasAlpha)
+{
+	if (FrameOutputState.ShotIndex < 0 || FrameOutputState.ShotIndex >= ActiveShotList.Num())
+	{
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("ShotIndex %d out of range"), FrameOutputState.ShotIndex);
+		return;
+	}
+
+	FMovieSceneExportMetadataShot& ShotMetadata = OutputMetadata.Shots[FrameOutputState.ShotIndex];
+	FMovieSceneExportMetadataClip& ClipMetadata = ShotMetadata.Clips.FindOrAdd(ClipName).FindOrAdd(Extension.ToUpper());
+
+	if (!ClipMetadata.IsValid())
+	{
+		ClipMetadata.FileName = ImageSequenceFileName;
+		ClipMetadata.bHasAlpha = bHasAlpha;
+	}
+
+	if (FrameOutputState.OutputFrameNumber < ClipMetadata.StartFrame)
+	{
+		ClipMetadata.StartFrame = FrameOutputState.OutputFrameNumber;
+	}
+
+	if (FrameOutputState.OutputFrameNumber > ClipMetadata.EndFrame)
+	{
+		ClipMetadata.EndFrame = FrameOutputState.OutputFrameNumber;
+	}
+}
+#endif
 
 void UMoviePipeline::AddOutputFuture(TFuture<bool>&& OutputFuture)
 {
@@ -398,7 +450,7 @@ void UMoviePipeline::ProcessOutstandingFinishedFrames()
 	
 		for (UMoviePipelineOutputBase* OutputContainer : GetPipelineMasterConfig()->GetOutputContainers())
 		{
-			OutputContainer->OnRecieveImageData(&OutputFrame);
+			OutputContainer->OnReceiveImageData(&OutputFrame);
 		}
 	}
 }

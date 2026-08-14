@@ -138,8 +138,6 @@ FString FMaterialStatsUtils::ShaderPlatformTypeName(const EShaderPlatform Platfo
 			return FString("PS4");
 		case SP_XBOXONE_D3D12:
 			return FString("XBOXONE_D3D12");
-		case SP_OPENGL_SM5:
-			return FString("OPENGL_SM5");
 		case SP_METAL:
 			return FString("METAL");
 		case SP_METAL_MRT:
@@ -148,8 +146,6 @@ FString FMaterialStatsUtils::ShaderPlatformTypeName(const EShaderPlatform Platfo
 			return FString("METAL_TVOS");
 		case SP_METAL_MRT_TVOS:
 			return FString("METAL_MRT_TVOS");
-		case SP_OPENGL_ES31_EXT:
-			return FString("OPENGL_ES31_EXT");
 		case SP_PCD3D_ES3_1:
 			return FString("PCD3D_ES3_1");
 		case SP_OPENGL_PCES3_1:
@@ -218,8 +214,6 @@ bool FMaterialStatsUtils::PlatformNeedsOfflineCompiler(const EShaderPlatform Sha
 	switch (ShaderPlatform)
 	{
 		case SP_PS4:
-		case SP_OPENGL_SM5:
-		case SP_OPENGL_ES31_EXT:
 		case SP_OPENGL_PCES3_1:
 		case SP_VULKAN_PCES3_1:
 		case SP_VULKAN_SM5:
@@ -427,6 +421,18 @@ void FMaterialStatsUtils::GetRepresentativeShaderTypesAndDescriptions(TMap<FName
 			const FString Description = FString::Printf(TEXT("Mobile base pass shader without light map%s"), DescSuffix);
 			ShaderTypeNamesAndDescriptions.Add(FLocalVertexFactoryName)
 				.Add(FRepresentativeShaderInfo(ERepresentativeShader::StationarySurface, TBasePassForForwardShadingPSFNoLightMapPolicy0Name, Description));
+
+			static const FName Name_NoLM_HDRLinear64 = TEXT("TMobileBasePassVSFNoLightMapPolicyHDRLinear64");
+			static const FName Name_NoLM_LDRGamma32 = TEXT("TMobileBasePassVSFNoLightMapPolicyLDRGamma32");
+			static const FName TBasePassForForwardShadingVSFNoLightMapPolicyName = bMobileHDR ? Name_NoLM_HDRLinear64 : Name_NoLM_LDRGamma32;
+
+			ShaderTypeNamesAndDescriptions.FindOrAdd(FLocalVertexFactoryName)
+				.Add(FRepresentativeShaderInfo(ERepresentativeShader::StaticMesh, TBasePassForForwardShadingVSFNoLightMapPolicyName,
+					FString::Printf(TEXT("Mobile base pass vertex shader%s"), DescSuffix)));
+
+			ShaderTypeNamesAndDescriptions.FindOrAdd(FGPUFactoryName)
+				.Add(FRepresentativeShaderInfo(ERepresentativeShader::SkeletalMesh, TBasePassForForwardShadingVSFNoLightMapPolicyName,
+					FString::Printf(TEXT("Mobile base pass vertex shader%s"), DescSuffix)));
 		}
 		else
 		{

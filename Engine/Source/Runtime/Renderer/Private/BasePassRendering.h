@@ -30,6 +30,8 @@ class FScene;
 
 template<typename TBufferStruct> class TUniformBufferRef;
 
+struct FSceneWithoutWaterTextures;
+
 class FViewInfo;
 class UMaterialExpressionSingleLayerWaterMaterialOutput;
 
@@ -61,78 +63,96 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FOpaqueBasePassUniformParameters,)
 	SHADER_PARAMETER_STRUCT(FSharedBasePassUniformParameters, Shared)
 	// Forward shading 
 	SHADER_PARAMETER(int32, UseForwardScreenSpaceShadowMask)
-	SHADER_PARAMETER_TEXTURE(Texture2D, ForwardScreenSpaceShadowMaskTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, IndirectOcclusionTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, ResolvedSceneDepthTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ForwardScreenSpaceShadowMaskTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, IndirectOcclusionTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ResolvedSceneDepthTexture)
 	// DBuffer decals
-	SHADER_PARAMETER_TEXTURE(Texture2D, DBufferATexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DBufferATexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, DBufferATextureSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, DBufferBTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DBufferBTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, DBufferBTextureSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, DBufferCTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DBufferCTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, DBufferCTextureSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D<uint>, DBufferRenderMask)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, DBufferRenderMask)
 	// Single Layer Water
-	SHADER_PARAMETER_TEXTURE(Texture2D, SceneColorWithoutSingleLayerWaterTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorWithoutSingleLayerWaterTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorWithoutSingleLayerWaterSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, SceneDepthWithoutSingleLayerWaterTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthWithoutSingleLayerWaterTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneDepthWithoutSingleLayerWaterSampler)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	SHADER_PARAMETER(FVector4, SceneWithoutSingleLayerWaterMinMaxUV)
 	SHADER_PARAMETER(FVector4, DistortionParams)
 	// Misc
-	SHADER_PARAMETER_TEXTURE(Texture2D, EyeAdaptation)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FTranslucentBasePassUniformParameters,)
 	SHADER_PARAMETER_STRUCT(FSharedBasePassUniformParameters, Shared)
-	SHADER_PARAMETER_STRUCT(FSceneTexturesUniformParameters, SceneTextures)
+	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
 	// Material SSR
 	SHADER_PARAMETER(FVector4, HZBUvFactorAndInvFactor)
 	SHADER_PARAMETER(FVector4, PrevScreenPositionScaleBias)
 	SHADER_PARAMETER(float, PrevSceneColorPreExposureInv)
-	SHADER_PARAMETER_TEXTURE(Texture2D, HZBTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HZBTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HZBSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, PrevSceneColor)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PrevSceneColor)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PrevSceneColorSampler)
+	// Volumetric cloud
+	SHADER_PARAMETER_TEXTURE(Texture2D, VolumetricCloudColor)
+	SHADER_PARAMETER_SAMPLER(SamplerState, VolumetricCloudColorSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, VolumetricCloudDepth)
+	SHADER_PARAMETER_SAMPLER(SamplerState, VolumetricCloudDepthSampler)
+	SHADER_PARAMETER(float, ApplyVolumetricCloudOnTransparent)
 	// Translucency Lighting Volume
-	SHADER_PARAMETER_TEXTURE(Texture3D, TranslucencyLightingVolumeAmbientInner)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyLightingVolumeAmbientInner)
 	SHADER_PARAMETER_SAMPLER(SamplerState, TranslucencyLightingVolumeAmbientInnerSampler)
-	SHADER_PARAMETER_TEXTURE(Texture3D, TranslucencyLightingVolumeAmbientOuter)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyLightingVolumeAmbientOuter)
 	SHADER_PARAMETER_SAMPLER(SamplerState, TranslucencyLightingVolumeAmbientOuterSampler)
-	SHADER_PARAMETER_TEXTURE(Texture3D, TranslucencyLightingVolumeDirectionalInner)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyLightingVolumeDirectionalInner)
 	SHADER_PARAMETER_SAMPLER(SamplerState, TranslucencyLightingVolumeDirectionalInnerSampler)
-	SHADER_PARAMETER_TEXTURE(Texture3D, TranslucencyLightingVolumeDirectionalOuter)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyLightingVolumeDirectionalOuter)
 	SHADER_PARAMETER_SAMPLER(SamplerState, TranslucencyLightingVolumeDirectionalOuterSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
+	// Misc
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorCopyTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorCopySampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 
 DECLARE_GPU_DRAWCALL_STAT_EXTERN(Basepass);
 
-extern FTextureRHIRef& GetEyeAdaptation(const FViewInfo& View);
-
 extern void SetupSharedBasePassParameters(
+	FRDGBuilder* GraphBuilder,
 	FRHICommandListImmediate& RHICmdList,
 	const FViewInfo& View,
-	FSceneRenderTargets& SceneRenderTargets,
 	FSharedBasePassUniformParameters& BasePassParameters);
 
-extern void CreateOpaqueBasePassUniformBuffer(
-	FRHICommandListImmediate& RHICmdList, 
-	const FViewInfo& View,
-	IPooledRenderTarget* ForwardScreenSpaceShadowMask,
-	FVector4* SceneWithoutSingleLayerWaterMinMaxUV,
-	IPooledRenderTarget* SceneColorWithoutSingleLayerWater,
-	IPooledRenderTarget* SceneDepthWithoutSingleLayerWater,
-	TUniformBufferRef<FOpaqueBasePassUniformParameters>& BasePassUniformBuffer);
-
-extern void CreateTranslucentBasePassUniformBuffer(
+extern TUniformBufferRef<FOpaqueBasePassUniformParameters> CreateOpaqueBasePassUniformBuffer(
 	FRHICommandListImmediate& RHICmdList,
 	const FViewInfo& View,
-	IPooledRenderTarget* SceneColorCopy,
+	IPooledRenderTarget* ForwardScreenSpaceShadowMask);
+
+extern TRDGUniformBufferRef<FOpaqueBasePassUniformParameters> CreateOpaqueBasePassUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	FRDGTextureRef ForwardScreenSpaceShadowMask,
+	const FSceneWithoutWaterTextures* SceneWithoutWaterTextures,
+	const int32 ViewIndex);
+
+extern TRDGUniformBufferRef<FTranslucentBasePassUniformParameters> CreateTranslucentBasePassUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	FRDGTextureRef SceneColorCopy,
 	ESceneTextureSetupMode SceneTextureSetupMode,
-	TUniformBufferRef<class FTranslucentBasePassUniformParameters>& BasePassUniformBuffer,
+	const int32 ViewIndex);
+
+extern TUniformBufferRef<FTranslucentBasePassUniformParameters> CreateTranslucentBasePassUniformBuffer(
+	FRHICommandListImmediate& RHICmdList,
+	const FViewInfo& View,
+	ESceneTextureSetupMode SceneTextureSetupMode,
 	const int32 ViewIndex);
 
 /** Parameters for computing forward lighting. */
@@ -149,31 +169,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("NUM_CULLED_GRID_PRIMITIVE_TYPES"), NumCulledGridPrimitiveTypes);
 	}
 };
-
-inline void BindBasePassUniformBuffer(const FShaderParameterMap& ParameterMap, FShaderUniformBufferParameter& BasePassUniformBuffer)
-{
-	TArray<const FShaderParametersMetadata*> NestedStructs;
-	FOpaqueBasePassUniformParameters::StaticStructMetadata.GetNestedStructs(NestedStructs);
-	FTranslucentBasePassUniformParameters::StaticStructMetadata.GetNestedStructs(NestedStructs);
-
-	for (int32 StructIndex = 0; StructIndex < NestedStructs.Num(); StructIndex++)
-	{
-		const TCHAR* StructVariableName = NestedStructs[StructIndex]->GetShaderVariableName();
-		checkfSlow(!ParameterMap.ContainsParameterAllocation(StructVariableName), TEXT("%s found bound in the base pass.  Base Pass uniform buffer nested structs should not be bound separately"), StructVariableName);
-	}
-	
-	const bool bNeedsOpaqueBasePass = ParameterMap.ContainsParameterAllocation(FOpaqueBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
-	const bool bNeedsTransparentBasePass = ParameterMap.ContainsParameterAllocation(FTranslucentBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
-
-	checkSlow(!(bNeedsOpaqueBasePass && bNeedsTransparentBasePass));
-
-	BasePassUniformBuffer.Bind(ParameterMap, FOpaqueBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
-
-	if (!BasePassUniformBuffer.IsBound())
-	{
-		BasePassUniformBuffer.Bind(ParameterMap, FTranslucentBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
-	}
-}
 
 template<typename LightMapPolicyType>
 class TBasePassShaderElementData : public FMeshMaterialShaderElementData
@@ -201,7 +196,6 @@ protected:
 		FMeshMaterialShader(Initializer)
 	{
 		LightMapPolicyType::VertexParametersType::Bind(Initializer.ParameterMap);
-		BindBasePassUniformBuffer(Initializer.ParameterMap, PassUniformBuffer);
 		ReflectionCaptureBuffer.Bind(Initializer.ParameterMap, TEXT("ReflectionCapture"));
 	}
 
@@ -327,9 +321,7 @@ protected:
 
 	TBasePassHS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer):
 		FBaseHS(Initializer)
-	{
-		BindBasePassUniformBuffer(Initializer.ParameterMap, PassUniformBuffer);
-	}
+	{}
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
@@ -361,9 +353,7 @@ protected:
 
 	TBasePassDS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer):
 		FBaseDS(Initializer)
-	{
-		BindBasePassUniformBuffer(Initializer.ParameterMap, PassUniformBuffer);
-	}
+	{}
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
@@ -407,7 +397,7 @@ public:
 
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
 	{
-		if (ParameterMap.ContainsParameterAllocation(FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName()))
+		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName()))
 		{
 			OutError.Add(TEXT("Base pass shaders cannot read from the SceneTexturesStruct."));
 			return false;
@@ -421,7 +411,6 @@ public:
 		FMeshMaterialShader(Initializer)
 	{
 		LightMapPolicyType::PixelParametersType::Bind(Initializer.ParameterMap);
-		BindBasePassUniformBuffer(Initializer.ParameterMap, PassUniformBuffer);
 		ReflectionCaptureBuffer.Bind(Initializer.ParameterMap, TEXT("ReflectionCapture"));
 
 		// These parameters should only be used nested in the base pass uniform buffer
@@ -554,7 +543,7 @@ public:
  */
 
 template <typename LightMapPolicyType>
-void GetBasePassShaders(
+bool GetBasePassShaders(
 	const FMaterial& Material, 
 	FVertexFactoryType* VertexFactoryType, 
 	LightMapPolicyType LightMapPolicy, 
@@ -574,41 +563,61 @@ void GetBasePassShaders(
 		&& VertexFactoryType->SupportsTessellationShaders() 
 		&& MaterialTessellationMode != MTM_NoTessellation;
 
+	FMaterialShaderTypes ShaderTypes;
 	if (bNeedsHSDS)
 	{
-		DomainShader = Material.GetShader<TBasePassDS<LightMapPolicyType > >(VertexFactoryType);
+		ShaderTypes.AddShaderType<TBasePassDS<LightMapPolicyType>>();
+		//DomainShader = Material.GetShader<TBasePassDS<LightMapPolicyType > >(VertexFactoryType, 0, false);
 		
 		// Metal requires matching permutations, but no other platform should worry about this complication.
 		if (bEnableAtmosphericFog && DomainShader.IsValid() && IsMetalPlatform(EShaderPlatform(DomainShader->GetTarget().Platform)))
 		{
-			HullShader = Material.GetShader<TBasePassHS<LightMapPolicyType, true > >(VertexFactoryType);
+			ShaderTypes.AddShaderType<TBasePassHS<LightMapPolicyType, true>>();
+			//HullShader = Material.GetShader<TBasePassHS<LightMapPolicyType, true > >(VertexFactoryType, 0, false);
 		}
 		else
 		{
-			HullShader = Material.GetShader<TBasePassHS<LightMapPolicyType, false > >(VertexFactoryType);
+			ShaderTypes.AddShaderType<TBasePassHS<LightMapPolicyType, false>>();
+			//HullShader = Material.GetShader<TBasePassHS<LightMapPolicyType, false > >(VertexFactoryType, 0, false);
 		}
 	}
 
 	if (bEnableAtmosphericFog)
 	{
-		VertexShader = Material.GetShader<TBasePassVS<LightMapPolicyType, true> >(VertexFactoryType);
+		ShaderTypes.AddShaderType<TBasePassVS<LightMapPolicyType, true>>();
+		//VertexShader = Material.GetShader<TBasePassVS<LightMapPolicyType, true> >(VertexFactoryType, 0, false);
 	}
 	else
 	{
-		VertexShader = Material.GetShader<TBasePassVS<LightMapPolicyType, false> >(VertexFactoryType);
+		ShaderTypes.AddShaderType<TBasePassVS<LightMapPolicyType, false>>();
+		//VertexShader = Material.GetShader<TBasePassVS<LightMapPolicyType, false> >(VertexFactoryType, 0, false);
 	}
 	if (bEnableSkyLight)
 	{
-		PixelShader = Material.GetShader<TBasePassPS<LightMapPolicyType, true> >(VertexFactoryType);
+		ShaderTypes.AddShaderType<TBasePassPS<LightMapPolicyType, true>>();
+		//PixelShader = Material.GetShader<TBasePassPS<LightMapPolicyType, true> >(VertexFactoryType, 0, false);
 	}
 	else
 	{
-		PixelShader = Material.GetShader<TBasePassPS<LightMapPolicyType, false> >(VertexFactoryType);
+		ShaderTypes.AddShaderType<TBasePassPS<LightMapPolicyType, false>>();
+		//PixelShader = Material.GetShader<TBasePassPS<LightMapPolicyType, false> >(VertexFactoryType, 0, false);
 	}
+
+	FMaterialShaders Shaders;
+	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+	{
+		return false;
+	}
+
+	Shaders.TryGetVertexShader(VertexShader);
+	Shaders.TryGetPixelShader(PixelShader);
+	Shaders.TryGetHullShader(HullShader);
+	Shaders.TryGetDomainShader(DomainShader);
+	return true;
 }
 
 template <>
-void GetBasePassShaders<FUniformLightMapPolicy>(
+bool GetBasePassShaders<FUniformLightMapPolicy>(
 	const FMaterial& Material, 
 	FVertexFactoryType* VertexFactoryType, 
 	FUniformLightMapPolicy LightMapPolicy, 
@@ -622,8 +631,6 @@ void GetBasePassShaders<FUniformLightMapPolicy>(
 	TShaderRef<TBasePassPixelShaderPolicyParamType<FUniformLightMapPolicy>>& PixelShader
 	);
 
-void SetupBasePassView(FRHICommandList& RHICmdList, const FViewInfo& View, const FSceneRenderer* SceneRenderer, const bool bIsEditorPrimitivePass = false);
-	
 class FBasePassMeshProcessor : public FMeshPassProcessor
 {
 public:
@@ -661,7 +668,9 @@ public:
 
 private:
 
-	void AddMeshBatchForSimpleForwardShading(
+	bool TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy& MaterialRenderProxy, const FMaterial& Material);
+
+	bool AddMeshBatchForSimpleForwardShading(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,
@@ -677,7 +686,7 @@ private:
 		ERasterizerCullMode MeshCullMode);
 
 	template<typename LightMapPolicyType>
-	void Process(
+	bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,

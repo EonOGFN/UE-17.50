@@ -593,7 +593,7 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 	}
 	FSimpleScopeSecondsCounter ScopedTimer(GTickFlushGameDriverTimeSeconds, bEnableTimer);
 
-	if ( IsServer() && ClientConnections.Num() > 0 && !ClientConnections[0]->IsReplay() )
+	if (IsServer() && ClientConnections.Num() > 0 && !bSkipServerReplicateActors)
 	{
 		// Update all clients.
 #if WITH_SERVER_CODE
@@ -1926,7 +1926,7 @@ void UNetDriver::InternalProcessRemoteFunctionPrivate(
 	}
 
 	// If saturated and function is unimportant, skip it. Note unreliable multicasts are queued at the actor channel level so they are not gated here.
-	if (!(Function->FunctionFlags & FUNC_NetReliable) && (!(Function->FunctionFlags & FUNC_NetMulticast)) && !Connection->IsNetReady(0))
+	if (!(Function->FunctionFlags & FUNC_NetReliable) && (!(Function->FunctionFlags & FUNC_NetMulticast)) && (!Connection->IsNetReady(0)))
 	{
 		DEBUG_REMOTEFUNCTION(TEXT("Network saturated, not calling %s::%s"), *GetNameSafe(Actor), *GetNameSafe(Function));
 		return;
@@ -3256,7 +3256,7 @@ void UNetDriver::NotifyStreamingLevelUnload(ULevel* Level)
 
 	if (ServerConnection && ServerConnection->PackageMap)
 	{
-		UE_LOG(LogNet, Log, TEXT("NotifyStreamingLevelUnload: %s"), *Level->GetFullName() );
+		UE_LOG(LogNet, Verbose, TEXT("NotifyStreamingLevelUnload: %s"), *Level->GetFullName() );
 
 		if (Level->LevelScriptActor)
 		{
@@ -3486,15 +3486,15 @@ void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	}
 	
 	for (FObjectReplicator* Replicator : This->AllOwnedReplicators)
-		{
+	{
 		Collector.AddReferencedObject(Replicator->ObjectPtr, This);
 		Collector.AddReferencedObject(Replicator->ObjectClass, This);
-			}
+	}
 
 	for (FConnectionMap::TIterator It(This->MappedClientConnections); It; ++It)
-		{
+	{
 		Collector.AddReferencedObject(It.Value(), This);
-		}
+	}
 
 	if (This->GuidCache.IsValid())
 	{
@@ -4339,7 +4339,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 	int32 ActorUpdatesThisConnectionSent	= 0;
 	int32 FinalRelevantCount				= 0;
 
-	if ( !Connection->IsNetReady( 0 ) )
+	if (!Connection->IsNetReady( 0 ))
 	{
 		GNumSaturatedConnections++;
 		// Connection saturated, don't process any actors
@@ -4503,7 +4503,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 						Actor->ForceNetUpdate();
 					}
 					// second check for channel saturation
-					if ( !Connection->IsNetReady( 0 ) )
+					if (!Connection->IsNetReady( 0 ))
 					{
 						// We can bail out now since this connection is saturated, we'll return how far we got though
 						GNumSaturatedConnections++;
@@ -5483,9 +5483,11 @@ void UNetDriver::CleanupWorldForSeamlessTravel()
 
 				// This is currently necessary because the actor iterator used in the seamless travel handler 
 				// skips over AWorldSettings actors for an unknown reason.
-				if (Level->GetWorldSettings())
+				AWorldSettings* WorldSettings = Level->GetWorldSettings(false);
+
+				if (WorldSettings != nullptr)
 				{
-					NotifyActorLevelUnloaded(Level->GetWorldSettings());
+					NotifyActorLevelUnloaded(WorldSettings);
 				}
 			}
 		}
@@ -5720,6 +5722,18 @@ void UNetDriver::OnLevelRemovedFromWorld(class ULevel* Level, class UWorld* InWo
 	}
 }
 
+bool UNetDriver::ShouldSkipRepNotifies() const
+{
+#if !UE_BUILD_SHIPPING
+	if (SkipRepNotifiesDel.IsBound())
+	{
+		return SkipRepNotifiesDel.Execute();
+	}
+#endif
+
+	return false;
+}
+
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -5787,6 +5801,12 @@ void UNetDriver::ProcessRemoteFunction(
 	FFrame* Stack,
 	class UObject* SubObject)
 {
+	if (Actor->IsActorBeingDestroyed())
+	{
+		UE_LOG(LogNet, Warning, TEXT("UNetDriver::ProcessRemoteFunction: Remote function %s called from actor %s while actor is being destroyed. Function will not be processed."), *Function->GetName(), *Actor->GetName());
+		return;
+	}
+
 #if !UE_BUILD_SHIPPING
 	SCOPE_CYCLE_COUNTER(STAT_NetProcessRemoteFunc);
 	SCOPE_CYCLE_UOBJECT(Function, Function);
@@ -5931,7 +5951,10 @@ void UNetDriver::NotifyActorChannelOpen(UActorChannel* Channel, AActor* Actor)
 
 void UNetDriver::NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason)
 {
-
+	if (Channel && Channel->Connection)
+	{
+		Channel->Connection->NotifyActorChannelCleanedUp(Channel, CloseReason);
+	}
 }
 
 void UNetDriver::NotifyActorTornOff(AActor* Actor)

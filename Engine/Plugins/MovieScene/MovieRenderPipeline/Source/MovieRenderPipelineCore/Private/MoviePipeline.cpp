@@ -38,6 +38,14 @@
 #include "MoviePipelineCameraSetting.h"
 #include "MoviePipelineQueue.h"
 #include "HAL/FileManager.h"
+#include "Misc/CoreDelegates.h"
+#if WITH_EDITOR
+#include "MovieSceneExportMetadata.h"
+#endif
+#include "Interfaces/Interface_PostProcessVolume.h"
+
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipeline"
 
@@ -85,12 +93,12 @@ void UMoviePipeline::ValidateSequenceAndSettings() const
 		IConsoleVariable* TonemapAlphaCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.PostProcessing.PropagateAlpha"));
 		check(TonemapAlphaCVar);
 
-		TArray<UMoviePipelineOutputBase*> OutputSettings = GetPipelineMasterConfig()->FindSettings<UMoviePipelineOutputBase>();
+		TArray<UMoviePipelineRenderPass*> OutputSettings = GetPipelineMasterConfig()->FindSettings<UMoviePipelineRenderPass>();
 		bool bAnyOutputWantsAlpha = false;
 
-		for (const UMoviePipelineOutputBase* Output : OutputSettings)
+		for (const UMoviePipelineRenderPass* Output : OutputSettings)
 		{
-			bAnyOutputWantsAlpha |= Output->IsAlphaSupported();
+			bAnyOutputWantsAlpha |= Output->IsAlphaInTonemapperRequired();
 		}
 
 		if (bAnyOutputWantsAlpha && TonemapAlphaCVar->GetInt() == 0)
@@ -112,34 +120,49 @@ void UMoviePipeline::Initialize(UMoviePipelineExecutorJob* InJob)
 
 	if (!ensureAlwaysMsgf(InJob, TEXT("MoviePipeline cannot be initialized with null job. Aborting.")))
 	{
-		OnMoviePipelineErroredDelegate.Broadcast(this, true, LOCTEXT("MissingJob", "Job was not specified, movie render is aborting."));
-
-		Shutdown();
+		Shutdown(true);
 		return;
 	}
-	
+
 	if (!ensureAlwaysMsgf(InJob->GetConfiguration(), TEXT("MoviePipeline cannot be initialized with null configuration. Aborting.")))
 	{
-		OnMoviePipelineErroredDelegate.Broadcast(this, true, LOCTEXT("MissingConfiguration", "Job did not specify a configuration, movie render is aborting."));
-
-		Shutdown();
+		Shutdown(true);
 		return;
 	}
 
+	{
+		// If they have a preset origin set, we  will attempt to load from it and copy it into our configuration.
+		// A preset origin is only set if they have not modified the preset using the UI, if they have it will have
+		// been copied into the local configuration when it was modified and the preset origin cleared. This resolves 
+		// an issue where if a preset asset is updated after this job is made, the job uses the wrong settings because
+		//  the UI is the one who updates the configuration from the preset.
+		if (InJob->GetPresetOrigin())
+		{
+			UE_LOG(LogMovieRenderPipeline, Log, TEXT("Job has a master preset specified, updating local master configuration from preset."));
+			InJob->GetConfiguration()->CopyFrom(InJob->GetPresetOrigin());
+		}
+
+		// Now we need to update each shot as well.
+		for (UMoviePipelineExecutorShot* Shot : InJob->ShotInfo)
+		{
+			if (Shot->GetShotOverridePresetOrigin())
+			{
+				UE_LOG(LogMovieRenderPipeline, Log, TEXT("Shot has a preset specified, updating local override configuraton from preset."));
+				Shot->GetShotOverrideConfiguration()->CopyFrom(Shot->GetShotOverridePresetOrigin());
+			}
+		}
+	}
+	
 	if (!ensureAlwaysMsgf(PipelineState == EMovieRenderPipelineState::Uninitialized, TEXT("Pipeline cannot be reused. Create a new pipeline to execute a job.")))
 	{
-		OnMoviePipelineErroredDelegate.Broadcast(this, true, LOCTEXT("DontReusePipeline", "Attempted to reuse an existing Movie Pipeline. Initialize a new pipeline instead of reusing an existing one."));
-
-		Shutdown();
+		Shutdown(true);
 		return;
 	}
 
 	// Ensure this object has the World as part of its Outer (so that it has context to spawn things)
 	if (!ensureAlwaysMsgf(GetWorld(), TEXT("Pipeline does not contain the world as an outer.")))
 	{
-		OnMoviePipelineErroredDelegate.Broadcast(this, true, LOCTEXT("MissingWorld", "Could not find World in the Outer Path for Pipeline. The world must be an outer to give the Pipeline enough context to spawn things."));
-
-		Shutdown();
+		Shutdown(true);
 		return;
 	}
 
@@ -148,9 +171,7 @@ void UMoviePipeline::Initialize(UMoviePipelineExecutorJob* InJob)
 	ULevelSequence* OriginalSequence = Cast<ULevelSequence>(InJob->Sequence.TryLoad());
 	if (!ensureAlwaysMsgf(OriginalSequence, TEXT("Failed to load Sequence Asset from specified path, aborting movie render! Attempted to load Path: %s"), *InJob->Sequence.ToString()))
 	{
-		OnMoviePipelineErroredDelegate.Broadcast(this, true, LOCTEXT("MissingSequence", "Could not load sequence asset, movie render is aborting. Check logs for additional details."));
-
-		Shutdown();
+		Shutdown(true);
 		return;
 	}
 
@@ -198,10 +219,6 @@ void UMoviePipeline::Initialize(UMoviePipelineExecutorJob* InJob)
 		Setting->OnMoviePipelineInitialized(this);
 	}
 
-	// Allow master settings to modify the sequence. This can be useful when working with dynamic content, you might
-	// want to modify things in the sequence, or modify things in the world before rendering.
-	// @ToDo: ModifySequenceViaExtensions(TargetSequence);
-
 	// Now that we've fixed up the sequence, we're going to build a list of shots that we need
 	// to produce in a simplified data structure. The simplified structure makes the flow/debugging easier.
 	BuildShotListFromSequence();
@@ -210,6 +227,19 @@ void UMoviePipeline::Initialize(UMoviePipelineExecutorJob* InJob)
 	// for anything we can't fix that might be an issue - extending sections, etc. This should be const as this
 	// validation should re-use what was used in the UI.
 	ValidateSequenceAndSettings();
+
+#if WITH_EDITOR
+	// Next, initialize the output metadata with the shot list data we just built
+	OutputMetadata.Shots.Empty(ActiveShotList.Num());
+	for (UMoviePipelineExecutorShot* Shot : ActiveShotList)
+	{
+		UMoviePipelineOutputSetting* OutputSettings = FindOrAddSettingForShot<UMoviePipelineOutputSetting>(Shot);
+
+		FMovieSceneExportMetadataShot& ShotMetadata = OutputMetadata.Shots.AddDefaulted_GetRef();
+		ShotMetadata.MovieSceneShotSection = Cast<UMovieSceneCinematicShotSection>(Shot->OuterPathKey.TryLoad());
+		ShotMetadata.HandleFrames = OutputSettings->HandleFrameCount;
+	}
+#endif
 
 	// Finally, we're going to create a Level Sequence Actor in the world that has its settings configured by us.
 	// Because this callback is at the end of startup (and before tick) we should be able to spawn the actor
@@ -327,8 +357,15 @@ void UMoviePipeline::RestoreTargetSequenceToOriginalState()
 }
 
 
-void UMoviePipeline::RequestShutdown()
+void UMoviePipeline::RequestShutdown(bool bIsError)
 {
+	// It's possible for a previous call to RequestionShutdown to have set an error before this call that may not
+	// We don't want to unset a previously set error state
+	if (bIsError)
+	{
+		bFatalError = true;
+	}
+
 	// The user has requested a shutdown, it will be read the next available chance and possibly acted on.
 	bShutdownRequested = true;
 	switch (PipelineState)
@@ -345,9 +382,16 @@ void UMoviePipeline::RequestShutdown()
 	}
 }
 
-void UMoviePipeline::Shutdown()
+void UMoviePipeline::Shutdown(bool bIsError)
 {
 	check(IsInGameThread());
+
+	// It's possible for a previous call to RequestionShutdown to have set an error before this call that may not
+	// We don't want to unset a previously set error state
+	if (bIsError)
+	{
+		bFatalError = true;
+	}
 
 	// This is a blocking operation which abandons any outstanding work to be submitted but finishes
 	// the existing work already processed.
@@ -725,6 +769,19 @@ bool UMoviePipelineCustomTimeStep::UpdateTimeStep(UEngine* /*InEngine*/)
 	return false;
 }
 
+void UMoviePipelineCustomTimeStep::SetCachedFrameTiming(const MoviePipeline::FFrameTimeStepCache& InTimeCache)
+{ 
+	if (ensureMsgf(!FMath::IsNearlyZero(InTimeCache.DeltaTime), TEXT("An incorrect or uninitialized time step was used! Delta Time of 0 isn't allowed.")))
+	{
+		TimeCache = InTimeCache;
+	}
+	else
+	{
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("SetCachedFrameTiming called with zero delta time, falling back to 1/24"));
+		TimeCache = MoviePipeline::FFrameTimeStepCache(1 / 24.0);
+	}
+}
+
 void UMoviePipeline::ModifySequenceViaExtensions(ULevelSequence* InSequence)
 {
 }
@@ -842,14 +899,36 @@ void UMoviePipeline::BuildShotListFromSequence()
 			ModifiedSegment.bCameraSectionIsActive = ModifiedSegment.CameraSection->IsActive();
 		}
 
-		ModifiedSegment.ShotSection = ShotSection;
 		if (ShotSection)
 		{
-			ModifiedSegment.bShotSectionIsLocked = ShotSection->IsLocked();
-			ModifiedSegment.ShotSectionRange = ShotSection->GetRange();
-			ModifiedSegment.bShotSectionIsActive = ShotSection->IsActive();
+			// Since multiple segments could map to the same cinematic shot section, and the cinematic 
+			// shot could have been modified already, find the first segment corresponding to this shot 
+			// and use its cached properties.
+			FMovieSceneChanges::FSegmentChange* ExistingShotSegment = nullptr;
+			for (int32 Index = 0; Index < SequenceChanges.Segments.Num(); Index++)
+			{
+				if (ShotSection == SequenceChanges.Segments[Index].ShotSection)
+				{
+					ExistingShotSegment = &SequenceChanges.Segments[Index];
+					break;
+				}
+			}
+			if (ExistingShotSegment)
+			{
+				ModifiedSegment.bShotSectionIsLocked = ExistingShotSegment->bShotSectionIsLocked;
+				ModifiedSegment.ShotSectionRange = ExistingShotSegment->ShotSectionRange;
+				ModifiedSegment.bShotSectionIsActive = ExistingShotSegment->bShotSectionIsActive;
+			}
+			else
+			{
+				ModifiedSegment.bShotSectionIsLocked = ShotSection->IsLocked();
+				ModifiedSegment.ShotSectionRange = ShotSection->GetRange();
+				ModifiedSegment.bShotSectionIsActive = ShotSection->IsActive();
+			}
+			
 			ShotSection->SetIsLocked(false);
 		}
+		ModifiedSegment.ShotSection = ShotSection;
 
 		// For non-active shots, this is where we stop
 		if (!Shot->bEnabled)
@@ -862,9 +941,9 @@ void UMoviePipeline::BuildShotListFromSequence()
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("Expanding Shot %d/%d (Shot: %s Camera: %s)"), ShotIndex  + 1, ActiveShotList.Num(), *Shot->OuterName, *Shot->InnerName);
 		ShotIndex++;
 
-		UMoviePipelineOutputSetting* OutputSettings = FindOrAddSetting<UMoviePipelineOutputSetting>(Shot);
-		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(Shot);
-		UMoviePipelineHighResSetting* HighResSettings = FindOrAddSetting<UMoviePipelineHighResSetting>(Shot);
+		UMoviePipelineOutputSetting* OutputSettings = FindOrAddSettingForShot<UMoviePipelineOutputSetting>(Shot);
+		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(Shot);
+		UMoviePipelineHighResSetting* HighResSettings = FindOrAddSettingForShot<UMoviePipelineHighResSetting>(Shot);
 
 		// Expand the shot to encompass handle frames. This will modify our Camera Cuts bounds.
 		ExpandShot(Shot, ModifiedSegment, OutputSettings->HandleFrameCount);
@@ -900,10 +979,10 @@ void UMoviePipeline::InitializeShot(UMoviePipelineExecutorShot* InShot)
 	// Set the new shot as the active shot. This enables the specified shot section and disables all other shot sections.
 	SetSoloShot(InShot);
 
-	if (InShot->ShotOverrideConfig != nullptr)
+	if (InShot->GetShotOverrideConfiguration() != nullptr)
 	{
 		// Any shot-specific overrides haven't had first time initialization. So we'll do that now.
-		for (UMoviePipelineSetting* Setting : InShot->ShotOverrideConfig->GetUserSettings())
+		for (UMoviePipelineSetting* Setting : InShot->GetShotOverrideConfiguration()->GetUserSettings())
 		{
 			Setting->OnMoviePipelineInitialized(this);
 		}
@@ -926,10 +1005,10 @@ void UMoviePipeline::TeardownShot(UMoviePipelineExecutorShot* InShot)
 		Container->OnShotFinished(InShot);
 	}
 
-	if (InShot->ShotOverrideConfig != nullptr)
+	if (InShot->GetShotOverrideConfiguration() != nullptr)
 	{
 		// Any shot-specific overrides haven't had first time initialization. So we'll do that now.
-		for (UMoviePipelineSetting* Setting : InShot->ShotOverrideConfig->GetUserSettings())
+		for (UMoviePipelineSetting* Setting : InShot->GetShotOverrideConfiguration()->GetUserSettings())
 		{
 			Setting->OnMoviePipelineShutdown(this);
 		}
@@ -1023,7 +1102,7 @@ void UMoviePipeline::ExpandShot(UMoviePipelineExecutorShot* InShot, const FMovie
 	FFrameNumber LeftDeltaTicks = 0;
 	FFrameNumber RightDeltaTicks = 0;
 
-	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(InShot);
+	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(InShot);
 	const bool bHasMultipleTemporalSamples = AntiAliasingSettings->TemporalSampleCount > 1;
 	if (bHasMultipleTemporalSamples)
 	{
@@ -1165,10 +1244,15 @@ bool UMoviePipeline::DebugFrameStepPreTick()
 
 void UMoviePipeline::LoadDebugWidget()
 {
-	FSoftClassPath DebugWidgetClassRef(TEXT("/MovieRenderPipeline/Blueprints/UI_MovieRenderPipelineScreenOverlay.UI_MovieRenderPipelineScreenOverlay_C"));
-	if (UClass* DebugWidgetClass = DebugWidgetClassRef.TryLoadClass<UMovieRenderDebugWidget>())
+	TSubclassOf<UMovieRenderDebugWidget> DebugWidgetClassToUse = DebugWidgetClass;
+	if (DebugWidgetClassToUse.Get() == nullptr)
 	{
-		DebugWidget = CreateWidget<UMovieRenderDebugWidget>(GetWorld(), DebugWidgetClass);
+		DebugWidgetClassToUse = LoadClass<UMovieRenderDebugWidget>(nullptr, TEXT("/MovieRenderPipeline/Blueprints/UI_MovieRenderPipelineScreenOverlay.UI_MovieRenderPipelineScreenOverlay_C"), nullptr, LOAD_None, nullptr);
+	}
+
+	if (DebugWidgetClassToUse.Get() != nullptr)
+	{
+		DebugWidget = CreateWidget<UMovieRenderDebugWidget>(GetWorld(), DebugWidgetClassToUse.Get());
 		if (DebugWidget)
 		{
 			DebugWidget->OnInitializedForPipeline(this);
@@ -1200,11 +1284,76 @@ MoviePipeline::FFrameConstantMetrics UMoviePipeline::CalculateShotFrameMetrics(c
 	Output.FrameRate = GetPipelineMasterConfig()->GetEffectiveFrameRate(TargetSequence);
 	Output.TicksPerOutputFrame = FFrameRate::TransformTime(FFrameTime(FFrameNumber(1)), Output.FrameRate, Output.TickResolution);
 
-	UMoviePipelineCameraSetting* CameraSettings = FindOrAddSetting<UMoviePipelineCameraSetting>(InShot);
-	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSetting<UMoviePipelineAntiAliasingSetting>(InShot);
+	UMoviePipelineCameraSetting* CameraSettings = FindOrAddSettingForShot<UMoviePipelineCameraSetting>(InShot);
+	UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(InShot);
 
-	// (CameraShutterAngle/360) gives us the fraction-of-the-output-frame the accumulation frames should cover.
-	Output.ShutterAnglePercentage = FMath::Max(CameraSettings->CameraShutterAngle / 360.0, 1 / 360.0);
+	// We are overriding blur settings to account for how we sample multiple frames, so
+	// we need to process any camera and post process volume settings for motion blur manually
+
+	// Start with engine default for motion blur in the event no one overrides it.
+	Output.ShutterAnglePercentage = 0.5;
+
+	APlayerCameraManager* PlayerCameraManager = GetWorld()->GetFirstPlayerController()->PlayerCameraManager;
+	if (PlayerCameraManager)
+	{
+		// Apply any motion blur settings from post process volumes in the world
+		FVector ViewLocation = PlayerCameraManager->GetCameraLocation();
+		for (IInterface_PostProcessVolume* PPVolume : GetWorld()->PostProcessVolumes)
+		{
+			const FPostProcessVolumeProperties VolumeProperties = PPVolume->GetProperties();
+
+			// Skip any volumes which are either disabled or don't modify blur amount
+			if (!VolumeProperties.bIsEnabled || !VolumeProperties.Settings->bOverride_MotionBlurAmount)
+			{
+				continue;
+			}
+
+			float LocalWeight = FMath::Clamp(VolumeProperties.BlendWeight, 0.0f, 1.0f);
+
+			if (!VolumeProperties.bIsUnbound)
+			{
+				float DistanceToPoint = 0.0f;
+				PPVolume->EncompassesPoint(ViewLocation, 0.0f, &DistanceToPoint);
+
+				if (DistanceToPoint >= 0 && DistanceToPoint < VolumeProperties.BlendRadius)
+				{
+					LocalWeight *= FMath::Clamp(1.0f - DistanceToPoint / VolumeProperties.BlendRadius, 0.0f, 1.0f);
+				}
+				else
+				{
+					LocalWeight = 0.0f;
+				}
+			}
+
+			if (LocalWeight > 0.0f)
+			{
+				Output.ShutterAnglePercentage = FMath::Lerp(Output.ShutterAnglePercentage, (double)VolumeProperties.Settings->MotionBlurAmount, LocalWeight);
+			}
+		}
+
+		// Now try from the camera, which takes priority over post processing volumes.
+		ACameraActor* CameraActor = Cast<ACameraActor>(PlayerCameraManager->GetViewTarget());
+		if (CameraActor)
+		{
+			UCameraComponent* CameraComponent = CameraActor->GetCameraComponent();
+			if (CameraComponent && CameraComponent->PostProcessSettings.bOverride_MotionBlurAmount)
+			{
+				Output.ShutterAnglePercentage = FMath::Lerp(Output.ShutterAnglePercentage, (double)CameraComponent->PostProcessSettings.MotionBlurAmount, (double)CameraComponent->PostProcessBlendWeight);
+			}
+		}
+		
+		// Apply any motion blur settings from post processing blends attached to the camera manager
+		TArray<FPostProcessSettings> const* CameraAnimPPSettings;
+		TArray<float> const* CameraAnimPPBlendWeights;
+		PlayerCameraManager->GetCachedPostProcessBlends(CameraAnimPPSettings, CameraAnimPPBlendWeights);
+		for (int32 PPIdx = 0; PPIdx < CameraAnimPPBlendWeights->Num(); ++PPIdx)
+		{
+			if ((*CameraAnimPPSettings)[PPIdx].bOverride_MotionBlurAmount)
+			{
+				Output.ShutterAnglePercentage = FMath::Lerp(Output.ShutterAnglePercentage, (double)(*CameraAnimPPSettings)[PPIdx].MotionBlurAmount, (*CameraAnimPPBlendWeights)[PPIdx]);
+			}
+		}
+	}
 
 	{
 		/*
@@ -1219,15 +1368,24 @@ MoviePipeline::FFrameConstantMetrics UMoviePipeline::CalculateShotFrameMetrics(c
 		* we accumulate the sub-tick and choose when to apply it.
 		*/
 
-		// Now we take the amount of time the shutter is open.
-		Output.TicksWhileShutterOpen = Output.TicksPerOutputFrame * Output.ShutterAnglePercentage;
+		// If the shutter angle is effectively zero, lie about how long a frame is to prevent divide by zero
+		if (Output.ShutterAnglePercentage < 1.0 / 360.0)
+		{
+			Output.TicksWhileShutterOpen = Output.TicksPerOutputFrame * (1.0 / 360.0);
+		}
+		else
+		{
+			// Otherwise, calculate the amount of time the shutter is open.
+			Output.TicksWhileShutterOpen = Output.TicksPerOutputFrame * Output.ShutterAnglePercentage;
+		}
 
 		// Divide that amongst all of our accumulation sample frames.
 		Output.TicksPerSample = Output.TicksWhileShutterOpen / AntiAliasingSettings->TemporalSampleCount;
+
 	}
 
-	Output.ShutterClosedFraction = (360 - CameraSettings->CameraShutterAngle) / 360.0;
-	Output.TicksWhileShutterClosed = Output.TicksPerOutputFrame * Output.ShutterClosedFraction;
+	Output.ShutterClosedFraction = 1.0 - Output.ShutterAnglePercentage;
+	Output.TicksWhileShutterClosed = Output.TicksPerOutputFrame - Output.TicksWhileShutterOpen;
 
 	// Shutter Offset
 	switch (CameraSettings->ShutterTiming)
@@ -1259,12 +1417,12 @@ UMoviePipelineMasterConfig* UMoviePipeline::GetPipelineMasterConfig() const
 	return CurrentJob->GetConfiguration(); 
 }
 
-UMoviePipelineSetting* UMoviePipeline::FindOrAddSetting(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const
+UMoviePipelineSetting* UMoviePipeline::FindOrAddSettingForShot(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const
 {
 	// Check to see if this setting is in the shot override, if it is we'll use the shot version of that.
-	if (InShot->ShotOverrideConfig)
+	if (InShot->GetShotOverrideConfiguration())
 	{
-		UMoviePipelineSetting* Setting = InShot->ShotOverrideConfig->FindSettingByClass(InSetting);
+		UMoviePipelineSetting* Setting = InShot->GetShotOverrideConfiguration()->FindSettingByClass(InSetting);
 		if (Setting)
 		{
 			// If they specified the setting at all, respect the enabled setting. If it's not enabled, we return the
@@ -1284,6 +1442,38 @@ UMoviePipelineSetting* UMoviePipeline::FindOrAddSetting(TSubclassOf<UMoviePipeli
 	return InSetting->GetDefaultObject<UMoviePipelineSetting>();
 }
 
+TArray<UMoviePipelineSetting*> UMoviePipeline::FindSettingsForShot(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const
+{
+	TArray<UMoviePipelineSetting*> FoundSettings;
+
+	// Find all enabled settings of given subclass in the shot override first
+	if (UMoviePipelineShotConfig* ShotOverride = InShot->GetShotOverrideConfiguration())
+	{
+		for (UMoviePipelineSetting* Setting : ShotOverride->FindSettingsByClass(InSetting))
+		{
+			if (Setting && Setting->IsEnabled())
+			{
+				FoundSettings.Add(Setting);
+			}
+		}
+	}
+
+	// Add all enabled settings of given subclass not overridden by shot override
+	for (UMoviePipelineSetting* Setting : GetPipelineMasterConfig()->FindSettingsByClass(InSetting))
+	{
+		if (Setting && Setting->IsEnabled())
+		{
+			TSubclassOf<UMoviePipelineSetting> SettingClass = Setting->GetClass();
+			if (!FoundSettings.ContainsByPredicate([SettingClass](UMoviePipelineSetting* ExistingSetting) { return ExistingSetting && ExistingSetting->GetClass() == SettingClass; } ))
+			{
+				FoundSettings.Add(Setting);
+			}
+		}
+	}
+
+	return FoundSettings;
+}
+
 static bool CanWriteToFile(const TCHAR* InFilename, bool bOverwriteExisting)
 {
 	// Check if there is space on the output disk.
@@ -1298,7 +1488,7 @@ static bool CanWriteToFile(const TCHAR* InFilename, bool bOverwriteExisting)
 	return bIsFreeSpace && (bOverwriteExisting || IFileManager::Get().FileSize(InFilename) == -1);
 }
 
-void UMoviePipeline::ResolveFilenameFormatArguments(const FString& InFormatString, const FMoviePipelineFrameOutputState& InOutputState, const FStringFormatNamedArguments& InFormatOverrides, FString& OutFinalPath, FMoviePipelineFormatArgs& OutFinalFormatArgs) const
+void UMoviePipeline::ResolveFilenameFormatArguments(const FString& InFormatString, const FStringFormatNamedArguments& InFormatOverrides, FString& OutFinalPath, FMoviePipelineFormatArgs& OutFinalFormatArgs, const FMoviePipelineFrameOutputState* InOutputState, const int32 InFrameNumberOffset) const
 {
 	UMoviePipelineOutputSetting* OutputSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
 	check(OutputSettings);
@@ -1306,20 +1496,31 @@ void UMoviePipeline::ResolveFilenameFormatArguments(const FString& InFormatStrin
 	// Gather all the variables
 	OutFinalFormatArgs = FMoviePipelineFormatArgs();
 	OutFinalFormatArgs.InJob = CurrentJob;
-	OutFinalFormatArgs.FileMetadata = InOutputState.FileMetadata;
 
-	// From Settings
+	// Copy the file metadata from our InOutputState
+	if (InOutputState)
+	{
+		OutFinalFormatArgs.FileMetadata = InOutputState->FileMetadata;
+	}
+
+	// Now get the settings from our config. This will expand the FileMetadata and assign the default values used in the UI.
 	GetPipelineMasterConfig()->GetFormatArguments(OutFinalFormatArgs, true);
 
 	// Ensure they used relative frame numbers in the output so they get the right number of output frames.
 	bool bForceRelativeFrameNumbers = false;
-	if (InFormatString.Contains(TEXT("{frame")) && InOutputState.TimeData.IsTimeDilated() && !InFormatString.Contains(TEXT("_rel}")))
+	if (InFormatString.Contains(TEXT("{frame")) && InOutputState && InOutputState->TimeData.IsTimeDilated() && !InFormatString.Contains(TEXT("_rel}")))
 	{
 		UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Time Dilation was used but output format does not use relative time, forcing relative numbers."));
 		bForceRelativeFrameNumbers = true;
 	}
+
 	// From Output State
-	InOutputState.GetFilenameFormatArguments(OutFinalFormatArgs, OutputSettings->ZeroPadFrameNumbers, OutputSettings->FrameNumberOffset, bForceRelativeFrameNumbers);
+	if (InOutputState)
+	{
+		// Now that the settings have been added from the configuration, we overwrite them with the ones in the output state. This is required so that
+		// things like frame number resolve to the actual output state correctly.
+		InOutputState->GetFilenameFormatArguments(OutFinalFormatArgs, OutputSettings->ZeroPadFrameNumbers, OutputSettings->FrameNumberOffset + InFrameNumberOffset, bForceRelativeFrameNumbers);
+	}
 
 	// And from ourself
 	{
@@ -1333,6 +1534,8 @@ void UMoviePipeline::ResolveFilenameFormatArguments(const FString& InFormatStrin
 		OutFinalFormatArgs.FileMetadata.Add(TEXT("unreal/jobDate"), InitializationTime.ToString(TEXT("%Y.%m.%d")));
 		OutFinalFormatArgs.FileMetadata.Add(TEXT("unreal/jobTime"), InitializationTime.ToString(TEXT("%H.%M.%S")));
 		OutFinalFormatArgs.FileMetadata.Add(TEXT("unreal/jobVersion"), InitializationVersion);
+		OutFinalFormatArgs.FileMetadata.Add(TEXT("unreal/jobName"), CurrentJob->JobName);
+		OutFinalFormatArgs.FileMetadata.Add(TEXT("unreal/jobAuthor"), CurrentJob->Author);
 
 		// By default, we don't want to show frame duplication numbers. If we need to start writing them,
 		// they need to come before the frame number (so that tools recognize them as a sequence).

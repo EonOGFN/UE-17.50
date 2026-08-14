@@ -74,6 +74,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 		.AdditionalCommands(ReferenceViewerActions)
 		.GraphToEdit(GraphObj)
 		.GraphEvents(GraphEvents)
+		.ShowGraphStateOverlay(false)
 		.OnNavigateHistoryBack(FSimpleDelegate::CreateSP(this, &SReferenceViewer::GraphNavigateHistoryBack))
 		.OnNavigateHistoryForward(FSimpleDelegate::CreateSP(this, &SReferenceViewer::GraphNavigateHistoryForward));
 
@@ -385,6 +386,31 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 							SNew(SCheckBox)
 							.OnCheckStateChanged(this, &SReferenceViewer::OnShowHardReferencesChanged)
 							.IsChecked(this, &SReferenceViewer::IsShowHardReferencesChecked)
+						]
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
+
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.Padding(2.f)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ShowHideEditorOnlyReferences", "Show EditorOnly References"))
+						]
+
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(2.f)
+						[
+							SNew(SCheckBox)
+							.OnCheckStateChanged(this, &SReferenceViewer::OnShowEditorOnlyReferencesChanged)
+							.IsChecked(this, &SReferenceViewer::IsShowEditorOnlyReferencesChecked)
 						]
 					]
 
@@ -969,6 +995,29 @@ ECheckBoxState SReferenceViewer::IsShowHardReferencesChecked() const
 	}
 }
 
+void SReferenceViewer::OnShowEditorOnlyReferencesChanged(ECheckBoxState NewState)
+{
+	if (GraphObj)
+	{
+		GraphObj->SetShowEditorOnlyReferencesEnabled(NewState == ECheckBoxState::Checked);
+		RebuildGraph();
+	}
+}
+
+
+ECheckBoxState SReferenceViewer::IsShowEditorOnlyReferencesChecked() const
+{
+	if (GraphObj)
+	{
+		return GraphObj->IsShowEditorOnlyReferences() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	else
+	{
+		return ECheckBoxState::Unchecked;
+	}
+}
+
+
 EVisibility SReferenceViewer::GetManagementReferencesVisibility() const
 {
 	if (bShowShowReferencesOptions && UAssetManager::IsValid())
@@ -1221,10 +1270,10 @@ FString SReferenceViewer::GetReferencedObjectsList() const
 		for (const FName& SelectedPackageName : AllSelectedPackageNames)
 		{
 			TArray<FName> HardDependencies;
-			AssetRegistryModule.Get().GetDependencies(SelectedPackageName, HardDependencies, EAssetRegistryDependencyType::Hard);
+			AssetRegistryModule.Get().GetDependencies(SelectedPackageName, HardDependencies, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Hard);
 			
 			TArray<FName> SoftDependencies;
-			AssetRegistryModule.Get().GetDependencies(SelectedPackageName, SoftDependencies, EAssetRegistryDependencyType::Soft);
+			AssetRegistryModule.Get().GetDependencies(SelectedPackageName, SoftDependencies, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Soft);
 
 			ReferencedObjectsList += FString::Printf(TEXT("[%s - Dependencies]\n"), *SelectedPackageName.ToString());
 			if (HardDependencies.Num() > 0)
@@ -1265,10 +1314,10 @@ FString SReferenceViewer::GetReferencingObjectsList() const
 		for (const FName& SelectedPackageName : AllSelectedPackageNames)
 		{
 			TArray<FName> HardDependencies;
-			AssetRegistryModule.Get().GetReferencers(SelectedPackageName, HardDependencies, EAssetRegistryDependencyType::Hard);
+			AssetRegistryModule.Get().GetReferencers(SelectedPackageName, HardDependencies, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Hard);
 
 			TArray<FName> SoftDependencies;
-			AssetRegistryModule.Get().GetReferencers(SelectedPackageName, SoftDependencies, EAssetRegistryDependencyType::Soft);
+			AssetRegistryModule.Get().GetReferencers(SelectedPackageName, SoftDependencies, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Soft);
 
 			ReferencingObjectsList += FString::Printf(TEXT("[%s - Referencers]\n"), *SelectedPackageName.ToString());
 			if (HardDependencies.Num() > 0)

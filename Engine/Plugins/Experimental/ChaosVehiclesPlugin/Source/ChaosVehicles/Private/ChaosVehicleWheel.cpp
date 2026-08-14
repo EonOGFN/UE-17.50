@@ -25,9 +25,8 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	WheelWidth = 20.0f;
 	//bAutoAdjustCollisionSize = true;
 	//WheelMass = 20.0f;
-	CheatLongitudinalFrictionForce = 1.0f;
-	CheatLateralFrictionForce = 2.0f;
-	CheatSkidFactor = 1.0f;
+	LongitudinalFrictionForceMultiplier = 1.0f;
+	LateralFrictionForceMultiplier = 2.0f;
 	SideSlipModifier = 1.0f;
 
 	bAffectedByBrake = true;
@@ -44,9 +43,9 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	SuspensionMaxDrop = 10.0f;
 	SuspensionDampingRatio = 0.5f;
 	SuspensionSmoothing = 6;
-	WheelLoadRatio = 1.f;
+	WheelLoadRatio = 0.5f;
 	RollbarScaling = 0.15f;
-	SweepType = ESweepType::SimpleAndComplexSweep;
+	SweepType = ESweepType::SimpleSweep;
 }
 
 
@@ -75,7 +74,7 @@ float UChaosVehicleWheel::GetRotationAngle() const
 float UChaosVehicleWheel::GetSuspensionOffset() const
 {
 	check(VehicleSim && VehicleSim->PhysicsVehicle());
-	FSimpleSuspensionSim& SimSuspension = VehicleSim->PhysicsVehicle()->Suspension[WheelIndex];
+	Chaos::FSimpleSuspensionSim& SimSuspension = VehicleSim->PhysicsVehicle()->Suspension[WheelIndex];
 	return SimSuspension.GetSuspensionOffset();
 }
 

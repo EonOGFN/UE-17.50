@@ -33,6 +33,11 @@ void UVoxelSolidifyMeshesTool::SetupProperties()
 	SolidifyProperties = NewObject<UVoxelSolidifyMeshesToolProperties>(this);
 	SolidifyProperties->RestoreProperties(this);
 	AddToolPropertySource(SolidifyProperties);
+
+	SetToolDisplayName(LOCTEXT("VoxelSolidifyMeshesToolName", "Wrap Meshes Tool"));
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("VoxelSolidifyMeshesToolDescription", "Create a new closed/solid shell mesh that wraps the input meshes. Holes will automatically be filled, controlled by the Winding Threshold. UVs, sharp edges, and small/thin features will be lost. Increase Voxel Count to enhance accuracy."),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -52,7 +57,9 @@ TUniquePtr<FDynamicMeshOperator> UVoxelSolidifyMeshesTool::MakeNewOperator()
 	for (int Idx = 0; Idx < ComponentTargets.Num(); Idx++)
 	{
 		Op->Meshes[Idx] = OriginalDynamicMeshes[Idx];
-		Op->Transforms[Idx] = TransformProxies[Idx]->GetTransform();
+		FTransform UseTransform = TransformProxies[Idx]->GetTransform();
+		UseTransform.MultiplyScale3D(TransformInitialScales[Idx]);
+		Op->Transforms[Idx] = UseTransform;
 	}
 
 	Op->bSolidAtBoundaries = SolidifyProperties->bSolidAtBoundaries;
@@ -75,7 +82,7 @@ FString UVoxelSolidifyMeshesTool::GetCreatedAssetName() const
 
 FText UVoxelSolidifyMeshesTool::GetActionName() const
 {
-	return LOCTEXT("VoxelSolidifyMeshes", "Voxel Solidify");
+	return LOCTEXT("VoxelSolidifyMeshes", "Voxel Shell");
 }
 
 

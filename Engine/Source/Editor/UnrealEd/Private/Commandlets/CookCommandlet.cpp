@@ -41,6 +41,7 @@
 #include "HAL/MemoryMisc.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "AssetRegistryModule.h"
+#include "StudioAnalytics.h"
 #include "Cooker/CookProfiling.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCookCommandlet, Log, All);
@@ -98,12 +99,38 @@ namespace DetailedCookStats
 
 	static void LogCookStats(const FString& CookCmdLine)
 	{
+		if ( FStudioAnalytics::IsAvailable() )
+		{ 
+			// convert filtered stats directly to an analytics event
+			TArray<FAnalyticsEventAttribute> StatAttrs;
+			
+			// Sends each cook stat to the studio analytics system.
+			auto SendCookStatsToAnalytics = [&StatAttrs](const FString& StatName, const TArray<FCookStatsManager::StringKeyValue>& StatAttributes)
+			{
+				for (const auto& Attr : StatAttributes)
+				{
+					FString FormattedAttrName = StatName + "." + Attr.Key;
+
+					StatAttrs.Emplace(FormattedAttrName, Attr.Value);
+				}
+			};
+
+			// Now actually grab the stats 
+			FCookStatsManager::LogCookStats(SendCookStatsToAnalytics);
+
+			// Record them all under cooking event
+			FStudioAnalytics::GetProvider().RecordEvent(TEXT("Core.Cooking"), StatAttrs);
+
+			FStudioAnalytics::GetProvider().BlockUntilFlushed(60.0f);
+		}
+
 		bool bSendCookAnalytics = false;
 		GConfig->GetBool(TEXT("CookAnalytics"), TEXT("SendAnalytics"), bSendCookAnalytics, GEngineIni);
 
 		if (GIsBuildMachine || FParse::Param(FCommandLine::Get(), TEXT("SendCookAnalytics")) || bSendCookAnalytics)
-		{
+		{	
 			FString APIServerET;
+
 			if (GConfig->GetString(TEXT("CookAnalytics"), TEXT("APIServer"), APIServerET, GEngineIni))
 			{
 				FString AppId(TEXT("Cook"));
@@ -142,6 +169,7 @@ namespace DetailedCookStats
 							UE_LOG(LogCookCommandlet, Verbose, TEXT("[%s] not present on cook analytics whitelist"), *StatName);
 						}
 					};
+
 					FCookStatsManager::LogCookStats(SendCookStatsToAnalytics);
 				}
 			}
@@ -398,6 +426,11 @@ bool UCookCommandlet::CookOnTheFly( FGuid InstanceId, int32 Timeout, bool bForce
 		}
 	}
 
+	if (bNoShaderCooking)
+	{
+		GShaderCompilingManager->SkipShaderCompilation(true);
+	}
+
 	// Garbage collection should happen when either
 	//	1. We have cooked a map (configurable asset type)
 	//	2. We have cooked non-map packages and...
@@ -549,6 +582,11 @@ bool UCookCommandlet::CookOnTheFly( FGuid InstanceId, int32 Timeout, bool bForce
 		}
 	}
 
+	if (bNoShaderCooking)
+	{
+		GShaderCompilingManager->SkipShaderCompilation(false);
+	}
+
 	CookOnTheFlyServer->EndNetworkFileServer();
 	return true;
 }
@@ -577,6 +615,7 @@ int32 UCookCommandlet::Main(const FString& CmdLineParams)
 	bPartialGC = Switches.Contains(TEXT("Partialgc"));
 	ShowErrorCount = !Switches.Contains(TEXT("DIFFONLY"));
 	ShowProgress = !Switches.Contains(TEXT("DIFFONLY"));
+	bNoShaderCooking = bCookOnTheFly; // Do not cook any shaders into the shader maps. Always true if we are running w/ cook on the fly
 
 	COOK_STAT(DetailedCookStats::CookProject = FApp::GetProjectName());
 
@@ -641,6 +680,8 @@ int32 UCookCommandlet::Main(const FString& CmdLineParams)
 
 bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(CookByTheBook, CookChannel);
+
 	COOK_STAT(FScopedDurationTimer CookByTheBookTimer(DetailedCookStats::CookByTheBookTimeSec));
 	UCookOnTheFlyServer *CookOnTheFlyServer = NewObject<UCookOnTheFlyServer>();
 
@@ -749,20 +790,17 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 
 	// Also append any cookdirs from the project ini files; these dirs are relative to the game content directory or start with a / root
 	{
-		const FString AbsoluteGameContentDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
 		const UProjectPackagingSettings* const PackagingSettings = GetDefault<UProjectPackagingSettings>();
 		for (const FDirectoryPath& DirToCook : PackagingSettings->DirectoriesToAlwaysCook)
 		{
-			if (DirToCook.Path.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
+			FString LocalPath;
+			if (FPackageName::TryConvertGameRelativePackagePathToLocalPath(DirToCook.Path, LocalPath))
 			{
-				// If this starts with /, this includes a root like /engine
-				FString RelativePath = FPackageName::LongPackageNameToFilename(DirToCook.Path / TEXT(""));
-				CmdLineDirEntries.Add(FPaths::ConvertRelativePathToFull(RelativePath));
+				CmdLineDirEntries.Add(LocalPath);
 			}
 			else
 			{
-				// This is relative to /game
-				CmdLineDirEntries.Add(AbsoluteGameContentDir / DirToCook.Path);
+				UE_LOG(LogCook, Warning, TEXT("'ProjectSettings -> PackagingSettings -> Directories to always cook' has invalid element '%s'"), *DirToCook.Path);
 			}
 		}
 	}
@@ -855,6 +893,7 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	CookOptions |= Switches.Contains(TEXT("SkipSoftReferences")) ? ECookByTheBookOptions::SkipSoftReferences : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("SkipHardReferences")) ? ECookByTheBookOptions::SkipHardReferences : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("CookAgainstFixedBase")) ? ECookByTheBookOptions::CookAgainstFixedBase : ECookByTheBookOptions::None;
+	CookOptions |= (Switches.Contains(TEXT("DlcLoadMainAssetRegistry")) || !bErrorOnEngineContentUse) ? ECookByTheBookOptions::DlcLoadMainAssetRegistry : ECookByTheBookOptions::None;
 
 	if (bCookSinglePackage)
 	{

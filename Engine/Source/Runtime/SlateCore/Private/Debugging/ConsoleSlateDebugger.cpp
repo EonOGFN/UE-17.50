@@ -17,8 +17,6 @@
 #include "UObject/ReflectedTypeAccessors.h"
 #include "UObject/Class.h"
 
-DEFINE_LOG_CATEGORY(LogSlateDebugger);
-
 #define LOCTEXT_NAMESPACE "ConsoleSlateDebugger"
 
 FConsoleSlateDebugger::FConsoleSlateDebugger()
@@ -46,11 +44,11 @@ FConsoleSlateDebugger::FConsoleSlateDebugger()
 		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebugger::StopDebugging))
 	, StartDebuggingCommandAlias(
 		TEXT("SlateDebugger.Start"),
-		*LOCTEXT("StartDebuggerAlias", "Alias to `SlateDebugger.Event.Start'.").ToString(),
+		*LOCTEXT("StartDebuggerAlias", "Alias to 'SlateDebugger.Event.Start'.").ToString(),
 		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebugger::StartDebugging))
 	, StopDebuggingCommandAlias(
 		TEXT("SlateDebugger.Stop"),
-		*LOCTEXT("StopDebuggerAlias", "Alias to `SlateDebugger.Event.Stop'.").ToString(),
+		*LOCTEXT("StopDebuggerAlias", "Alias to 'SlateDebugger.Event.Stop'.").ToString(),
 		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebugger::StopDebugging))
 	, EnableLogWarning(
 		TEXT("SlateDebugger.Event.LogWarning"),

@@ -5,6 +5,7 @@
  */
 
 #include "/Engine/Private/SceneTexturesCommon.ush"
+#include "/Engine/Private/EyeAdaptationCommon.ush"
 #include "/Engine/Private/Random.ush"
 #include "/Engine/Private/SobolRandom.ush"
 #include "/Engine/Private/MonteCarlo.ush"
@@ -12,6 +13,7 @@
 #include "/Engine/Private/DepthOfFieldCommon.ush"
 #include "/Engine/Private/CircleDOFCommon.ush"
 #include "/Engine/Private/GlobalDistanceFieldShared.ush"
+#include "/Engine/Private/PhysicsFieldSampler.ush"
 #include "/Engine/Private/SceneData.ush"
 #include "/Engine/Private/HairShadingCommon.ush"
 
@@ -106,7 +108,7 @@
 
 //Platforms that don't run the editor shouldn't need editor features in the shaders.
 #ifndef PLATFORM_SUPPORTS_EDITOR_SHADERS
-#define PLATFORM_SUPPORTS_EDITOR_SHADERS !ESDEFERRED_PROFILE
+#define PLATFORM_SUPPORTS_EDITOR_SHADERS 1
 #endif
 
 //Tie Editor features to platform support and the COMPILE_SHADERS_FOR_DEVELOPMENT which is set via CVAR.
@@ -306,7 +308,7 @@ struct FMaterialPixelParameters
 	uint PrimitiveId;
 
 	// Actual primitive Id
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	uint	HairPrimitiveId;	// Control point ID
 	float2	HairPrimitiveUV;	// U: parametric distance between the two surrounding control point. V: parametric distance along hair width
 #endif
@@ -350,6 +352,17 @@ struct FMaterialPixelParameters
 	float3 VolumeSampleConservativeDensity;
 #endif
 };
+
+/**
+ * Compile out calls to StoreTexCoordScale if we're not doing texcoord scale analysis
+ */
+#if TEX_COORD_SCALE_ANALYSIS
+#define MaterialStoreTexCoordScale(Parameters, UV, TextureReferenceIndex) StoreTexCoordScale(Parameters.TexCoordScalesParams, UV, TextureReferenceIndex)
+#define MaterialStoreTexSample(Parameters, UV, TextureReferenceIndex) StoreTexSample(Parameters.TexCoordScalesParams, UV, TextureReferenceIndex)
+#else
+#define MaterialStoreTexCoordScale(Parameters, UV, TextureReferenceIndex) 1.0f
+#define MaterialStoreTexSample(Parameters, UV, TextureReferenceIndex) 1.0f
+#endif
 
 // @todo compat hack
 FMaterialPixelParameters MakeInitializedMaterialPixelParameters()
@@ -413,6 +426,11 @@ struct FMaterialVertexParameters
 
 	float3 PreSkinnedPosition;
 	float3 PreSkinnedNormal;
+
+#if GPU_SKINNED_MESH_FACTORY
+	float3 PreSkinOffset;
+	float3 PostSkinOffset;
+#endif
 
 	half4 VertexColor;
 #if NUM_MATERIAL_TEXCOORDS_VERTEX
@@ -1042,18 +1060,22 @@ float3 MaterialExpressionBlackBody( float Temp )
 }
 
 
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
+float  GetHairStrandsDepth(uint HairPrimitiveId, float2 VertexUV, float InDeviceZ);
+float  GetHairStrandsCoverage(uint HairPrimitiveId, float2 VertexUV);
 float2 GetHairStrandsRootUV(uint HairPrimitiveId, float2 VertexUV);
 float2 GetHairStrandsUV(uint HairPrimitiveId, float2 VertexUV);
 float2 GetHairStrandsDimensions(uint HairPrimitiveId, float2 VertexUV);
 float  GetHairStrandsSeed(uint HairPrimitiveId, float2 VertexUV);
 float  GetHairStrandsRoughness(uint HairPrimitiveId, float2 HairPrimitiveUV);
 float3 GetHairStrandsBaseColor(uint HairPrimitiveId, float2 HairPrimitiveUV);
+float3 GetHairStrandsTangent(uint HairPrimitiveId, float2 HairPrimitiveUV, half3x3 TangentToWorld, bool bUseTangentSpace);
+float4 GetHairStrandsAuxilaryData(uint HairPrimitiveId, float2 VertexUV);
 #endif
 
 float2 MaterialExpressionGetHairRootUV(FMaterialPixelParameters Parameters)
 {
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsRootUV(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return float2(0, 0);
@@ -1062,7 +1084,7 @@ float2 MaterialExpressionGetHairRootUV(FMaterialPixelParameters Parameters)
 
 float2 MaterialExpressionGetHairUV(FMaterialPixelParameters Parameters)
 {	
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsUV(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return float2(0,0);
@@ -1071,7 +1093,7 @@ float2 MaterialExpressionGetHairUV(FMaterialPixelParameters Parameters)
 
 float2 MaterialExpressionGetHairDimensions(FMaterialPixelParameters Parameters)
 {
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsDimensions(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return float2(0, 0);
@@ -1080,7 +1102,7 @@ float2 MaterialExpressionGetHairDimensions(FMaterialPixelParameters Parameters)
 
 float MaterialExpressionGetHairSeed(FMaterialPixelParameters Parameters)
 {
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsSeed(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return 0;
@@ -1089,7 +1111,7 @@ float MaterialExpressionGetHairSeed(FMaterialPixelParameters Parameters)
 
 float3 MaterialExpressionGetHairBaseColor(FMaterialPixelParameters Parameters)
 {
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsBaseColor(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return float3(0,0,0);
@@ -1098,15 +1120,67 @@ float3 MaterialExpressionGetHairBaseColor(FMaterialPixelParameters Parameters)
 
 float MaterialExpressionGetHairRoughness(FMaterialPixelParameters Parameters)
 {
-#if VF_STRAND_HAIR
+#if VF_STRAND_HAIR || VF_CARDS_HAIR
 	return GetHairStrandsRoughness(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
 #else
 	return 0;
 #endif
 }
-float3 MaterialExpressionGetHairTangent(FMaterialPixelParameters Parameters)
+
+float MaterialExpressionGetHairDepth(FMaterialVertexParameters Parameters)
 {
-	return Parameters.TangentToWorld[2];
+	return 0;
+}
+
+float MaterialExpressionGetHairDepth(FMaterialPixelParameters Parameters)
+{
+#if VF_CARDS_HAIR
+	return GetHairStrandsDepth(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV, Parameters.SvPosition.z);
+#else
+	return 0; // TODO for VF_STRAND_HAIR?
+#endif
+}
+
+float MaterialExpressionGetHairCoverage(FMaterialPixelParameters Parameters)
+{
+#if VF_CARDS_HAIR || VF_STRAND_HAIR
+	return GetHairStrandsCoverage(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+#else
+	return 0;
+#endif
+}
+
+float3 MaterialExpressionGetHairTangent(FMaterialPixelParameters Parameters, bool bUseTangentSpace)
+{
+#if VF_STRAND_HAIR
+	return bUseTangentSpace ? float3(0,1,0) : Parameters.TangentToWorld[2];
+#elif VF_CARDS_HAIR
+	return GetHairStrandsTangent(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV, Parameters.TangentToWorld, bUseTangentSpace);
+#else
+	return 0;
+#endif
+	
+}
+
+float2 MaterialExpressionGetAtlasUVs(FMaterialPixelParameters Parameters)
+{
+#if VF_STRAND_HAIR
+	return float2(0,0);
+#elif VF_CARDS_HAIR
+	return Parameters.HairPrimitiveUV;
+#else
+	return 0;
+#endif
+
+}
+
+float4 MaterialExpressionGetHairAuxilaryData(FMaterialPixelParameters Parameters)
+{
+#if VF_CARDS_HAIR
+	return GetHairStrandsAuxilaryData(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+#else
+	return 0;
+#endif
 }
 
 float3 MaterialExpressionGetHairColorFromMelanin(float Melanin, float Redness, float3 DyeColor)
@@ -1160,14 +1234,13 @@ float3 MaterialExpressionSkyAtmosphereLightIlluminance(FMaterialPixelParameters 
 #endif
 }
 
-float3 MaterialExpressionSkyAtmosphereLightDirection(FMaterialPixelParameters Parameters, uint LightIndex)
-{
 #if MATERIAL_SKY_ATMOSPHERE && PROJECT_SUPPORT_SKY_ATMOSPHERE
-	return ResolvedView.AtmosphereLightDirection[LightIndex].xyz;
+	#define DEFINE_SKYATMLIGHTDIRECTION(MaterialParamType) float3 MaterialExpressionSkyAtmosphereLightDirection(MaterialParamType Parameters, uint LightIndex) {return ResolvedView.AtmosphereLightDirection[LightIndex].xyz;}
 #else
-	return float3(0.0f, 0.0f, 0.0f);
+	#define DEFINE_SKYATMLIGHTDIRECTION(MaterialParamType) float3 MaterialExpressionSkyAtmosphereLightDirection(MaterialParamType Parameters, uint LightIndex) {return float3(0.0f, 0.0f, 0.0f);}
 #endif
-}
+DEFINE_SKYATMLIGHTDIRECTION(FMaterialPixelParameters)
+DEFINE_SKYATMLIGHTDIRECTION(FMaterialVertexParameters)
 
 float3 MaterialExpressionSkyAtmosphereLightDiskLuminance(FMaterialPixelParameters Parameters, uint LightIndex)
 {
@@ -1309,6 +1382,24 @@ float3 MaterialExpressionVolumeSampleConservativeDensity(FMaterialPixelParameter
 #endif
 }
 
+float3 MaterialExpressionPreSkinOffset(FMaterialVertexParameters Parameters)
+{
+#if GPU_SKINNED_MESH_FACTORY
+	return Parameters.PreSkinOffset;
+#else
+	return 0;
+#endif
+}
+
+float3 MaterialExpressionPostSkinOffset(FMaterialVertexParameters Parameters)
+{
+#if GPU_SKINNED_MESH_FACTORY
+	return Parameters.PostSkinOffset;
+#else
+	return 0;
+#endif
+}
+
 /**
  * Utility function to unmirror one coordinate value to the other side
  * UnMirrored == 1 if normal
@@ -1356,6 +1447,16 @@ MaterialFloat2 GetParticleMacroUV(FMaterialPixelParameters Parameters)
 
 MaterialFloat4 ProcessMaterialColorTextureLookup(MaterialFloat4 TextureValue)
 {
+	return TextureValue;
+}
+
+MaterialFloat4 ProcessMaterialVirtualColorTextureLookup(MaterialFloat4 TextureValue)
+{
+	TextureValue = ProcessMaterialColorTextureLookup(TextureValue);
+#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
+	// on mobile all VT physical spaces use linear color formats, do sRGB to Linear conversion in the shader
+	TextureValue = MaterialFloat4(TextureValue.rgb*TextureValue.rgb, TextureValue.a);
+#endif
 	return TextureValue;
 }
 
@@ -1684,30 +1785,6 @@ MaterialFloat2 GetLightmapUVs(FMaterialPixelParameters Parameters)
 #endif
 }
 
-#if USES_EYE_ADAPTATION
-
-// Allow passes to reroute which uniform buffer struct EyeAdaptation comes from
-#ifndef EyeAdaptationStruct
-	#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
-		#define EyeAdaptationStruct SceneTexturesStruct
-	#else
-		#define EyeAdaptationStruct MobileSceneTextures
-	#endif
-#endif
-
-//Provides access to the EyeAdaptation RT. 
-float EyeAdaptationLookup()
-{
-#if EYE_ADAPTATION_DISABLED || SCENE_TEXTURES_DISABLED
-	return 0.0;
-#elif FEATURE_LEVEL >= FEATURE_LEVEL_SM5
-	return EyeAdaptationStruct.EyeAdaptation.Load(int3(0, 0, 0)).x;
-#else
-	return EyeAdaptationStruct.EyeAdaptationBuffer[0].x;
-#endif
-}
-#endif
-
 //The post-process material needs to decode the scene color since it's encoded at PreTonemapMSAA if MSAA enabled on MetalMobilePlatorm 
 //The POST_PROCESS_MATERIAL_BEFORE_TONEMAP is 1 for both BL_BeforeTranslucency and BL_BeforeTonemapping post-process materials
 #if FEATURE_LEVEL <= FEATURE_LEVEL_ES3_1 && POST_PROCESS_MATERIAL && POST_PROCESS_MATERIAL_BEFORE_TONEMAP && METAL_PROFILE
@@ -1724,7 +1801,11 @@ MaterialFloat4 MobileSceneTextureLookup(inout FMaterialPixelParameters Parameter
 
 	if (SceneTextureId == PPI_SceneDepth)
 	{
-		MaterialFloat Depth = ConvertFromDeviceZ(Texture2DSample(MobileSceneTextures.SceneColorTexture, MobileSceneTextures.SceneColorTextureSampler, UV).a);
+		#if MOBILE_DEFERRED_SHADING
+			MaterialFloat Depth = ConvertFromDeviceZ(Texture2DSample(MobileSceneTextures.SceneDepthAuxTexture, MobileSceneTextures.SceneDepthAuxTextureSampler, UV).r);
+		#else
+			MaterialFloat Depth = ConvertFromDeviceZ(Texture2DSample(MobileSceneTextures.SceneColorTexture, MobileSceneTextures.SceneColorTextureSampler, UV).a);
+		#endif
 		return MaterialFloat4(Depth.rrr, 0.f);
 	}
 	else if (SceneTextureId == PPI_CustomDepth)
@@ -1774,14 +1855,15 @@ MaterialFloat4 MobileSceneTextureLookup(inout FMaterialPixelParameters Parameter
 float2 PostProcessVelocityLookup(float Depth, float2 UV)
 {
 #if GBUFFER_HAS_VELOCITY
-	float2 Velocity = Texture2DSampleLevel(SceneTexturesStruct.GBufferVelocityTexture, SceneTexturesStruct.GBufferVelocityTextureSampler, UV, 0).xy;
+	float4 EncodedVelocity = Texture2DSampleLevel(SceneTexturesStruct.GBufferVelocityTexture, SceneTexturesStruct_GBufferVelocityTextureSampler, UV, 0);
 #else
-	float2 Velocity = Texture2DSample(PostProcessInput_4_Texture, PostProcessInput_4_SharedSampler, UV).xy;
+	float4 EncodedVelocity = Texture2DSample(PostProcessInput_4_Texture, PostProcessInput_4_SharedSampler, UV);
 #endif
 
-	if( Velocity.x > 0.0 )
+	float2 Velocity;
+	if( EncodedVelocity.x > 0.0 )
 	{
-		Velocity = DecodeVelocityFromTexture(float3(Velocity, 0.0)).xy;
+		Velocity = DecodeVelocityFromTexture(EncodedVelocity).xy;
 	}
 	else
 	{
@@ -1863,7 +1945,7 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 			return float4(ScreenSpaceData.GBuffer.StoredSpecular.rrr, 0);
 #if POST_PROCESS_MATERIAL
 		case PPI_Velocity:
-			return float4(PostProcessVelocityLookup(ScreenSpaceData.GBuffer.Depth, UV), 0, 0);
+			return float4(PostProcessVelocityLookup(ConvertToDeviceZ(ScreenSpaceData.GBuffer.Depth), UV), 0, 0);
 #endif
 		case PPI_WorldTangent:
 			return float4(ScreenSpaceData.GBuffer.WorldTangent, 0);
@@ -1882,11 +1964,11 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 /** Applies an offset to the scene texture lookup and decodes the HDR linear space color. */
 float3 DecodeSceneColorForMaterialNode(float2 ScreenUV)
 {
-#if SCENE_TEXTURES_DISABLED
+#if !defined(SceneColorCopyTexture)
 	// Hit proxies rendering pass doesn't have access to valid render buffers
 	return float3(0.0f, 0.0f, 0.0f);
 #else
-	float4 EncodedSceneColor = Texture2DSample(SceneTexturesStruct.SceneColorCopyTexture, SceneTexturesStruct.SceneColorCopyTextureSampler, ScreenUV);
+	float4 EncodedSceneColor = Texture2DSample(SceneColorCopyTexture, SceneColorCopySampler, ScreenUV);
 
 	// Undo the function in EncodeSceneColorForMaterialNode
 	float3 SampledColor = pow(EncodedSceneColor.rgb, 4) * 10;
@@ -1916,7 +1998,7 @@ half3 GetMaterialNormal(FMaterialPixelParameters Parameters, FPixelMaterialInput
 
 	RetNormal = GetMaterialNormalRaw(PixelMaterialInputs);
 		
-	#if (USE_EDITOR_SHADERS && !(ES3_1_PROFILE || ESDEFERRED_PROFILE)) || MOBILE_EMULATION
+	#if (USE_EDITOR_SHADERS && !ES3_1_PROFILE) || MOBILE_EMULATION
 	{
 		// this feature is only needed for development/editor - we can compile it out for a shipping build (see r.CompileShadersForDevelopment cvar help)
 		half3 OverrideNormal = ResolvedView.NormalOverrideParameter.xyz;
@@ -2009,7 +2091,7 @@ half GetMaterialRoughness(FPixelMaterialInputs PixelMaterialInputs)
 #endif
 	half Roughness = saturate(GetMaterialRoughnessRaw(PixelMaterialInputs));
 	
-	#if (USE_EDITOR_SHADERS && !ESDEFERRED_PROFILE) || MOBILE_EMULATION
+	#if (USE_EDITOR_SHADERS && !ES3_1_PROFILE) || MOBILE_EMULATION
 	{
 		// this feature is only needed for development/editor - we can compile it out for a shipping build (see r.CompileShadersForDevelopment cvar help)
 		Roughness = Roughness * ResolvedView.RoughnessOverrideParameter.y + ResolvedView.RoughnessOverrideParameter.x;
@@ -2231,6 +2313,33 @@ float3 TransformTangentNormalToWorld(MaterialFloat3x3 TangentToWorld, float3 Tan
 
 #endif //DECAL_PRIMITIVE
 
+float3 CalculateAnisotropyTangent(FMaterialPixelParameters Parameters, FPixelMaterialInputs PixelMaterialInputs)
+{
+	float3 Normal = Parameters.WorldNormal;
+
+#if CLEAR_COAT_BOTTOM_NORMAL && (NUM_MATERIAL_OUTPUTS_CLEARCOATBOTTOMNORMAL > 0)
+	Normal =  ClearCoatBottomNormal0(Parameters);
+	#if MATERIAL_TANGENTSPACENORMAL
+		Normal = TransformTangentVectorToWorld(Parameters.TangentToWorld, Normal);
+	#endif
+#endif
+
+	float3 Tangent = GetMaterialTangent(PixelMaterialInputs);
+
+#if MATERIAL_TANGENTSPACENORMAL
+	#if SIMPLE_FORWARD_SHADING
+		Tangent = float3(1, 0, 0);
+	#endif
+
+	Tangent = TransformTangentNormalToWorld(Parameters.TangentToWorld, Tangent);
+#endif
+
+	float3 BiTangent = cross(Normal, Tangent);
+	Tangent = normalize(cross(BiTangent, Normal));
+
+	return Tangent;
+}
+
 void CalcPixelMaterialInputs(in out FMaterialPixelParameters Parameters, in out FPixelMaterialInputs PixelMaterialInputs)
 {
 	// Initial calculations (required for Normal)
@@ -2247,7 +2356,7 @@ void CalcPixelMaterialInputs(in out FMaterialPixelParameters Parameters, in out 
 #endif
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
-	// ES2 will rely on only the final normalize for performance
+	// Mobile will rely on only the final normalize for performance
 	MaterialNormal = normalize(MaterialNormal);
 #endif
 
@@ -2275,27 +2384,8 @@ void CalcPixelMaterialInputs(in out FMaterialPixelParameters Parameters, in out 
 	// Now the rest of the inputs
 %s
 
-#if GBUFFER_HAS_TANGENT
-	#if MATERIAL_TANGENTSPACENORMAL
-		
-		#if SIMPLE_FORWARD_SHADING
-			Parameters.WorldTangent = float3(1, 0, 0);
-		#endif
-
-			float3 MaterialTangent = GetMaterialTangent(PixelMaterialInputs);
-
-		#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
-			MaterialTangent = normalize(MaterialTangent);
-		#endif
-
-		Parameters.WorldTangent = TransformTangentNormalToWorld(Parameters.TangentToWorld, MaterialTangent);
-
-		// flip the tangent for backfaces being rendered with a two-sided material
-		Parameters.WorldTangent *= Parameters.TwoSidedSign;
-	
-	#else //MATERIAL_TANGENTSPACENORMAL
-		Parameters.WorldTangent = normalize(GetMaterialTangent(PixelMaterialInputs));
-	#endif //MATERIAL_TANGENTSPACENORMAL
+#if MATERIAL_USES_ANISOTROPY
+	Parameters.WorldTangent = CalculateAnisotropyTangent(Parameters, PixelMaterialInputs);
 #else
 	Parameters.WorldTangent = 0;
 #endif

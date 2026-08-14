@@ -517,9 +517,9 @@ public:
 		// Copy the existing elements to a new array.
 		TSparseArray<ElementType,Allocator> CompactedArray;
 		CompactedArray.Empty(Num());
-		for(TConstIterator It(*this);It;++It)
+		for(TIterator It(*this);It;++It)
 		{
-			new(CompactedArray.AddUninitialized()) ElementType(*It);
+			new(CompactedArray.AddUninitialized()) ElementType(MoveTempIfPossible(*It));
 		}
 
 		// Replace this array with the compacted array.
@@ -806,7 +806,7 @@ public:
 	int32 PointerToIndex(const ElementType* Ptr) const
 	{
 		checkSlow(Data.Num());
-		int32 Index = Ptr - &GetData(0);
+		int32 Index = (int32)((FElementOrFreeListLink*)Ptr - &GetData(0));
 		checkSlow(Index >= 0 && Index < Data.Num() && Index < AllocationFlags.Num() && AllocationFlags[Index]);
 		return Index;
 	}

@@ -127,8 +127,7 @@ void FAnimationEditor::InitAnimationEditor(const EToolkitMode::Type Mode, const 
 
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
-	const TSharedRef<FTabManager::FLayout> DummyLayout = FTabManager::NewLayout("NullLayout")->AddArea(FTabManager::NewPrimaryArea());
-	FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, AnimationEditorAppIdentifier, DummyLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, InAnimationAsset);
+	FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, AnimationEditorAppIdentifier, FTabManager::FLayout::NullLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, InAnimationAsset);
 
 	BindCommands();
 
@@ -437,6 +436,14 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 				.Label(NameAttribute)
 				.TabRole(ETabRole::DocumentTab)
 				.TabColorScale(GetTabColorScale())
+				.OnTabClosed_Lambda([this](TSharedRef<SDockTab> InTab)
+				{
+					TSharedPtr<SDockTab> CurveTab = AnimCurveDocumentTab.Pin();
+					if(CurveTab.IsValid())
+					{
+						CurveTab->RequestCloseTab();
+					}
+				})
 				[
 					TabContents
 				];

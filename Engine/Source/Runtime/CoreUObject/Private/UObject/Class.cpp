@@ -733,6 +733,34 @@ void UStruct::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 	}
 }
 
+void UStruct::CollectBytecodeReferencedObjects(TArray<UObject*>& OutReferencedObjects)
+{
+	FArchiveScriptReferenceCollector ObjRefCollector(OutReferencedObjects);
+
+	int32 BytecodeIndex = 0;
+	while (BytecodeIndex < Script.Num())
+	{
+		SerializeExpr(BytecodeIndex, ObjRefCollector);
+	}
+}
+
+void UStruct::CollectPropertyReferencedObjects(TArray<UObject*>& OutReferencedObjects)
+{
+	FPropertyReferenceCollector PropertyReferenceCollector(this);
+	for (FField* CurrentField = ChildProperties; CurrentField; CurrentField = CurrentField->Next)
+	{
+		CurrentField->AddReferencedObjects(PropertyReferenceCollector);
+	}
+	OutReferencedObjects.Append(PropertyReferenceCollector.UniqueReferences.Array());
+}
+
+void UStruct::CollectBytecodeAndPropertyReferencedObjects()
+{
+	ScriptAndPropertyObjectReferences.Empty();
+	CollectBytecodeReferencedObjects(ScriptAndPropertyObjectReferences);
+	CollectPropertyReferencedObjects(ScriptAndPropertyObjectReferences);
+}
+
 void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 {
 	if (bRelinkExistingProperties)
@@ -956,12 +984,7 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 
 	{
 		// Now collect all references from FProperties to UObjects and store them in GC-exposed array for fast access
-		FPropertyReferenceCollector PropertyReferenceCollector(this);
-		for (FField* CurrentField = ChildProperties; CurrentField; CurrentField = CurrentField->Next)
-		{
-			CurrentField->AddReferencedObjects(PropertyReferenceCollector);
-		}
-		ScriptAndPropertyObjectReferences.Append(PropertyReferenceCollector.UniqueReferences.Array());
+		CollectPropertyReferencedObjects(ScriptAndPropertyObjectReferences);
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 		// The old (non-EDL) FLinkerLoad code paths create placeholder objects
@@ -1666,8 +1689,8 @@ void UStruct::ConvertUFieldsToFFields()
 			{
 				Children = OldField->Next;
 			}
-			// Move the old FProperty to the transient package
-			OldField->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+			// Move the old UProperty to the transient package and rename it to something unique
+			OldField->Rename(*MakeUniqueObjectName(GetTransientPackage(), OldField->GetClass()).ToString(), GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 			OldField->RemoveFromRoot();
 		}
 		else 
@@ -5092,6 +5115,22 @@ bool UClass::ReplaceNativeFunction(FName InFName, FNativeFuncPtr InPointer, bool
 
 #endif
 
+UClass* UClass::GetAuthoritativeClass()
+{
+#if WITH_HOT_RELOAD && WITH_ENGINE
+	if (GIsHotReload)
+	{
+		const TMap<UClass*, UClass*>& ReinstancedClasses = GetClassesToReinstanceForHotReload();
+		if (UClass* const* FoundMapping = ReinstancedClasses.Find(this))
+		{
+			return *FoundMapping;
+		}
+	}
+#endif
+
+	return this;
+}
+
 void UClass::AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer)
 {
 	FName InFName(InName);
@@ -5966,6 +6005,12 @@ UScriptStruct* TBaseStructure<FFrameNumber>::Get()
 UScriptStruct* TBaseStructure<FFrameTime>::Get()
 {
 	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("FrameTime"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FAssetBundleData>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("AssetBundleData"));
 	return ScriptStruct;
 }
 

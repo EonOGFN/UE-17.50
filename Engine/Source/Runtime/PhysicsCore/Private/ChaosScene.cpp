@@ -27,9 +27,11 @@
 #include "PBDRigidActiveParticlesBuffer.h"
 #include "Chaos/GeometryParticlesfwd.h"
 #include "Chaos/Box.h"
-#include "ChaosSolvers/Public/EventsData.h"
-#include "ChaosSolvers/Public/EventManager.h"
-#include "ChaosSolvers/Public/RewindData.h"
+#include "Chaos/Public/EventsData.h"
+#include "Chaos/Public/EventManager.h"
+#include "Chaos/Public/RewindData.h"
+#include "PhysicsSettingsCore.h"
+#include "Chaos/PhysicsSolverBaseImpl.h"
 
 #include "ProfilingDebugging/CsvProfiler.h"
 
@@ -37,6 +39,7 @@ DECLARE_CYCLE_STAT(TEXT("Update Kinematics On Deferred SkelMeshes"),STAT_UpdateK
 CSV_DEFINE_CATEGORY(ChaosPhysics,true);
 
 TAutoConsoleVariable<int32> CVar_ChaosSimulationEnable(TEXT("P.Chaos.Simulation.Enable"),1,TEXT("Enable / disable chaos simulation. If disabled, physics will not tick."));
+TAutoConsoleVariable<int32> CVar_ApplyProjectSettings(TEXT("p.Chaos.Simulation.ApplySolverProjectSettings"), 1, TEXT("Whether to apply the solver project settings on spawning a solver"));
 
 FChaosScene::FChaosScene(
 	UObject* OwnerPtr
@@ -44,7 +47,8 @@ FChaosScene::FChaosScene(
 	, const FName& DebugName
 #endif
 )
-	: ChaosModule(nullptr)
+	: SolverAccelerationStructure(nullptr)
+	, ChaosModule(nullptr)
 	, SceneSolver(nullptr)
 	, Owner(OwnerPtr)
 {
@@ -65,6 +69,15 @@ FChaosScene::FChaosScene(
 	check(SceneSolver);
 
 	SceneSolver->PhysSceneHack = this;
+
+	if(CVar_ApplyProjectSettings.GetValueOnAnyThread() != 0)
+	{
+		UPhysicsSettingsCore* Settings = UPhysicsSettingsCore::Get();
+		SceneSolver->EnqueueCommandImmediate([InSolver = SceneSolver, SolverConfigCopy = Settings->SolverOptions]()
+		{
+			InSolver->ApplyConfig(SolverConfigCopy);
+		});
+	}
 
 	Flush_AssumesLocked();	//make sure acceleration structure exists right away
 }
@@ -112,21 +125,21 @@ void FChaosScene::AddPieModifiedObject(UObject* InObj)
 
 const Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float,3>,float,3>* FChaosScene::GetSpacialAcceleration() const
 {
-	return SolverAccelerationStructure.Get();
+	return SolverAccelerationStructure;
 }
 
 Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float,3>,float,3>* FChaosScene::GetSpacialAcceleration()
 {
-	return SolverAccelerationStructure.Get();
+	return SolverAccelerationStructure;
 }
 
 void FChaosScene::CopySolverAccelerationStructure()
 {
+	using namespace Chaos;
 	if(SceneSolver)
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 		SceneSolver->UpdateExternalAccelerationStructure_External(SolverAccelerationStructure);
-		ExternalDataLock.WriteUnlock();
 	}
 }
 
@@ -157,12 +170,12 @@ void FChaosScene::Flush_AssumesLocked()
 void FChaosScene::RemoveActorFromAccelerationStructure(FPhysicsActorHandle& Actor)
 {
 #if WITH_CHAOS
+	using namespace Chaos;
 	if(GetSpacialAcceleration() && Actor->UniqueIdx().IsValid())
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 		Chaos::TAccelerationStructureHandle<float,3> AccelerationHandle(Actor);
 		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle,Actor->SpatialIdx());
-		ExternalDataLock.WriteUnlock();
 	}
 #endif
 }
@@ -174,7 +187,7 @@ void FChaosScene::UpdateActorInAccelerationStructure(const FPhysicsActorHandle& 
 
 	if(GetSpacialAcceleration())
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 
 		auto SpatialAcceleration = GetSpacialAcceleration();
 
@@ -194,7 +207,6 @@ void FChaosScene::UpdateActorInAccelerationStructure(const FPhysicsActorHandle& 
 		}
 
 		GetSolver()->UpdateParticleInAccelerationStructure_External(Actor,/*bDelete=*/false);
-		ExternalDataLock.WriteUnlock();
 	}
 #endif
 }
@@ -206,7 +218,7 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 
 	if(GetSpacialAcceleration())
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 
 		auto SpatialAcceleration = GetSpacialAcceleration();
 
@@ -240,8 +252,6 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 				GetSolver()->UpdateParticleInAccelerationStructure_External(Actor,/*bDelete=*/false);
 			}
 		}
-
-		ExternalDataLock.WriteUnlock();
 	}
 #endif
 }
@@ -320,166 +330,65 @@ void FChaosScene::StartFrame()
 		SolverList.AddUnique(Solver);
 	}
 
-	// Prereqs for the final completion task to run (collection of all the solver tasks)
-	FGraphEventArray CompletionTaskPrerequisites;
 
 	for(FPhysicsSolverBase* Solver : SolverList)
 	{
-		CompletionTaskPrerequisites.Add(Solver->AdvanceAndDispatch_External(UseDeltaTime));
+		CompletionEvents.Add(Solver->AdvanceAndDispatch_External(UseDeltaTime));
 	}
 
-	// For unit testing in single threaded mode we have no task graph, so call complete directly if possible
-	bool bCallDirectly = true;
-	for(const auto& Prereq : CompletionTaskPrerequisites)
+#endif
+}
+
+void FChaosScene::OnSyncBodies()
+{
+	GetSolver()->PullPhysicsStateForEachDirtyProxy_External([](auto){});
+}
+
+bool FChaosScene::AreAnyTasksPending() const
+{
+	if (!IsCompletionEventComplete())
 	{
-		if(Prereq && !Prereq->IsComplete())
-		{
-			bCallDirectly = false;
-			break;
-		}
+		return true;
 	}
 
-	if(bCallDirectly)
+	const Chaos::FPBDRigidsSolver* Solver = GetSolver();
+	if (Solver && Solver->AreAnyTasksPending())
 	{
-		CompleteSceneSimulationImp();
-	}
-	else
-	{
-		// Setup post simulate tasks
-
-		DECLARE_CYCLE_STAT(TEXT("FDelegateGraphTask.CompletePhysicsSimulation"),STAT_FDelegateGraphTask_CompletePhysicsSimulation,STATGROUP_TaskGraphTasks);
-
-		// Completion event runs in parallel and will flip out our buffers, gamethread work can be done in EndFrame (Called by world after this completion event finishes)
-		CompletionEvent = FDelegateGraphTask::CreateAndDispatchWhenReady(FDelegateGraphTask::FDelegate::CreateRaw(this,&FChaosScene::CompleteSceneSimulation),GET_STATID(STAT_FDelegateGraphTask_CompletePhysicsSimulation),&CompletionTaskPrerequisites,ENamedThreads::GameThread,ENamedThreads::AnyHiPriThreadHiPriTask);
+		return true;
 	}
 	
-#endif
+	return false;
 }
 
-void FChaosScene::OnSyncBodies(Chaos::FPBDRigidDirtyParticlesBufferAccessor& Accessor)
+void FChaosScene::BeginDestroy()
 {
-	//simple implementation that pulls data over. Used for unit testing, engine has its own version of this
-	const Chaos::FPBDRigidDirtyParticlesBufferOut* DirtyParticleBuffer = Accessor.GetSolverOutData();
-	TSet<FGeometryCollectionPhysicsProxy*> GCProxies;
-
-	for(Chaos::TGeometryParticle<float,3>* DirtyParticle : DirtyParticleBuffer->DirtyGameThreadParticles)
+	Chaos::FPBDRigidsSolver* Solver = GetSolver();
+	if (Solver)
 	{
-		if(IPhysicsProxyBase* ProxyBase = DirtyParticle->GetProxy())
-		{
-			if(ProxyBase->GetType() == EPhysicsProxyType::SingleRigidParticleType)
-			{
-				FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float,3> > * Proxy = static_cast<FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float,3> >*>(ProxyBase);
-				Proxy->PullFromPhysicsState();
-			}
-			else if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
-			{
-				FGeometryCollectionPhysicsProxy* Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
-				GCProxies.Add(Proxy);
-			}
-		}
+		Solver->BeginDestroy();
 	}
-
-	for(IPhysicsProxyBase* ProxyBase : DirtyParticleBuffer->PhysicsParticleProxies)
-	{
-		if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
-		{
-			FGeometryCollectionPhysicsProxy* Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
-			GCProxies.Add(Proxy);
-		} else
-		{
-			ensure(false); // Unhandled physics only particle proxy!
-		}
-	}
-
-	for(FGeometryCollectionPhysicsProxy* GCProxy : GCProxies)
-	{
-		GCProxy->PullFromPhysicsState();
-	}
-
 }
 
-void FChaosScene::CompleteSceneSimulation(ENamedThreads::Type CurrentThread,const FGraphEventRef& MyCompletionGraphEvent)
+bool FChaosScene::IsCompletionEventComplete() const
 {
-	CompleteSceneSimulationImp();
-}
-
-void FChaosScene::CompleteSceneSimulationImp()
-{
-#if WITH_CHAOS
-	using namespace Chaos;
-
-	// Cache our results to the threaded buffer.
+	for (FGraphEventRef Event : CompletionEvents)
 	{
-		LLM_SCOPE(ELLMTag::Chaos);
-		SCOPE_CYCLE_COUNTER(STAT_BufferPhysicsResults);
-
-		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
-
-		check(Module);
-
-		TArray<FPhysicsSolverBase*> SolverList = Module->GetSolversMutable(Owner);
-
-		TArray<FPhysicsSolverBase*> ActiveSolvers;
-
-		if(SolverList.Num() > 0)
+		if (Event && !Event->IsComplete())
 		{
-			ActiveSolvers.Reserve(SolverList.Num());
-
-			// #BG calculate active solver list once as we dispatch our first task
-			for(FPhysicsSolverBase* Solver : SolverList)
-			{
-				Solver->CastHelper([&ActiveSolvers](auto& Concrete)
-				{
-					if(Concrete.Enabled() && Concrete.HasActiveParticles())
-					{
-						ActiveSolvers.Add(&Concrete);
-					}
-				});
-			}
+			return false;
 		}
-
-		if(SceneSolver && SceneSolver->Enabled() && SceneSolver->HasActiveParticles())
-		{
-			ActiveSolvers.AddUnique(SceneSolver);
-		}
-
-		const int32 NumActiveSolvers = ActiveSolvers.Num();
-
-		PhysicsParallelFor(NumActiveSolvers,[&](int32 Index)
-		{
-			//TODO: support any type not just default traits
-			FPhysicsSolverBase* Solver = ActiveSolvers[Index];
-			auto& Concrete = Solver->CastChecked<Chaos::FDefaultTraits>();
-			Concrete.GetDirtyParticlesBuffer()->CaptureSolverData(&Concrete);
-			Concrete.BufferPhysicsResults();
-			Concrete.FlipBuffers();
-		});
 	}
-#endif
+
+	return true;
 }
 
 template <typename TSolver>
 void FChaosScene::SyncBodies(TSolver* Solver)
 {
+#if WITH_CHAOS
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SyncBodies"),STAT_SyncBodies,STATGROUP_Physics);
-
-	Chaos::FPBDRigidDirtyParticlesBufferAccessor Accessor(Solver->GetDirtyParticlesBuffer());
-	OnSyncBodies(Accessor);
-
-
-	//
-	// @todo(chaos) : Add Dirty Constraints Support
-	//
-	// This is temporary constraint code until the DirtyParticleBuffer
-	// can be updated to support constraints. In summary : The 
-	// FDirtyPropertiesManager is going to be updated to support a 
-	// FDirtySet that is specific to a TConstraintProperties class.
-	//
-	for (FJointConstraintPhysicsProxy* Proxy : Solver->GetJointConstraintPhysicsProxy())
-	{
-		Proxy->PullFromPhysicsState();
-	}
-
+	OnSyncBodies();
+#endif
 }
 
 
@@ -521,9 +430,9 @@ void FChaosScene::EndFrame()
 	int32 DirtyElements = DirtyElementCount(GetSpacialAcceleration()->AsChecked<SpatialAccelerationCollection>());
 	CSV_CUSTOM_STAT(ChaosPhysics,AABBTreeDirtyElementCount,DirtyElements,ECsvCustomStatOp::Set);
 
-	check(!CompletionEvent || CompletionEvent->IsComplete());	//CompletionEvent being null means we were able to schedule completion immediately
+	check(IsCompletionEventComplete())
 	//check(PhysicsTickTask->IsComplete());
-	CompletionEvent = nullptr;
+	CompletionEvents.Reset();
 
 	// Make a list of solvers to process. This is a list of all solvers registered to our world
 	// And our internal base scene solver.
@@ -570,7 +479,7 @@ void FChaosScene::EndFrame()
 
 				{
 					SCOPE_CYCLE_COUNTER(STAT_SqUpdateMaterials);
-					Concrete.SyncQueryMaterials();
+					Concrete.SyncQueryMaterials_External();
 				}
 			});
 		}
@@ -582,14 +491,14 @@ void FChaosScene::EndFrame()
 
 void FChaosScene::WaitPhysScenes()
 {
-	if(CompletionEvent && !CompletionEvent->IsComplete())
+	if(!IsCompletionEventComplete())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FPhysScene_WaitPhysScenes);
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompletionEvent,ENamedThreads::GameThread);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(CompletionEvents,ENamedThreads::GameThread);
 	}
 }
 
-FGraphEventRef FChaosScene::GetCompletionEvent()
+FGraphEventArray FChaosScene::GetCompletionEvents()
 {
-	return CompletionEvent;
+	return CompletionEvents;
 }

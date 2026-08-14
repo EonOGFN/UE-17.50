@@ -111,6 +111,11 @@ public:
 
 	DECLARE_DELEGATE_RetVal(ECheckBoxState, FGetCheckBoxStateDelegate);
 	DECLARE_DELEGATE_OneParam(FSetCheckBoxStateDelegate, ECheckBoxState);
+
+	void UnbindReductionSettings()
+	{
+		IsLODSettingsEnabledDelegate.Unbind();
+	}
 private:
 	/** IDetailCustomNodeBuilder Interface*/
 	virtual void SetOnRebuildChildren(FSimpleDelegate InOnRegenerateChildren) override {}
@@ -242,8 +247,14 @@ public:
 	FSkeletalMeshBuildSettingsLayout(FSkeletalMeshBuildSettings& InBuildSettings, int32 InLODIndex, FIsLODSettingsEnabledDelegate InIsBuildSettingsEnabledDelegate, FModifyMeshLODSettingsDelegate InModifyMeshLODSettingsDelegate);
 	virtual ~FSkeletalMeshBuildSettingsLayout() {};
 
+
 	DECLARE_DELEGATE_RetVal(float, FGetFloatDelegate);
 	DECLARE_DELEGATE_OneParam(FSetFloatDelegate, float);
+
+	void UnbindBuildSettings()
+	{
+		IsBuildSettingsEnabledDelegate.Unbind();
+	}
 
 private:
 	/** IDetailCustomNodeBuilder Interface*/
@@ -532,6 +543,17 @@ private:
 	void OnSectionRecomputeTangentChanged(ECheckBoxState NewState, int32 LODIndex, int32 SectionIndex);
 
 	/**
+	* Handler for selecting which vertex color to mask the blending of recomputing tangents
+	*
+	* @param LODIndex	The LODIndex we want to change
+	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
+	*/
+	TSharedRef<class SWidget> OnGenerateRecomputeTangentsVertexChannelMaskPicker(int32 LODIndex, int32 SectionIndex);
+	bool IsGenerateRecomputeTangentsVertexChannelMaskPicker(int32 LODIndex, int32 SectionIndex) const;
+	FText GetCurrentRecomputeTangentsVertexChannelMaskName(int32 LODIndex, int32 SectionIndex) const;
+	void SetCurrentRecomputeTangentsVertexChannel(int32 LODIndex, int32 SectionIndex, int32 Index);
+
+	/**
 	 * Handler for enabling delete button on materials
 	 *
 	 * @param SectionIndex - index of the section to check
@@ -559,6 +581,8 @@ private:
 	FText GetLODImportedText(int32 LODIndex) const;
 
 	FText GetMaterialSlotNameText(int32 MaterialIndex) const;
+
+	void RefreshMeshDetailLayout();
 
 	/** apply LOD changes if the user modified LOD reduction settings */
 	FReply OnApplyChanges();

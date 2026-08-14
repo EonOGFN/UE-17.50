@@ -19,7 +19,7 @@
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatIntelISPCTexComp, Log, All);
 
 // increment this if you change anything that will affect compression in this file, including FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE
-#define BASE_ISPC_DX11_FORMAT_VERSION 3
+#define BASE_ISPC_DX11_FORMAT_VERSION 4
 
 // For debugging intermediate image results by saving them out as files.
 #define DEBUG_SAVE_INTERMEDIATE_IMAGES 0
@@ -379,7 +379,7 @@ static void IntelBC7CompressScans(bc7_enc_settings* pEncSettings, FImage* pInIma
 }
 
 #define MAX_QUALITY_BY_SIZE 4
-#define FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE 4
+#define FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE 3
 
 static uint16 GetDefaultCompressionBySizeValue()
 {
@@ -550,7 +550,7 @@ public:
 	}
 
 	// Since we want to have per texture [group] compression settings, we need to have the key based on the texture
-	virtual FString GetDerivedDataKeyString(const class UTexture& Texture) const override
+	virtual FString GetDerivedDataKeyString(const class UTexture& Texture, const FTextureBuildSettings* BuildSettings) const override
 	{
 		return TEXT("");
 	}
@@ -666,6 +666,30 @@ public:
 		}
 	}
 
+	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	{
+		if (BuildSettings.TextureFormatName == GTextureFormatNameBC6H)
+		{
+			return PF_BC6H;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameBC7)
+		{
+			return PF_BC7;
+		}
+		else if (BuildSettings.bVirtualStreamable)
+		{
+			return PF_ASTC_4x4;
+		}
+		else
+		{
+			int _Width, _Height;
+			bool bIsNormalMap = (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalAG ||
+				BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG);
+
+			return GetQualityFormat(_Width, _Height, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality);
+		}
+	}
+
 	virtual bool CompressImage(
 		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
@@ -685,7 +709,8 @@ public:
 		const bool bUseTasks = true;
 		FMultithreadSettings MultithreadSettings;
 
-		EPixelFormat CompressedPixelFormat = PF_Unknown;
+		EPixelFormat CompressedPixelFormat = GetPixelFormatForImage(BuildSettings, InImage, bImageHasAlphaChannel);
+
 		if ( BuildSettings.TextureFormatName == GTextureFormatNameBC6H )
 		{
 			FImage Image;
@@ -700,7 +725,6 @@ public:
 			PadImageToBlockSize(Image, 4, 4, 4*2);
 			FMultithreadedCompression<bc6h_enc_settings>::Compress(MultithreadSettings, settings, Image, OutCompressedImage, &IntelBC6HCompressScans, bUseTasks);
 
-			CompressedPixelFormat = PF_BC6H;
 			bCompressionSucceeded = true;
 		}
 		else if ( BuildSettings.TextureFormatName == GTextureFormatNameBC7 )
@@ -722,7 +746,6 @@ public:
 			PadImageToBlockSize(Image, 4, 4, 4*1);
 			FMultithreadedCompression<bc7_enc_settings>::Compress(MultithreadSettings, settings, Image, OutCompressedImage, &IntelBC7CompressScans, bUseTasks);
 
-			CompressedPixelFormat = PF_BC7;
 			bCompressionSucceeded = true;
 		}
 		else
@@ -737,13 +760,12 @@ public:
 			if (BuildSettings.bVirtualStreamable)
 			{
 				// Always use 4x4 for streamable VT, to reduce texture format fragmentation
-				CompressedPixelFormat = PF_ASTC_4x4;
 				BlockWidth = 4;
 				BlockHeight = 4;
 			}
 			else
 			{
-				CompressedPixelFormat = GetQualityFormat( BlockWidth, BlockHeight, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality );
+				 GetQualityFormat( BlockWidth, BlockHeight, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality );
 			}
 			check(CompressedPixelFormat == PF_ASTC_4x4 || !BuildSettings.bVirtualStreamable);
 

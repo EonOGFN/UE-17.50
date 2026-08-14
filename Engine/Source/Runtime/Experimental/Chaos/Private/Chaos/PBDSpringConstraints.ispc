@@ -19,45 +19,66 @@ export void ApplySpringConstraints(uniform FVector P[],
 									const uniform float Stiffness,
 									const uniform int32 NumConstraints)
 {
+	varying int32 ActiveConstraint;
+	varying FIntVector2 Constraint;
+
+#if HW_GATHER_SUPPORTED == 1
+	if(programIndex < NumConstraints)
+	{
+		ActiveConstraint = ActiveConstraints[programIndex];
+		#pragma ignore warning(perf)
+		Constraint = AllConstraints[ActiveConstraint];
+	}
+#endif
+
 	foreach(i = 0 ... NumConstraints)
 	{
-		const varying int32 ActiveConstraint = ActiveConstraints[i];
+#if HW_GATHER_SUPPORTED == 0
+		ActiveConstraint = ActiveConstraints[i];
 		#pragma ignore warning(perf)
-		const varying FIntVector2 Constraint = AllConstraints[ActiveConstraint];
-		#pragma ignore warning(perf)
-		const varying float Dist = Dists[ActiveConstraint];
+		Constraint = AllConstraints[ActiveConstraint];
+#endif
+
 		const varying int32 i1 = Constraint.V[0];
 		const varying int32 i2 = Constraint.V[1];
 
-		#pragma ignore warning(perf)
-		const varying float M1 = InvM[i1];
-		#pragma ignore warning(perf)
-		const varying float M2 = InvM[i2];
-
-		#pragma ignore warning(perf)
-		const varying FVector P1 = P[i1];
-		#pragma ignore warning(perf)
-		const varying FVector P2 = P[i2];
-
-		const float CombinedMass = M2 + M1;
+		const varying FVector P1 = VectorGather(&P[i1]);
+		const varying FVector P2 = VectorGather(&P[i2]);
 
 		FVector Direction = P1 - P2;
 		const float Distance = SafeNormalize(Direction);
 
-		const FVector InnerDelta = (Distance - Dist) * Direction;
-		const FVector ComputedDelta = Stiffness * InnerDelta / CombinedMass;
+		#pragma ignore warning(perf)
+		const varying float Dist = Dists[ActiveConstraint];
 
-		const FVector Delta = VectorSelect((M2 == 0 && M1 == 0), ZeroVector, ComputedDelta);
-
-		if (M1 > 0)
+#if HW_GATHER_SUPPORTED == 1
+		if(i + programCount < NumConstraints)
 		{
+			ActiveConstraint = ActiveConstraints[i+programCount];
 			#pragma ignore warning(perf)
-			P[i1] = P1 - (M1 * Delta);
+			Constraint = AllConstraints[ActiveConstraint];
 		}
-		if (M2 > 0)
+#endif
+
+		const FVector InnerDelta = (Distance - Dist) * Direction;
+
+		#pragma ignore warning(perf)
+		const varying float InvM1 = InvM[i1];
+		#pragma ignore warning(perf)
+		const varying float InvM2 = InvM[i2];
+
+		const float CombinedInvMass = InvM2 + InvM1;
+		const FVector ComputedDelta = Stiffness * InnerDelta / CombinedInvMass;
+
+		const FVector Delta = VectorSelect((InvM2 == 0 && InvM1 == 0), ZeroVector, ComputedDelta);
+
+		if (InvM1 > 0)
 		{
-			#pragma ignore warning(perf)
-			P[i2] = P2 + (M2 * Delta);
+			VectorScatter(&P[i1], P1 - (InvM1 * Delta));
+		}
+		if (InvM2 > 0)
+		{
+			VectorScatter(&P[i2], P2 + (InvM2 * Delta));
 		}
 	}
 }

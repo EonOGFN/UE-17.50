@@ -93,6 +93,7 @@
 #include "IMediaModule.h"
 #include "Scalability.h"
 #include "PlatformInfo.h"
+#include "Interfaces/ITargetPlatform.h"
 
 // needed for the RemotePropagator
 #include "AudioDevice.h"
@@ -223,11 +224,14 @@
 #include "StudioAnalytics.h"
 #include "Engine/LevelScriptActor.h"
 #include "UObject/UnrealType.h"
-
+#include "Factories/TextureFactory.h"
+#include "Engine/TextureCube.h"
 #if WITH_CHAOS
 #include "ChaosSolversModule.h"
 #endif
 
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
 #include "Rendering/StaticLightingSystemInterface.h"
 
 
@@ -1294,6 +1298,12 @@ void UEditorEngine::AddReferencedObjects(UObject* InThis, FReferenceCollector& C
 		Collector.AddReferencedObject( This->ActorFactories[ Index ], This );
 	}
 
+	// If a PIE session is about to start, keep the settings object alive.
+	if (This->PlaySessionRequest.IsSet() && This->PlaySessionRequest->EditorPlaySettings)
+	{
+		Collector.AddReferencedObject(This->PlaySessionRequest->EditorPlaySettings, This);
+	}
+
 	// If we're in a PIE session, ensure we keep the current settings object alive.
 	if (This->PlayInEditorSessionInfo.IsSet() && This->PlayInEditorSessionInfo->OriginalRequestParams.EditorPlaySettings)
 	{
@@ -1961,7 +1971,7 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 				}
 				GRenderTargetPool.TickPoolElements();
 				FRDGBuilder::TickPoolElements();
-				ICustomResourcePool::TickPoolElements();
+				ICustomResourcePool::TickPoolElements(RHICmdList);
 			});
 	}
 
@@ -2213,7 +2223,7 @@ void UEditorEngine::Cleanse( bool ClearSelection, bool Redraw, const FText& Tran
 		// Reset the transaction tracking system.
 		ResetTransaction( TransReset );
 
-		// Invalidate hit proxies as they can retain references to objects over a few frames
+		// Notify any handlers of the cleanse.
 		FEditorSupportDelegates::CleanseEditor.Broadcast();
 
 		// Redraw the levels.
@@ -4041,12 +4051,47 @@ void UEditorEngine::BuildReflectionCaptures(UWorld* World)
 		FString UpdateReason = LightingScenario ? LightingScenario->GetOuter()->GetName() : TEXT("all levels");
 
 		// Passing in flag to verify all recaptures, no uploads
-		UReflectionCaptureComponent::UpdateReflectionCaptureContents(World, *UpdateReason, true);
+		const bool bVerifyOnlyCapturing = true;
+		
+		// First capture data we will use to generate endcoded data for a mobile renderer
+		bool bCapturingForMobile = true;
+		TArray<UTextureCube*> EncodedCaptures;
+		EncodedCaptures.AddDefaulted(ReflectionCapturesToBuild.Num());
+		{
+			UReflectionCaptureComponent::UpdateReflectionCaptureContents(World, *UpdateReason, bVerifyOnlyCapturing, bCapturingForMobile);
+			bool bIsReflectionCaptureCompressionProjectSetting = (bool)IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ReflectionCaptureCompression"))->GetValueOnAnyThread();
+			for (int32 CaptureIndex = 0; CaptureIndex < ReflectionCapturesToBuild.Num(); CaptureIndex++)
+			{ 
+				UReflectionCaptureComponent* CaptureComponent = ReflectionCapturesToBuild[CaptureIndex];
+				FReflectionCaptureData ReadbackCaptureData;
+				World->Scene->GetReflectionCaptureData(CaptureComponent, ReadbackCaptureData);
+				// Capture can fail if there are more than GMaxNumReflectionCaptures captures
+				if (ReadbackCaptureData.CubemapSize > 0)
+				{
+					ULevel* StorageLevel = LightingScenarios[LevelIndex] ? LightingScenarios[LevelIndex] : CaptureComponent->GetOwner()->GetLevel();
+					UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
+					if (!CaptureComponent->bModifyMaxValueRGBM)
+					{
+						CaptureComponent->MaxValueRGBM = GetMaxValueRGBM(ReadbackCaptureData.FullHDRCapturedData, ReadbackCaptureData.CubemapSize, ReadbackCaptureData.Brightness);
+					}
+					FString TextureName = CaptureComponent->GetName() + TEXT("Texture");
+					TextureName += LexToString(CaptureComponent->MapBuildDataId);
+					GenerateEncodedHDRTextureCube(Registry, ReadbackCaptureData, TextureName, CaptureComponent->MaxValueRGBM, CaptureComponent, bIsReflectionCaptureCompressionProjectSetting);
+					EncodedCaptures[CaptureIndex] = ReadbackCaptureData.EncodedCaptureData;
+				}
+			}
+		}
 
+		// Capture reflection data for a general use
+		bCapturingForMobile = false;
+		for (UReflectionCaptureComponent* CaptureComponent : ReflectionCapturesToBuild)
+		{
+			CaptureComponent->MarkDirtyForRecaptureOrUpload();	
+		}
+		UReflectionCaptureComponent::UpdateReflectionCaptureContents(World, *UpdateReason, bVerifyOnlyCapturing, bCapturingForMobile);
 		for (int32 CaptureIndex = 0; CaptureIndex < ReflectionCapturesToBuild.Num(); CaptureIndex++)
 		{ 
 			UReflectionCaptureComponent* CaptureComponent = ReflectionCapturesToBuild[CaptureIndex];
-
 			FReflectionCaptureData ReadbackCaptureData;
 			World->Scene->GetReflectionCaptureData(CaptureComponent, ReadbackCaptureData);
 
@@ -4057,9 +4102,8 @@ void UEditorEngine::BuildReflectionCaptures(UWorld* World)
 				UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
 				FReflectionCaptureMapBuildData& CaptureBuildData = Registry->AllocateReflectionCaptureBuildData(CaptureComponent->MapBuildDataId, true);
 				(FReflectionCaptureData&)CaptureBuildData = ReadbackCaptureData;
-
+				CaptureBuildData.EncodedCaptureData = EncodedCaptures[CaptureIndex];
 				CaptureBuildData.FinalizeLoad();
-
 				// Recreate capture render state now that we have valid BuildData
 				CaptureComponent->MarkRenderStateDirty();
 			}
@@ -4068,7 +4112,7 @@ void UEditorEngine::BuildReflectionCaptures(UWorld* World)
 				UE_LOG(LogEditor, Warning, TEXT("Unable to build Reflection Capture %s, max number of reflection captures exceeded"), *CaptureComponent->GetPathName());
 			}
 		}
-				// Queue an update
+		// Queue an update
 		// Update sky light first because it's considered direct lighting, sky diffuse will be visible in reflection capture indirect specular
 		if (LightingScenario)
 		{
@@ -5764,7 +5808,7 @@ AActor* UEditorEngine::ConvertBrushesToStaticMesh(const FString& InStaticMeshPac
 	FName ObjName = *FPackageName::GetLongPackageAssetName(InStaticMeshPackageName);
 
 
-	UPackage* Pkg = CreatePackage(NULL, *InStaticMeshPackageName);
+	UPackage* Pkg = CreatePackage( *InStaticMeshPackageName);
 	check(Pkg != nullptr);
 
 	FVector Location(0.0f, 0.0f, 0.0f);
@@ -7304,6 +7348,10 @@ void UEditorEngine::InitializeNewlyCreatedInactiveWorld(UWorld* World)
 	{
 		const bool bOldDirtyState = World->GetOutermost()->IsDirty();
 
+		// Make sure we have a navigation system if we are cooking the asset.
+		// Typically nav bounds are added when AddNavigationSystemToWorld() is called from UEditorEngine::Map_Load().
+		const bool bCooking = (IsCookByTheBookInEditorFinished() == false);
+
 		// Create the world without a physics scene because creating too many physics scenes causes deadlock issues in PhysX. The scene will be created when it is opened in the level editor.
 		// Also, don't create an FXSystem because it consumes too much video memory. This is also created when the level editor opens this world.
 		// Do not create AISystem/Navigation for inactive world. These ones will also be created when the level editor opens this world. if required.
@@ -7311,11 +7359,20 @@ void UEditorEngine::InitializeNewlyCreatedInactiveWorld(UWorld* World)
 			.CreatePhysicsScene(false)
 			.CreateFXSystem(false)
 			.CreateAISystem(false)
-			.CreateNavigation(false)
+			.CreateNavigation(bCooking)
 			);
 
 		// Update components so the scene is populated
 		World->UpdateWorldComponents(true, true);
+
+		if (bCooking)
+		{
+			// When calling World->InitWorld() with bCreateNavigation=true (just above), 
+			// it calls internally FNavigationSystem::AddNavigationSystemToWorld() with bInitializeForWorld=false.
+			// That does not gather nav bounds. When cooking, the nav system and nav bounds are needed on the navmesh serialize-save for tiles to be added to the archive.
+			// Also this call needs to occur after World->UpdateWorldComponents() else no bounds are found.
+			FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::InferFromWorldMode);
+		}
 
 		// Need to restore the dirty state as registering components dirties the world
 		if (!bOldDirtyState)
@@ -7611,9 +7668,11 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 #endif
 
 	// If we have specified a MaterialQualityPlatform ensure its feature level matches the requested feature level.
-	check(NewPreviewPlatform.PreviewShaderPlatformName.IsNone() || GetMaxSupportedFeatureLevel(ShaderFormatToLegacyShaderPlatform(NewPreviewPlatform.PreviewShaderPlatformName)) == NewPreviewPlatform.PreviewFeatureLevel);
+	EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(NewPreviewPlatform.PreviewShaderFormatName);
+	ERHIFeatureLevel::Type MaxFeatureLevel = GetMaxSupportedFeatureLevel(ShaderPlatform);
+	check(NewPreviewPlatform.PreviewShaderFormatName.IsNone() || MaxFeatureLevel == NewPreviewPlatform.PreviewFeatureLevel);
 
-	const bool bChangedPreviewShaderPlatform = NewPreviewPlatform.PreviewShaderPlatformName != PreviewPlatform.PreviewShaderPlatformName;
+	const bool bChangedPreviewShaderPlatform = NewPreviewPlatform.PreviewShaderFormatName != PreviewPlatform.PreviewShaderFormatName;
 	const bool bChangedFeatureLevel = NewPreviewPlatform.PreviewFeatureLevel != PreviewPlatform.PreviewFeatureLevel ||
 		NewPreviewPlatform.bPreviewFeatureLevelActive != PreviewPlatform.bPreviewFeatureLevelActive;
 	const ERHIFeatureLevel::Type EffectiveFeatureLevel = NewPreviewPlatform.GetEffectivePreviewFeatureLevel();
@@ -7626,7 +7685,7 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 	if (bChangedPreviewShaderPlatform)
 	{
 		UMaterialShaderQualitySettings* MaterialShaderQualitySettings = UMaterialShaderQualitySettings::Get();
-		MaterialShaderQualitySettings->SetPreviewPlatform(PreviewPlatform.PreviewShaderPlatformName);
+		MaterialShaderQualitySettings->SetPreviewPlatform(PreviewPlatform.PreviewShaderFormatName);
 	}
 
 	if (bChangedFeatureLevel)
@@ -7665,12 +7724,6 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 
 		DefaultWorldFeatureLevel = EffectiveFeatureLevel;
 		PreviewFeatureLevelChanged.Broadcast(EffectiveFeatureLevel);
-
-		// The feature level changed, so existing debug view materials are invalid and need to be rebuilt.
-		// This process must follow the PreviewFeatureLevelChanged event, because any listeners need
-		// opportunity to switch to the new feature level first.
-		void ClearDebugViewMaterials(UMaterialInterface*);
-		ClearDebugViewMaterials(nullptr);
 	}
 	else if (bChangedPreviewShaderPlatform)
 	{
@@ -7683,6 +7736,19 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 	}
 
 	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName());
+
+	UDeviceProfileManager::Get().RestoreDefaultDeviceProfile();
+
+	//Override the current device profile.
+	if (PreviewPlatform.DeviceProfileName != NAME_None)
+	{
+		if (UDeviceProfile* DP = UDeviceProfileManager::Get().FindProfile(PreviewPlatform.DeviceProfileName.ToString(), false))
+		{
+			UDeviceProfileManager::Get().SetOverrideDeviceProfile(DP, true);
+		}
+	}
+
+	PreviewPlatformChanged.Broadcast();
 
 	if (bSaveSettings)
 	{
@@ -7701,6 +7767,27 @@ void UEditorEngine::ToggleFeatureLevelPreview()
 
 	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName());
 
+	if (PreviewPlatform.bPreviewFeatureLevelActive)
+	{
+		if (PreviewPlatform.DeviceProfileName != NAME_None)
+		{
+			if (UDeviceProfile* DP = UDeviceProfileManager::Get().FindProfile(PreviewPlatform.DeviceProfileName.ToString(), false))
+			{
+				UDeviceProfileManager::Get().SetOverrideDeviceProfile(DP, true);
+			}
+		}
+		else
+		{
+			UDeviceProfileManager::Get().RestoreDefaultDeviceProfile();
+		}
+	}
+	else
+	{
+		UDeviceProfileManager::Get().RestoreDefaultDeviceProfile();
+	}
+
+	PreviewPlatformChanged.Broadcast();
+
 	GEditor->RedrawAllViewports();
 	
 	SaveEditorFeatureLevel();
@@ -7708,7 +7795,7 @@ void UEditorEngine::ToggleFeatureLevelPreview()
 
 bool UEditorEngine::IsFeatureLevelPreviewEnabled() const
 {
-	return PreviewPlatform.PreviewFeatureLevel != GMaxRHIFeatureLevel || PreviewPlatform.PreviewShaderPlatformName != NAME_None;
+	return PreviewPlatform.PreviewFeatureLevel != GMaxRHIFeatureLevel || PreviewPlatform.PreviewShaderFormatName != NAME_None;
 }
 
 bool UEditorEngine::IsFeatureLevelPreviewActive() const
@@ -7726,7 +7813,18 @@ void UEditorEngine::LoadEditorFeatureLevel()
 	auto* Settings = GetMutableDefault<UEditorPerProjectUserSettings>();
 	if (Settings->PreviewFeatureLevel >= 0 && Settings->PreviewFeatureLevel < (int32)ERHIFeatureLevel::Num)
 	{
-		SetPreviewPlatform(FPreviewPlatformInfo((ERHIFeatureLevel::Type)Settings->PreviewFeatureLevel, Settings->PreviewShaderFormatName, Settings->bPreviewFeatureLevelActive), false);
+		// Try to map a saved ShaderFormatName to the PreviewPlatformName using ITargetPlatform if we don't have one. 
+		// We now store the PreviewPlatformName explicitly to support preview for platforms we don't have an ITargetPlatform of.
+		if (Settings->PreviewPlatformName == NAME_None && Settings->PreviewShaderFormatName != NAME_None)
+		{
+			const ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatformWithSupport(TEXT("ShaderFormat"), Settings->PreviewShaderFormatName);
+			if (TargetPlatform)
+			{
+				Settings->PreviewPlatformName = FName(*TargetPlatform->IniPlatformName());
+			}
+		}
+
+		SetPreviewPlatform(FPreviewPlatformInfo((ERHIFeatureLevel::Type)Settings->PreviewFeatureLevel, Settings->PreviewPlatformName, Settings->PreviewShaderFormatName, Settings->PreviewDeviceProfileName, Settings->bPreviewFeatureLevelActive), false);
 	}
 }
 
@@ -7734,8 +7832,10 @@ void UEditorEngine::SaveEditorFeatureLevel()
 {
 	auto* Settings = GetMutableDefault<UEditorPerProjectUserSettings>();
 	Settings->PreviewFeatureLevel = (int32)PreviewPlatform.PreviewFeatureLevel;
-	Settings->PreviewShaderFormatName = PreviewPlatform.PreviewShaderPlatformName;
+	Settings->PreviewPlatformName = PreviewPlatform.PreviewPlatformName;
+	Settings->PreviewShaderFormatName = PreviewPlatform.PreviewShaderFormatName;
 	Settings->bPreviewFeatureLevelActive = PreviewPlatform.bPreviewFeatureLevelActive;
+	Settings->PreviewDeviceProfileName = PreviewPlatform.DeviceProfileName;
 	Settings->PostEditChange();
 }
 

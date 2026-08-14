@@ -45,13 +45,13 @@ class MESHMODELINGTOOLSEDITORONLY_API USimplifyMeshToolProperties : public UMesh
 public:
 	USimplifyMeshToolProperties();
 
-	/** Simplification Target Type  */
-	UPROPERTY(EditAnywhere, Category = Options)
-	ESimplifyTargetType TargetMode;
-
 	/** Simplification Scheme  */
 	UPROPERTY(EditAnywhere, Category = Options)
 	ESimplifyType SimplifierType;
+
+	/** Simplification Target Type  */
+	UPROPERTY(EditAnywhere, Category = Options)
+	ESimplifyTargetType TargetMode;
 
 	/** Target percentage of original triangle count */
 	UPROPERTY(EditAnywhere, Category = Options, meta = (UIMin = "0", UIMax = "100", EditCondition = "TargetMode == ESimplifyTargetType::Percentage"))
@@ -62,7 +62,7 @@ public:
 	float TargetEdgeLength;
 
 	/** Target triangle count */
-	UPROPERTY(EditAnywhere, Category = Options, meta = (UIMin = "4", UIMax = "10000", ClampMin = "1", ClampMax = "9999999999", EditCondition = "TargetMode == ESimplifyTargetType::TriangleCount"))
+	UPROPERTY(EditAnywhere, Category = Options, meta = (UIMin = "4", UIMax = "10000", ClampMin = "1", ClampMax = "9999999999", EditCondition = "TargetMode == ESimplifyTargetType::TriangleCount || TargetMode == ESimplifyTargetType::VertexCount"))
 	int TargetCount;
 
 	/** If true, UVs and Normals are discarded  */
@@ -104,7 +104,7 @@ public:
 	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
 
 	virtual bool HasCancel() const override { return true; }
-	virtual bool HasAccept() const override;
+	virtual bool HasAccept() const override { return true; }
 	virtual bool CanAccept() const override;
 
 	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;

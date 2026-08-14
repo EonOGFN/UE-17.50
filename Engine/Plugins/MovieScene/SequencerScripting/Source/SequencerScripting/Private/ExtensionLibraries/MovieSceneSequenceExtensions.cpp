@@ -163,6 +163,17 @@ void UMovieSceneSequenceExtensions::SetTickResolution(UMovieSceneSequence* Seque
 	{
 		MovieScene->Modify();
 
+		UE::MovieScene::TimeHelpers::MigrateFrameTimes(MovieScene->GetTickResolution(), TickResolution, MovieScene);
+	}
+}
+
+void UMovieSceneSequenceExtensions::SetTickResolutionDirectly(UMovieSceneSequence* Sequence, FFrameRate TickResolution)
+{
+	UMovieScene* MovieScene = GetMovieScene(Sequence);
+	if (MovieScene)	
+	{
+		MovieScene->Modify();
+
 		MovieScene->SetTickResolutionDirectly(TickResolution);
 	}
 }
@@ -184,7 +195,7 @@ FSequencerScriptingRange UMovieSceneSequenceExtensions::GetPlaybackRange(UMovieS
 	UMovieScene* MovieScene = GetMovieScene(Sequence);
 	if (MovieScene)
 	{
-		return FSequencerScriptingRange::FromNative(MovieScene->GetPlaybackRange(), GetTickResolution(Sequence));
+		return FSequencerScriptingRange::FromNative(MovieScene->GetPlaybackRange(), GetTickResolution(Sequence), GetDisplayRate(Sequence));
 	}
 	else
 	{
@@ -386,6 +397,46 @@ float UMovieSceneSequenceExtensions::GetWorkRangeEnd(UMovieSceneSequence* Sequen
 #endif
 	}
 	return 0.f;
+}
+
+void UMovieSceneSequenceExtensions::SetEvaluationType(UMovieSceneSequence* Sequence, EMovieSceneEvaluationType InEvaluationType)
+{
+	UMovieScene* MovieScene = GetMovieScene(Sequence);
+	if (MovieScene)
+	{
+		MovieScene->SetEvaluationType(InEvaluationType);
+	}
+}
+
+EMovieSceneEvaluationType UMovieSceneSequenceExtensions::GetEvaluationType(UMovieSceneSequence* Sequence)
+{
+	UMovieScene* MovieScene = GetMovieScene(Sequence);
+	if (MovieScene)
+	{
+		return MovieScene->GetEvaluationType();
+	}
+
+	return EMovieSceneEvaluationType::WithSubFrames;
+}
+
+void UMovieSceneSequenceExtensions::SetClockSource(UMovieSceneSequence* Sequence, EUpdateClockSource InClockSource)
+{
+	UMovieScene* MovieScene = GetMovieScene(Sequence);
+	if (MovieScene)
+	{
+		MovieScene->SetClockSource(InClockSource);
+	}
+}
+
+EUpdateClockSource UMovieSceneSequenceExtensions::GetClockSource(UMovieSceneSequence* Sequence)
+{
+	UMovieScene* MovieScene = GetMovieScene(Sequence);
+	if (MovieScene)
+	{
+		return MovieScene->GetClockSource();
+	}
+
+	return EUpdateClockSource::Tick;
 }
 
 FTimecode UMovieSceneSequenceExtensions::GetTimecodeSource(UMovieSceneSequence* Sequence)
@@ -614,6 +665,17 @@ int32 UMovieSceneSequenceExtensions::AddMarkedFrame(UMovieSceneSequence* Sequenc
 	return INDEX_NONE;
 }
 
+
+void UMovieSceneSequenceExtensions::SetMarkedFrame(UMovieSceneSequence* Sequence, int32 InMarkIndex, FFrameNumber InFrameNumber)
+{
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+		return MovieScene->SetMarkedFrame(InMarkIndex, InFrameNumber);
+	}
+}
+
+
 void UMovieSceneSequenceExtensions::DeleteMarkedFrame(UMovieSceneSequence* Sequence, int32 DeleteIndex)
 {
 	UMovieScene* MovieScene = Sequence->GetMovieScene();
@@ -633,6 +695,15 @@ void UMovieSceneSequenceExtensions::DeleteMarkedFrames(UMovieSceneSequence* Sequ
 		MovieScene->Modify();
 
 		MovieScene->DeleteMarkedFrames();
+	}
+}
+
+void UMovieSceneSequenceExtensions::SortMarkedFrames(UMovieSceneSequence* Sequence)
+{
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+		return MovieScene->SortMarkedFrames();
 	}
 }
 

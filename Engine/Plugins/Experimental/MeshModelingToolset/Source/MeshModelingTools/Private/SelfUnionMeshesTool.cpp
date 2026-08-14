@@ -25,6 +25,10 @@ void USelfUnionMeshesTool::SetupProperties()
 	Properties = NewObject<USelfUnionMeshesToolProperties>(this);
 	Properties->RestoreProperties(this);
 	AddToolPropertySource(Properties);
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Compute a Self-Union of the input meshes, to resolve self-intersections. Use the transform gizmos to tweak the positions of the input objects (can help to resolve errors/failures)"),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -105,7 +109,9 @@ void USelfUnionMeshesTool::ConvertInputsAndSetPreviewMaterials(bool bSetPreviewM
 			MaterialIDs->SetValue(TID, MaterialRemap[ComponentIdx][MaterialIDs->GetValue(TID)]);
 		}
 		// TODO: center the meshes
-		FTransform3d WorldTransform = (FTransform3d)TransformProxies[ComponentIdx]->GetTransform();
+		FTransform UseTransform = TransformProxies[ComponentIdx]->GetTransform();
+		UseTransform.MultiplyScale3D(TransformInitialScales[ComponentIdx]);
+		FTransform3d WorldTransform = (FTransform3d)UseTransform;
 		if (WorldTransform.GetDeterminant() < 0)
 		{
 			ComponentMesh.ReverseOrientation(false);
@@ -196,6 +202,11 @@ void USelfUnionMeshesTool::OnPropertyModified(UObject* PropertySet, FProperty* P
 {
 	if (Property && (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USelfUnionMeshesToolProperties, bOnlyUseFirstMeshMaterials)))
 	{
+		if (!AreAllTargetsValid())
+		{
+			GetToolManager()->DisplayMessage(LOCTEXT("InvalidTargets", "Target meshes are no longer valid"), EToolMessageLevel::UserWarning);
+			return;
+		}
 		ConvertInputsAndSetPreviewMaterials(false);
 		Preview->InvalidateResult();
 	}

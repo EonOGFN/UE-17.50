@@ -57,7 +57,6 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 
-#include "PackageTools.h"
 #include "ObjectTools.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -1179,7 +1178,7 @@ void FEditorFileUtils::SaveAssetsAs(const TArray<UObject*>& Assets, TArray<UObje
 		{
 			// duplicate asset at destination
 			const FString NewAssetName = FPackageName::GetLongPackageAssetName(NewPackageName);
-			UPackage* DuplicatedPackage = CreatePackage(nullptr, *NewPackageName);
+			UPackage* DuplicatedPackage = CreatePackage( *NewPackageName);
 			UObject* DuplicatedAsset = StaticDuplicateObject(Asset, DuplicatedPackage, *NewAssetName);
 
 			if (DuplicatedAsset != nullptr)
@@ -1790,7 +1789,7 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>&
 				{
 					// Cannot add unsaved packages to source control
 					FString Filename;
-					if (!PackageToCheckOut->HasAnyPackageFlags(PKG_NewlyCreated) || FPackageName::DoesPackageExist(PackageToCheckOut->GetName(), nullptr, &Filename))
+					if (FPackageName::DoesPackageExist(PackageToCheckOut->GetName(), nullptr, &Filename))
 					{
 						bShowCheckoutError = false;
 						FinalPackageMarkForAddList.Add(PackageToCheckOut);
@@ -1799,6 +1798,13 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>&
 					{
 						// Silently skip package that has not been saved yet
 						// Expected when called by InternalCheckoutAndSavePackages before packages saved
+						bShowCheckoutError = false;
+					}
+				}
+				else if (SourceControlState->IsAdded())
+				{
+					if (!bErrorIfAlreadyCheckedOut)
+					{
 						bShowCheckoutError = false;
 					}
 				}
@@ -2598,7 +2604,9 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 	const double MapLoadTime = FStudioAnalytics::GetAnalyticSeconds() - LoadStartTime;
 	UE_LOG(LogFileHelpers, Log, TEXT("Loading map '%s' took %.3f"), *FPaths::GetBaseFilename(Filename), MapLoadTime);
 
-	FStudioAnalytics::FireEvent_Loading(TEXT("LoadMap"), MapLoadTime, { FAnalyticsEventAttribute(TEXT("MapName"), FPaths::GetBaseFilename(Filename)) });
+	FStudioAnalytics::FireEvent_Loading(TEXT("LoadMap"), MapLoadTime, {
+		FAnalyticsEventAttribute(TEXT("MapName"), FPaths::GetBaseFilename(Filename))
+	});
 
 	if (GUnrealEd)
 	{
@@ -4057,7 +4065,7 @@ void FEditorFileUtils::FindAllPackageFiles(TArray<FString>& OutPackages)
 
 	for (int32 PathIndex = 0; PathIndex < Paths.Num(); PathIndex++)
 	{
-		FPackageName::FindPackagesInDirectory(OutPackages, *Paths[PathIndex]);
+		FPackageName::FindPackagesInDirectory(OutPackages, Paths[PathIndex]);
 	}
 }
 
@@ -4208,6 +4216,7 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 				OutDirtyPackages.Add(WorldPackage);
 			}
 
+			// Add the Map built data as well if world is
 			if (WorldIt->PersistentLevel && WorldIt->PersistentLevel->MapBuildData)
 			{
 				UPackage* BuiltDataPackage = WorldIt->PersistentLevel->MapBuildData->GetOutermost();
@@ -4261,6 +4270,18 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 					}
 				}
 			}
+
+			// Now gather the world external packages and save them if needed
+			if (WorldIt->PersistentLevel)
+			{
+				for (UPackage* ExternalPackage : WorldIt->PersistentLevel->GetLoadedExternalActorPackages())
+				{
+					if (ExternalPackage->IsDirty())
+					{
+						OutDirtyPackages.Add(ExternalPackage);
+					}
+				}
+			}
 		}
 	}
 }
@@ -4290,11 +4311,15 @@ void FEditorFileUtils::GetDirtyContentPackages(TArray<UPackage*>& OutDirtyPackag
 
 		if (!bShouldIgnorePackage)
 		{
-			UWorld*		AssociatedWorld = UWorld::FindWorldInPackage(Package);
-			const bool	bIsMapPackage = AssociatedWorld != NULL;
+			UObject* Asset = Package->FindAssetInPackage();
+			const bool bIsMapPackage = Cast<UWorld>(Asset) != nullptr;
+			const bool bIsExternalMapObject = Asset && Asset->GetTypedOuter<UWorld>() != nullptr;
 
 			// Ignore map packages, they are caught above.
 			bShouldIgnorePackage |= bIsMapPackage;
+
+			// Ignore external actors, they are caught alongside maps
+			bShouldIgnorePackage |= bIsExternalMapObject;
 
 			if (!bShouldIgnorePackage)
 			{
@@ -4423,6 +4448,7 @@ static bool InternalCheckoutAndSavePackages(const TArray<UPackage*>& PackagesToS
 			for (UPackage* Package : PackagesToSave)
 			{
 				// List unsaved packages that were not checked out
+				if (!PackagesCheckedOut.Contains(Package))
 				{
 					PackagesToMarkForAdd.Add(Package);
 				}
@@ -4524,6 +4550,11 @@ void UEditorLoadingAndSavingUtils::ExportScene(bool bExportSelectedActorsOnly)
 void UEditorLoadingAndSavingUtils::UnloadPackages(const TArray<UPackage*>& PackagesToUnload, bool& bOutAnyPackagesUnloaded, FText& OutErrorMessage)
 {
 	bOutAnyPackagesUnloaded = UPackageTools::UnloadPackages(PackagesToUnload, OutErrorMessage);
+}
+
+void UEditorLoadingAndSavingUtils::ReloadPackages(const TArray<UPackage*>& PackagesToReload, bool& bOutAnyPackagesReloaded, FText& OutErrorMessage, const EReloadPackagesInteractionMode InteractionMode)
+{
+	bOutAnyPackagesReloaded = UPackageTools::ReloadPackages(PackagesToReload, OutErrorMessage, InteractionMode);
 }
 
 #undef LOCTEXT_NAMESPACE

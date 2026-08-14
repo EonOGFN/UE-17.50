@@ -28,6 +28,7 @@ DECLARE_CYCLE_STAT(TEXT("[External] Sequence Instance Post-Update"), MovieSceneE
 
 FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle InInstanceHandle)
 	: SequenceID(MovieSceneSequenceID::Root)
+	, RootOverrideSequenceID(MovieSceneSequenceID::Root)
 	, PlayerIndex(Player->GetUniqueIndex())
 	, InstanceHandle(InInstanceHandle)
 	, RootInstanceHandle(InstanceHandle)
@@ -46,6 +47,7 @@ FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMov
 FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle InInstanceHandle, FInstanceHandle InRootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID)
 	: CompiledDataID(InCompiledDataID)
 	, SequenceID(InSequenceID)
+	, RootOverrideSequenceID(MovieSceneSequenceID::Invalid)
 	, PlayerIndex(Player->GetUniqueIndex())
 	, InstanceHandle(InInstanceHandle)
 	, RootInstanceHandle(InRootInstanceHandle)
@@ -76,14 +78,14 @@ void FSequenceInstance::InitializeLegacyEvaluator(UMovieSceneEntitySystemLinker*
 	IMovieScenePlayer* Player = GetPlayer();
 	check(Player);
 
-	UMovieSceneCompiledDataManager* CompiledDataManager = Player->GetEvaluationTemplate().GetCompiledDataManager();
-	FMovieSceneCompiledDataEntry    CompiledEntry       = CompiledDataManager->GetEntry(CompiledDataID);
+	UMovieSceneCompiledDataManager*     CompiledDataManager = Player->GetEvaluationTemplate().GetCompiledDataManager();
+	const FMovieSceneCompiledDataEntry& CompiledEntry       = CompiledDataManager->GetEntryRef(CompiledDataID);
 
 	if (EnumHasAnyFlags(CompiledEntry.AccumulatedMask, EMovieSceneSequenceCompilerMask::EvaluationTemplate))
 	{
 		if (!LegacyEvaluator)
 		{
-			LegacyEvaluator = MakeUnique<FMovieSceneTrackEvaluator>(CompiledEntry.GetSequence(), CompiledDataManager);
+			LegacyEvaluator = MakeUnique<FMovieSceneTrackEvaluator>(CompiledEntry.GetSequence(), CompiledDataID, CompiledDataManager);
 		}
 	}
 	else if (LegacyEvaluator)
@@ -102,7 +104,7 @@ void FSequenceInstance::InvalidateCachedData(UMovieSceneEntitySystemLinker* Link
 
 	UMovieSceneCompiledDataManager* CompiledDataManager = Player->GetEvaluationTemplate().GetCompiledDataManager();
 
-	UMovieSceneSequence* Sequence = CompiledDataManager->GetEntry(CompiledDataID).GetSequence();
+	UMovieSceneSequence* Sequence = CompiledDataManager->GetEntryRef(CompiledDataID).GetSequence();
 	Player->State.AssignSequence(SequenceID, *Sequence, *Player);
 
 	if (SequenceID == MovieSceneSequenceID::Root)
@@ -168,6 +170,11 @@ void FSequenceInstance::Start(UMovieSceneEntitySystemLinker* Linker, const FMovi
 void FSequenceInstance::Update(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneContext& InContext)
 {
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_SequenceInstanceUpdate);
+
+#if STATS || ENABLE_STATNAMEDEVENTS
+	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
+	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? GetPlayer()->AsUObject() : nullptr);
+#endif
 
 	bHasEverUpdated = true;
 
@@ -237,8 +244,7 @@ void FSequenceInstance::PostEvaluation(UMovieSceneEntitySystemLinker* Linker)
 			}
 			else
 			{
-				// @todo: override root ID
-				LegacyEvaluator->Evaluate(Context, *Player);
+				LegacyEvaluator->Evaluate(Context, *Player, RootOverrideSequenceID);
 			}
 		}
 	}
@@ -269,6 +275,16 @@ void FSequenceInstance::DestroyImmediately(UMovieSceneEntitySystemLinker* Linker
 	{
 		SequenceUpdater->Destroy(Linker);
 	}
+}
+
+void FSequenceInstance::OverrideRootSequence(UMovieSceneEntitySystemLinker* Linker, FMovieSceneSequenceID NewRootSequenceID)
+{
+	if (SequenceUpdater)
+	{
+		SequenceUpdater->OverrideRootSequence(Linker, InstanceHandle, NewRootSequenceID);
+	}
+
+	RootOverrideSequenceID = NewRootSequenceID;
 }
 
 FInstanceHandle FSequenceInstance::FindSubInstance(FMovieSceneSequenceID SubSequenceID) const

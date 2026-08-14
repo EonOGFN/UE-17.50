@@ -150,6 +150,16 @@ void USimplifyMeshTool::Setup()
 
 	UpdateVisualization();
 	Preview->InvalidateResult();
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Reduce the number of triangles in the selected Mesh using various strategies."),
+		EToolMessageLevel::UserNotification);
+}
+
+
+bool USimplifyMeshTool::CanAccept() const
+{
+	return Super::CanAccept() && Preview->HaveValidResult();
 }
 
 
@@ -261,16 +271,6 @@ void USimplifyMeshTool::UpdateVisualization()
 	}
 	Preview->ConfigureMaterials(MaterialSet.Materials,
 								ToolSetupUtil::GetDefaultWorkingMaterial(GetToolManager()));
-}
-
-bool USimplifyMeshTool::HasAccept() const
-{
-	return true;
-}
-
-bool USimplifyMeshTool::CanAccept() const
-{
-	return true;
 }
 
 void USimplifyMeshTool::GenerateAsset(const FDynamicMeshOpResult& Result)

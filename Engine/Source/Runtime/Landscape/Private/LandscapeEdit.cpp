@@ -409,7 +409,9 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 			MaterialInstance->PostEditChange();
 
 			// Setup material instance with disabled tessellation
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if (CombinationMaterialInstance->GetMaterial()->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				ULandscapeMaterialInstanceConstant* TessellationMaterialInstance = NewObject<ULandscapeMaterialInstanceConstant>(this);
 				int32 TessellatedMaterialIndex = MaterialPerLOD.Num() + TessellatedMaterialCount++;
@@ -417,8 +419,8 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 				MaterialIndexToDisabledTessellationMaterial[MaterialIndex] = TessellatedMaterialIndex;
 
 				TessellationMaterialInstance->SetParentEditorOnly(MaterialInstance);
-				Context.AddMaterialInstance(TessellationMaterialInstance); // must be done after SetParent
 				TessellationMaterialInstance->bDisableTessellation = true;
+				TessellationMaterialInstance->UpdateStaticPermutation(&Context); // must be done after SetParent
 				TessellationMaterialInstance->PostEditChange();
 			}
 		}
@@ -572,7 +574,7 @@ void ULandscapeComponent::PreFeatureLevelChange(ERHIFeatureLevel::Type PendingFe
 
 	if (PendingFeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
-		// See if we need to cook platform data for ES2 preview in editor
+		// See if we need to cook platform data for mobile preview in editor
 		CheckGenerateLandscapePlatformData(false, nullptr);
 	}
 }
@@ -2302,7 +2304,7 @@ ULandscapeLayerInfoObject* ALandscapeProxy::CreateLayerInfo(const TCHAR* LayerNa
 		PackageName = Path + LayerObjectName.ToString();
 		Suffix++;
 	}
-	UPackage* Package = CreatePackage(nullptr, *PackageName);
+	UPackage* Package = CreatePackage( *PackageName);
 	ULandscapeLayerInfoObject* LayerInfo = NewObject<ULandscapeLayerInfoObject>(Package, LayerObjectName, RF_Public | RF_Standalone | RF_Transactional);
 	LayerInfo->LayerName = LayerName;
 
@@ -3065,8 +3067,7 @@ LANDSCAPE_API void ALandscapeProxy::Import(const FGuid& InGuid, int32 InMinX, in
 		// Retrigger a caching of the platform data as we wrote again in the textures
 		for (UTexture2D* Texture : LayersTextures)
 		{
-			Texture->ClearAllCachedCookedPlatformData();
-			Texture->BeginCachePlatformData();
+			Texture->UpdateResource();
 		}
 
 		LandscapeActor->RequestLayersContentUpdateForceAll();
@@ -4538,6 +4539,11 @@ bool ALandscapeProxy::CanEditChange(const FProperty* InProperty) const
 		return false;
 	}
 
+	if (IsTemplate())
+	{
+		return true;
+	}
+
 	// Don't allow edition of properties that are shared with the parent landscape properties
 	// See  ALandscapeProxy::FixupSharedData(ALandscape* Landscape)
 	if (GetLandscapeActor() != this)
@@ -4697,6 +4703,7 @@ void ALandscapeProxy::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName == FName(TEXT("bCastShadowAsTwoSided")) ||
 		PropertyName == FName(TEXT("bAffectDistanceFieldLighting")) ||
 		PropertyName == FName(TEXT("bRenderCustomDepth")) ||
+		PropertyName == FName(TEXT("CustomDepthStencilWriteMask")) ||
 		PropertyName == FName(TEXT("CustomDepthStencilValue")) ||
 		PropertyName == FName(TEXT("LightingChannels")) ||
 		PropertyName == FName(TEXT("LDMaxDrawDistance")))
@@ -6227,7 +6234,13 @@ void ULandscapeComponent::GeneratePlatformPixelData()
 		UTexture2D* CurrentWeightmapTexture = MobileWeightNormalmapTexture;
 		MobileWeightmapTextures.Add(CurrentWeightmapTexture);
 		int32 CurrentChannel = 0;
-		int32 RemainingChannels = 2;
+
+		// Give normal map a full texture if this doesn't increase the overall allocation count.
+		// This then saves a texture slot because we don't need to sample a combined normalmap/weightmap texture with two different sampler settings.
+		int32 NumTexturesCombinedNormal = FMath::DivideAndRoundUp(MobileWeightmapLayerAllocations.Num() + 2, 4);
+		int32 NumTexturesIsolatedNormal = 1 + FMath::DivideAndRoundUp(MobileWeightmapLayerAllocations.Num(), 4);
+		bool bIsolateNormalMap = NumTexturesCombinedNormal == NumTexturesIsolatedNormal;
+		int32 RemainingChannels = bIsolateNormalMap ? 0 : 2;
 
 		MobileBlendableLayerMask = 0;
 
@@ -6783,7 +6796,8 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 	TArray<FLandscapeVertexRef> VertexOrder;
 	VertexOrder.Empty(NumVertices);
 
-	const bool bStreamLandscapeMeshLODs = TargetPlatform && TargetPlatform->SupportsFeature(ETargetPlatformFeatures::LandscapeMeshLODStreaming);
+	// Can't stream if using hole data since at least mip 0 will have holes and we don't support streaming any other mip if mip 0 isn't streamed.
+	const bool bStreamLandscapeMeshLODs = TargetPlatform && TargetPlatform->SupportsFeature(ETargetPlatformFeatures::LandscapeMeshLODStreaming) && NumHoleLods == 0;
 	const int32 MaxLODClamp = FMath::Min((uint32)GetLandscapeProxy()->MaxLODLevel, (uint32)MAX_MESH_LOD_COUNT - 1u);
 	const int32 NumStreamingLODs = bStreamLandscapeMeshLODs ? FMath::Min(MaxLOD, MaxLODClamp) : 0;
 	TArray<int32> StreamingLODVertStartOffsets;
@@ -6869,9 +6883,7 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 
 	for (int32 Idx = 0; Idx < NumVertices; Idx++)
 	{
-		if (StreamingLODIdx >= 0
-			&& (StreamingLODIdx >= NumHoleLods - 1)
-			&& Idx >= StreamingLODVertStartOffsets[StreamingLODIdx])
+		if (StreamingLODIdx >= 0 && Idx >= StreamingLODVertStartOffsets[StreamingLODIdx])
 		{
 			const int32 EndIdx = StreamingLODIdx - 1 < 0 || StreamingLODIdx == NumHoleLods - 1 ?
 				FMath::Square(SizeVerts) :
@@ -6887,24 +6899,29 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 		// Store XY position info
 		const int32 X = VertexOrder[Idx].X;
 		const int32 Y = VertexOrder[Idx].Y;
+		
+		check(X < 256 && Y < 256);
+		DstVert->Position[0] = X;
+		DstVert->Position[1] = Y;
+
 		const int32 SubX = VertexOrder[Idx].SubX;
 		const int32 SubY = VertexOrder[Idx].SubY;
 
-		DstVert->Position[0] = X;
-		DstVert->Position[1] = Y;
-		DstVert->Position[2] = (SubX << 4) | SubY;
+		check(SubX < 2 && SubY < 2);
+		DstVert->Position[2] = (SubX << 1) | SubY;
 
 		// Store hole info
 		const int32 VertexIndex = (SubY * SubsectionSizeVerts + Y) * SizeVerts + SubX * SubsectionSizeVerts + X;
 		const int32 HoleVertexLod = (NumHoleLods > 0) ? HoleVertexLods[VertexIndex] : 0;
 		const int32 HoleMaxLod = (NumHoleLods > 0) ? NumHoleLods : 0;
 
-		DstVert->Position[3] = (HoleMaxLod << 4) | HoleVertexLod;
+		check(HoleMaxLod < 8 && HoleVertexLod < 8);
+		DstVert->Position[2] |= (HoleMaxLod << 5) | (HoleVertexLod << 2);
 
 		// Calculate min/max height for packing
 		TArray<int32> MipHeights;
 		MipHeights.AddZeroed(HeightmapMipData.Num());
-		int32 LastIndex = 0;
+
 		uint16 MaxHeight = 0, MinHeight = 65535;
 
 		float HeightmapScaleBiasZ = HeightmapScaleBias.Z + HeightmapSubsectionOffsetU * (float)SubX;
@@ -6930,18 +6947,19 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 			MinHeight = FMath::Min(MinHeight, Height);
 		}
 
-		// Quantize min/max height so we can store each in 8 bits
-		MaxHeight = (MaxHeight + 255) & (~255);
-		MinHeight = (MinHeight) & (~255);
-
 		DstVert->LODHeights[0] = MinHeight >> 8;
-		DstVert->LODHeights[1] = MaxHeight >> 8;
+		DstVert->LODHeights[1] = MinHeight & 0xff;
 
-		// Now quantize the mip heights to steps between MinHeight and MaxHeight
+		// Quantize height delta so we can store in 8 bits in the spare Position channel
+		uint16 HeightDelta = FMath::Max(MaxHeight - MinHeight, 1);
+		HeightDelta = (HeightDelta + 255) & (~255);
+		DstVert->Position[3] = HeightDelta >> 8;
+
+		// Now quantize the mip heights to 255 steps between MinHeight and MinHeight+HeightDelta
 		for (int32 Mip = 0; Mip < HeightmapMipData.Num(); ++Mip)
 		{
 			check(Mip < 6);
-			DstVert->LODHeights[2 + Mip] = FMath::RoundToInt(float(MipHeights[Mip] - MinHeight) / (MaxHeight - MinHeight) * 255);
+			DstVert->LODHeights[2 + Mip] = FMath::RoundToInt(((float)(MipHeights[Mip] - MinHeight) / (float)HeightDelta) * 255.f);
 		}
 
 		DstVert++;

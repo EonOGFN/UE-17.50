@@ -125,7 +125,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		else if( FParse::Value( *CurrentSwitch, TEXT( "PACKAGEFOLDER="), PackageFolder ) )
 		{
 			TArray<FString> FilesInPackageFolder;
-			FPackageName::FindPackagesInDirectory(FilesInPackageFolder, *PackageFolder);
+			FPackageName::FindPackagesInDirectory(FilesInPackageFolder, PackageFolder);
 			for( int32 FileIndex = 0; FileIndex < FilesInPackageFolder.Num(); FileIndex++ )
 			{
 				FString PackageFile(FilesInPackageFolder[FileIndex]);
@@ -219,7 +219,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		for (const FDirectoryPath& Path : Settings->DirectoriesForHLODCommandlet)
 		{
 			TArray<FString> FilesInPackageFolder;			
-			FPackageName::FindPackagesInDirectory(FilesInPackageFolder, *FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir(), Path.Path));
+			FPackageName::FindPackagesInDirectory(FilesInPackageFolder, FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir(), Path.Path));
 			for (int32 FileIndex = 0; FileIndex < FilesInPackageFolder.Num(); FileIndex++)
 			{
 				FString PackageFile(FilesInPackageFolder[FileIndex]);
@@ -956,6 +956,7 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
 		bForceEnableHLODForLevel = HLODOptions.Contains("ForceEnableHLOD");
 		bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
+		bSkipSubLevels = HLODOptions.Contains("SkipSubLevels");
 		bHLODMapCleanup = HLODOptions.Contains("MapCleanup");
 
 		ForceHLODSetupAsset = FString();
@@ -970,6 +971,7 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceClusters"), bForceClusterGeneration ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceProxies"), bForceProxyGeneration ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceEnableHLOD"), bForceEnableHLODForLevel ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] SkipSubLevels"), bSkipSubLevels ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceSingleCluster"), bForceSingleClusterForLevel ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Map Cleanup"), bHLODMapCleanup ? TEXT("X") : TEXT(" "));
 
@@ -1654,7 +1656,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					}
 				}
 
-				FHierarchicalLODBuilder Builder(World);
+				FHierarchicalLODBuilder Builder(World, bSkipSubLevels);
 
 				if (bForceClusterGeneration)
 				{
@@ -2687,7 +2689,7 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 						It->GetOuter()->IsA(UPackage::StaticClass()) &&
 						It->GetOutermost()->GetName().Left(4) != TEXT("NFS_"))
 					{
-						UPackage* NewPackage = CreatePackage(NULL, *(FString(TEXT("NFS_")) + It->GetOuter()->GetPathName()));
+						UPackage* NewPackage = CreatePackage( *(FString(TEXT("NFS_")) + It->GetOuter()->GetPathName()));
 						//UE_LOG(LogContentCommandlet, Warning, TEXT("Renaming object from %s to %s.%s"), *It->GetPathName(), *NewPackage->GetPathName(), *It->GetName());
 
 						// move the object if we can. IF the rename fails, then the object was already renamed to this spot, but not GC'd.
@@ -2780,11 +2782,11 @@ void UListMaterialsUsedWithMeshEmittersCommandlet::ProcessParticleSystem( UParti
 				{
 					if (MeshTypeData->Mesh)
 					{
-						for (int32 MaterialIdx = 0; MaterialIdx < MeshTypeData->Mesh->StaticMaterials.Num(); MaterialIdx++)
+						for (int32 MaterialIdx = 0; MaterialIdx < MeshTypeData->Mesh->GetStaticMaterials().Num(); MaterialIdx++)
 						{
-							if(MeshTypeData->Mesh->StaticMaterials[MaterialIdx].MaterialInterface)
+							if(MeshTypeData->Mesh->GetStaticMaterials()[MaterialIdx].MaterialInterface)
 							{
-								UMaterial* Mat = MeshTypeData->Mesh->StaticMaterials[MaterialIdx].MaterialInterface->GetMaterial();
+								UMaterial* Mat = MeshTypeData->Mesh->GetStaticMaterials()[MaterialIdx].MaterialInterface->GetMaterial();
 								if(!Mat->bUsedWithMeshParticles)
 								{
 									OutMaterials.AddUnique(Mat->GetPathName());

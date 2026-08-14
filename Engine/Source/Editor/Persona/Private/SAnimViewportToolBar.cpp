@@ -80,7 +80,7 @@ public:
 					.MinValue(0)
 					.AllowSpin(true)
 					.MinSliderValue(0)
-					.MaxSliderValue(2)
+					.MaxSliderValue(10)
 					.Value(AnimViewportPtr.Pin().ToSharedRef(), &SAnimationEditorViewportTabBody::GetWindStrengthSliderValue)
 					.OnValueChanged(SSpinBox<float>::FOnValueChanged::CreateSP(AnimViewportPtr.Pin().ToSharedRef(), &SAnimationEditorViewportTabBody::SetWindStrength))
 				]
@@ -284,6 +284,8 @@ void SAnimViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class 
 			.Viewport(InRealViewport)
 			.CommandList(InRealViewport->GetCommandList())
 			.Visibility(this, &SAnimViewportToolBar::GetTransformToolbarVisibility)
+			.OnCamSpeedChanged(this, &SAnimViewportToolBar::OnCamSpeedChanged)
+			.OnCamSpeedScalarChanged(this, &SAnimViewportToolBar::OnCamSpeedScalarChanged)
 		];
 			
 	
@@ -1108,6 +1110,20 @@ void SAnimViewportToolBar::OnFOVValueChanged( float NewValue )
 void SAnimViewportToolBar::OnFOVValueCommitted( float NewValue, ETextCommit::Type CommitInfo )
 {
 	//OnFOVValueChanged will be called... nothing needed here.
+}
+
+void SAnimViewportToolBar::OnCamSpeedChanged(int32 NewValue)
+{
+	FEditorViewportClient& ViewportClient = Viewport.Pin()->GetLevelViewportClient();
+	FAnimationViewportClient& AnimViewportClient = (FAnimationViewportClient&)(ViewportClient);
+	AnimViewportClient.ConfigOption->SetCameraSpeed(AnimViewportClient.GetAssetEditorToolkit()->GetEditorName(), NewValue, AnimViewportClient.GetViewportIndex());
+}
+
+void SAnimViewportToolBar::OnCamSpeedScalarChanged(float NewValue)
+{
+	FEditorViewportClient& ViewportClient = Viewport.Pin()->GetLevelViewportClient();
+	FAnimationViewportClient& AnimViewportClient = (FAnimationViewportClient&)(ViewportClient);
+	AnimViewportClient.ConfigOption->SetCameraSpeedScalar(AnimViewportClient.GetAssetEditorToolkit()->GetEditorName(), NewValue, AnimViewportClient.GetViewportIndex());
 }
 
 TOptional<float> SAnimViewportToolBar::OnGetFloorOffset() const

@@ -17,6 +17,7 @@ class IVirtualCameraOptions;
 class IVirtualCameraPresetContainer;
 class UCineCameraComponent;
 class ULevelSequencePlaybackController;
+class USceneCaptureComponent2D;
 class UWorld;
 
 UENUM(BlueprintType)
@@ -88,12 +89,8 @@ public:
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Component")
 	UCineCameraComponent* GetStreamedCameraComponent() const;
 
-	/** Returns the recorded camera. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Component")
-	UCineCameraComponent* GetRecordingCameraComponent() const;
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Component")
-	UCineCameraComponent* GetActiveCameraComponent() const;
+	USceneCaptureComponent2D* GetSceneCaptureComponent() const;
 
 	/** Returns the VirtualCamera's Sequence Controller. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Sequencer")
@@ -129,43 +126,16 @@ public:
 	void SetSaveSettingsOnStopStreaming(bool bShouldSettingsSave);
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Movement")
-	void SetRelativeTransform(const FTransform& InControllerTransform);
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Movement")
 	FTransform GetRelativeTransform() const;
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera")
 	void AddBlendableToCamera(const TScriptInterface<IBlendableInterface>& InBlendableToAdd, float InWeight);
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	void SetFocusDistance(float InFocusDistanceCentimeters);
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
 	void SetTrackedActorForFocus(AActor* InActorToTrack, const FVector& TrackingPointOffset);
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	void SetFocusMethod(EVirtualCameraFocusMethod InNewFocusMethod);
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	EVirtualCameraFocusMethod GetFocusMethod() const;
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
 	void SetFocusVisualization(bool bInShowFocusVisualization);
-
-	/** Stores the screen position of the reticle used for auto focus */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	void SetReticlePosition(const FVector2D& InViewportPosition);
-
-	/** Gets screen reticle position used for auto focus */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	FVector2D GetReticlePosition() const;
-
-	/** Calculate new hyperfocal distance when lens or aperture change */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	void UpdateHyperfocalDistance();
-
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Focus")
-	float GetHyperfocalDistance() const;
 
 	/** Delegate will be executed before transform is set onto VirtualCamera. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "VirtualCamera | Movement")

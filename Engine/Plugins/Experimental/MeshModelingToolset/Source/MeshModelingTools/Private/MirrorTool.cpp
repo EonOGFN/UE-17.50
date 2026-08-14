@@ -117,7 +117,7 @@ bool UMirrorTool::CanAccept() const
 			return false;
 		}
 	}
-	return true;
+	return Super::CanAccept();
 }
 
 void UMirrorTool::SetWorld(UWorld* World)
@@ -186,8 +186,7 @@ void UMirrorTool::Setup()
 	UInteractiveTool::Setup();
 
 	GetToolManager()->DisplayMessage(
-		LOCTEXT("OnStartMirrorTool", "Mirror one or more meshes across a plane. Grid snapping behavior is swapped while the shift key "
-			"is down. The plane can be set by using the preset buttons, moving the gizmo, or ctrl+clicking on a spot on the original mesh."),
+		LOCTEXT("OnStartMirrorTool", "Mirror one or more meshes across a plane. Grid snapping behavior is swapped while the shift key is down. The plane can be set by using the preset buttons, moving the gizmo, or ctrl+clicking on a spot on the original mesh."),
 		EToolMessageLevel::UserNotification);
 
 	// Set up the properties
@@ -261,23 +260,19 @@ void UMirrorTool::Setup()
 		}
 		});
 
-	// Set up ability to set a new plane location through Ctrl+clicking.
-	SetPlaneClickBehaviorTarget = MakeUnique<FSelectClickedAction>();
-	SetPlaneClickBehaviorTarget->World = this->TargetWorld;
-	SetPlaneClickBehaviorTarget->OnClickedPositionFunc = [this](const FHitResult& Hit)
+	// Modify the Ctrl+click set plane behavior to respond to our CtrlClickBehavior property
+	PlaneMechanic->SetPlaneCtrlClickBehaviorTarget->OnClickedPositionFunc = [this](const FHitResult& Hit)
 	{
 		bool bIgnoreNormal = (Settings->CtrlClickBehavior == EMirrorCtrlClickBehavior::Reposition);
 		PlaneMechanic->SetDrawPlaneFromWorldPos(Hit.ImpactPoint, Hit.ImpactNormal, bIgnoreNormal);
-
-		for (UMeshOpPreviewWithBackgroundCompute* Preview : Previews)
-		{
-			Preview->InvalidateResult();
-		}
 	};
-	USingleClickInputBehavior* ClickToSetPlaneBehavior = NewObject<USingleClickInputBehavior>();
-	ClickToSetPlaneBehavior->ModifierCheckFunc = FInputDeviceState::IsCtrlKeyDown;
-	ClickToSetPlaneBehavior->Initialize(SetPlaneClickBehaviorTarget.Get());
-	AddInputBehavior(ClickToSetPlaneBehavior);
+	// Also include the original components in the ctrl+click hit testing even though we made them 
+	// invisible, since we want to be able to reposition the plane onto the original mesh.
+	for (const TUniquePtr<FPrimitiveComponentTarget>& Target : ComponentTargets)
+	{
+		PlaneMechanic->SetPlaneCtrlClickBehaviorTarget->InvisibleComponentsToHitTest.Add(Target->GetOwnerComponent());
+	}
+
 
 	// Add modifier button for snapping
 	UKeyAsModifierInputBehavior* SnapToggleBehavior = NewObject<UKeyAsModifierInputBehavior>();
@@ -342,8 +337,7 @@ void CheckAndDisplayWarnings(const TArray<TUniquePtr<FPrimitiveComponentTarget>>
 
 	if (bAnyHaveSameSource)
 	{
-		SameSourceWarning = LOCTEXT("MirrorMultipleAssetsWithSameSource", "WARNING: Multiple meshes in your selection use the "
-			"same source asset! Only the \"Create New Assets\" save mode is supported.");
+		SameSourceWarning = LOCTEXT("MirrorMultipleAssetsWithSameSource", "WARNING: Multiple meshes in your selection use the same source asset! Only the \"Create New Assets\" save mode is supported.");
 		
 		// We could forcefully set the save mode to CreateNewAssets, but the setting will persist on new invocations
 		// of the tool, which may surprise the user. So, it's up to them to set it.
@@ -363,9 +357,8 @@ void CheckAndDisplayWarnings(const TArray<TUniquePtr<FPrimitiveComponentTarget>>
 
 	if (NonUniformScalingTarget)
 	{
-		NonUniformScaleWarning = FText::Format(LOCTEXT("MirrorNonUniformScaledAsset", "WARNING: The item \"{0}\" has a non-uniform "
-			"scaling transform. This is not supported because mirroring acts on the underlying mesh, and mirroring is not commutative with "
-			"non-uniform scaling. Consider deforming the mesh rather than scaling it non-uniformly."),
+		NonUniformScaleWarning = FText::Format(
+			LOCTEXT("MirrorNonUniformScaledAsset", "WARNING: The item \"{0}\" has a non-uniform scaling transform. This is not supported because mirroring acts on the underlying mesh, and mirroring is not commutative with non-uniform scaling. Consider deforming the mesh rather than scaling it non-uniformly."),
 			FText::FromString(NonUniformScalingTarget->GetOwnerActor()->GetName()));
 	}
 

@@ -26,7 +26,7 @@
 // if set to 1, then on mode initialization we include buttons for prototype modeling tools
 static TAutoConsoleVariable<int32> CVarEnablePrototypeModelingTools(
 	TEXT("modeling.EnablePrototypes"),
-	1,
+	0,
 	TEXT("Enable unsupported Experimental prototype Modeling Tools"));
 
 
@@ -328,10 +328,11 @@ static const FName TransformTabName(TEXT("Transform"));
 static const FName DeformTabName(TEXT("Deform"));
 static const FName VolumesTabName(TEXT("Volumes"));
 static const FName PrototypesTabName(TEXT("Prototypes"));
+static const FName HairTabName(TEXT("Hair"));
 
 
-const TArray<FName> FModelingToolsEditorModeToolkit::PaletteNames_Standard = { PrimitiveTabName, CreateTabName, TransformTabName, DeformTabName, PolyGroupsTabName, TrianglesTabName, UVNormalTabName, VolumesTabName };
-const TArray<FName> FModelingToolsEditorModeToolkit::PaletteNames_Experimental = { PrimitiveTabName, CreateTabName, TransformTabName, DeformTabName, PolyGroupsTabName, TrianglesTabName, UVNormalTabName, VolumesTabName, PrototypesTabName };
+const TArray<FName> FModelingToolsEditorModeToolkit::PaletteNames_Standard = { PrimitiveTabName, CreateTabName, TransformTabName, DeformTabName, PolyGroupsTabName, TrianglesTabName, UVNormalTabName, VolumesTabName, HairTabName };
+const TArray<FName> FModelingToolsEditorModeToolkit::PaletteNames_Experimental = { PrimitiveTabName, CreateTabName, TransformTabName, DeformTabName, PolyGroupsTabName, TrianglesTabName, UVNormalTabName, VolumesTabName, HairTabName, PrototypesTabName };
 
 
 void FModelingToolsEditorModeToolkit::GetToolPaletteNames(TArray<FName>& InPaletteName) const
@@ -395,16 +396,16 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Standard(FName PaletteInd
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolygonTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolyPathTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawAndRevolveTool);
-		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginRevolveBoundaryTool);
 		ToolbarBuilder.AddSeparator();
-		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMergeTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginSelfUnionTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelSolidifyTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBlendTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMorphologyTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSelfUnionTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMergeTool);
 	}
 	else if (PaletteIndex == TransformTabName)
 	{
@@ -435,6 +436,8 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Standard(FName PaletteInd
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDisplaceMeshTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSpaceDeformerTool);
 		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshAttributePaintTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginRemeshMeshTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
 	}
@@ -464,6 +467,9 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Standard(FName PaletteInd
 		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyEditTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyDeformTool);
 		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginGroupEdgeInsertionTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginEdgeLoopInsertionTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
 	}
@@ -479,8 +485,11 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Standard(FName PaletteInd
 		ToolbarBuilder.AddToolBarButton(Commands.BeginGlobalUVGenerateTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginGroupUVGenerateTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginUVProjectionTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginUVSeamEditTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginTransformUVIslandsTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginUVLayoutTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginBakeMeshAttributeMapsTool);
 		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
@@ -491,8 +500,24 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Standard(FName PaletteInd
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshToVolumeTool);
 		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginBspConversionTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginPhysicsInspectorTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginSetCollisionGeometryTool);
+		//ToolbarBuilder.AddToolBarButton(Commands.BeginEditCollisionGeometryTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginExtractCollisionGeometryTool);
 	}
-
+	else if (PaletteIndex == HairTabName)
+	{
+	ToolbarBuilder.AddToolBarButton(Commands.BeginTransformMeshesTool);
+	ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSelectionTool);
+	ToolbarBuilder.AddSeparator();
+	ToolbarBuilder.AddToolBarButton(Commands.BeginGroomToMeshTool);
+	ToolbarBuilder.AddToolBarButton(Commands.BeginGroomCardsEditorTool);
+	ToolbarBuilder.AddToolBarButton(Commands.BeginGenerateLODMeshesTool);
+	ToolbarBuilder.AddSeparator();
+	ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
+	ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
+	}
 }
 
 
@@ -528,16 +553,16 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Experimental(FName Palett
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolygonTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolyPathTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawAndRevolveTool);
-		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginRevolveBoundaryTool);
 		ToolbarBuilder.AddSeparator();
-		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMergeTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginSelfUnionTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelSolidifyTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBlendTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMorphologyTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSelfUnionTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelBooleanTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginVoxelMergeTool);
 	}
 	else if (PaletteIndex == TransformTabName)
 	{
@@ -568,6 +593,8 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Experimental(FName Palett
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDisplaceMeshTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSpaceDeformerTool);
 		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshAttributePaintTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginRemeshMeshTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
 	}
@@ -597,6 +624,9 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Experimental(FName Palett
 		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyEditTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyDeformTool);
 		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginGroupEdgeInsertionTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginEdgeLoopInsertionTool);
+		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
 	}
@@ -612,8 +642,11 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Experimental(FName Palett
 		ToolbarBuilder.AddToolBarButton(Commands.BeginGlobalUVGenerateTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginGroupUVGenerateTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginUVProjectionTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginUVSeamEditTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginTransformUVIslandsTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginUVLayoutTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginBakeMeshAttributeMapsTool);
 		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
@@ -624,17 +657,31 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette_Experimental(FName Palett
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshToVolumeTool);
 		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginBspConversionTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginPhysicsInspectorTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginSetCollisionGeometryTool);
+		//ToolbarBuilder.AddToolBarButton(Commands.BeginEditCollisionGeometryTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginExtractCollisionGeometryTool);
+	}
+	else if (PaletteIndex == HairTabName)
+	{
+		ToolbarBuilder.AddToolBarButton(Commands.BeginTransformMeshesTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSelectionTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginGroomToMeshTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginGroomCardsEditorTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginGenerateLODMeshesTool);
+		ToolbarBuilder.AddSeparator();
+		ToolbarBuilder.AddToolBarButton(Commands.BeginAttributeEditorTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshInspectorTool);
 	}
 	else if (PaletteIndex == PrototypesTabName)
 	{
 		ToolbarBuilder.AddToolBarButton(Commands.BeginTransformMeshesTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSelectionTool);
 		ToolbarBuilder.AddSeparator();
-		ToolbarBuilder.AddToolBarButton(Commands.BeginBakeMeshAttributeMapsTool);
-		ToolbarBuilder.AddSeparator();
 		ToolbarBuilder.AddToolBarButton(Commands.BeginAddPatchTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginShapeSprayTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshAttributePaintTool);
 	}
 }
 
@@ -691,6 +738,8 @@ void FModelingToolsEditorModeToolkit::UpdateAssetLocationMode(TSharedPtr<FString
 	{
 		Settings->AssetGenerationLocation = EModelingModeAssetGenerationLocation::AutoGeneratedWorldRelativeAssetPath;
 	}
+
+	Settings->SaveConfig();
 }
 
 void FModelingToolsEditorModeToolkit::UpdateAssetSaveMode(TSharedPtr<FString> NewString)
@@ -712,6 +761,8 @@ void FModelingToolsEditorModeToolkit::UpdateAssetSaveMode(TSharedPtr<FString> Ne
 	{
 		Settings->AssetGenerationMode = EModelingModeAssetGenerationBehavior::AutoGenerateButDoNotAutosave;
 	}
+
+	Settings->SaveConfig();
 }
 
 void FModelingToolsEditorModeToolkit::UpdateAssetPanelFromSettings()

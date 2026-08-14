@@ -360,6 +360,7 @@ void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+	OutExtensions.Add(VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME);
 
 	if (GVulkanQcomRenderPassTransform)
 	{
@@ -389,6 +390,11 @@ bool FVulkanAndroidPlatform::SupportsStandardSwapchain()
 	{
 		return FVulkanGenericPlatform::SupportsStandardSwapchain();
 	}
+}
+
+bool FVulkanAndroidPlatform::RequiresRenderingBackBuffer()
+{
+	return !FPlatformMisc::IsStandaloneStereoOnlyDevice();
 }
 
 EPixelFormat FVulkanAndroidPlatform::GetPixelFormatForNonDefaultSwapchain()

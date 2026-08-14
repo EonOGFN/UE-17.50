@@ -16,6 +16,7 @@
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "AudioDeviceManager.h"
+#include "Interfaces/Interface_AssetUserData.h"
 #include "SoundBase.generated.h"
 
 
@@ -23,6 +24,7 @@ class USoundEffectSourcePreset;
 class USoundSourceBus;
 class USoundSubmix;
 class USoundEffectSourcePresetChain;
+class UAssetUserData;
 
 struct FActiveSound;
 struct FSoundParseParameters;
@@ -51,7 +53,7 @@ enum class EVirtualizationMode : uint8
 };
 
 UCLASS(config=Engine, hidecategories=Object, abstract, editinlinenew, BlueprintType)
-class ENGINE_API USoundBase : public UObject
+class ENGINE_API USoundBase : public UObject, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
 
@@ -84,9 +86,6 @@ public:
 	uint8 bHasConcatenatorNode : 1;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(Transient)
-	uint8 bModulationEnabled : 1;
-
 	UPROPERTY()
 	uint8 bHasVirtualizeWhenSilent_DEPRECATED : 1;
 #endif // WITH_EDITORONLY_DATA
@@ -150,21 +149,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = Attenuation)
 	USoundAttenuation* AttenuationSettings;
 
-	/** Volume modulation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation", meta = (DisplayName = "Volume", AudioParam = "Volume", EditCondition = "bModulationEnabled", EditConditionHides))
-	FSoundModulationDestinationSettings VolumeModulationDestination;
-
-	/** Pitch modulation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation", meta = (DisplayName = "Pitch", AudioParam = "Pitch", EditCondition = "bModulationEnabled", EditConditionHides))
-	FSoundModulationDestinationSettings PitchModulationDestination;
-
-	/** Highpass modulation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation", meta = (DisplayName = "Highpass", AudioParam = "HPFCutoffFrequency", EditCondition = "bModulationEnabled", EditConditionHides))
-	FSoundModulationDestinationSettings HighpassModulationDestination;
-
-	/** Lowpass modulation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation", meta = (DisplayName = "Lowpass", AudioParam = "LPFCutoffFrequency", EditCondition = "bModulationEnabled", EditConditionHides))
-	FSoundModulationDestinationSettings LowpassModulationDestination;
+	/** Modulation Settings */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation")
+	FSoundModulationDefaultRoutingSettings ModulationSettings;
 
 	/** Submix to route sound output to. If unset, falls back to referenced SoundClass submix.
 	  * If SoundClass submix is unset, sends to the 'Master Submix' as set in the 'Audio' category of Project Settings'. */
@@ -186,6 +173,10 @@ public:
 	/** This sound will send its audio output to this list of buses if there are bus instances playing before source effects are processed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effects|Source", meta = (DisplayName = "Pre-Effect Bus Sends"))
 	TArray<FSoundSourceBusSendInfo> PreEffectBusSends;
+
+	/** Array of user data stored with the asset */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Sound)
+	TArray<UAssetUserData*> AssetUserData;
 
 public:
 
@@ -274,6 +265,13 @@ public:
 	/** Queries if the sound has cooked FFT or envelope data. */
 	virtual bool HasCookedFFTData() const { return false; }
 	virtual bool HasCookedAmplitudeEnvelopeData() const { return false; }
+
+	//~ Begin IInterface_AssetUserData Interface
+	virtual void AddAssetUserData(UAssetUserData* InUserData) override;
+	virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
+	//~ End IInterface_AssetUserData Interface
 
 	/** Creates a sound generator instance from this sound base. Return true if this is being implemented by a subclass. Sound generators procedurally generate audio in the audio render thread. */
 	virtual ISoundGeneratorPtr CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels) { return nullptr; }

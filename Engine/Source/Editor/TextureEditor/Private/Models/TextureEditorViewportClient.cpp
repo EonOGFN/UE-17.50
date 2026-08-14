@@ -10,6 +10,7 @@
 #include "Engine/Texture2DArray.h"
 #include "Engine/VolumeTexture.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/TextureRenderTarget2DArray.h"
 #include "Engine/TextureRenderTargetCube.h"
 #include "Engine/TextureRenderTargetVolume.h"
 #include "UnrealEdGlobals.h"
@@ -81,6 +82,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	UTexture2DArray* Texture2DArray = Cast<UTexture2DArray>(Texture);
 	UVolumeTexture* VolumeTexture = Cast<UVolumeTexture>(Texture);
 	UTextureRenderTarget2D* TextureRT2D = Cast<UTextureRenderTarget2D>(Texture);
+	UTextureRenderTarget2DArray* TextureRT2DArray = Cast<UTextureRenderTarget2DArray>(Texture);
 	UTextureRenderTargetCube* RTTextureCube = Cast<UTextureRenderTargetCube>(Texture);
 	UTextureRenderTargetVolume* RTTextureVolume = Cast<UTextureRenderTargetVolume>(Texture);
 
@@ -113,7 +115,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		{
 			BatchedElementParameters = new FBatchedElementVolumeTexturePreviewParameters(
 				Settings.VolumeViewMode == TextureEditorVolumeViewMode_DepthSlices, 
-				FMath::Max<int32>(VolumeTexture->GetSizeZ() >> VolumeTexture->GetCachedLODBias(), 1), 
+				FMath::Max<int32>(VolumeTexture->GetSizeZ(), 1), 
 				MipLevel, 
 				(float)TextureEditorPtr.Pin()->GetVolumeOpacity(),
 				true, 
@@ -146,6 +148,10 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		else if (TextureRT2D)
 		{
 			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, false);
+		}
+		else if (TextureRT2DArray)
+		{
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, true);
 		}
 		else
 		{
@@ -277,26 +283,74 @@ bool FTextureEditorViewportClient::InputKey(FViewport* Viewport, int32 Controlle
 	return false;
 }
 
+bool IsTextureUsingVolumeOrientation(UTexture* Texture)
+{
+	return Texture && (Cast<UVolumeTexture>(Texture) || Cast<UTextureRenderTargetVolume>(Texture));
+}
+
 bool FTextureEditorViewportClient::InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	if (Key == EKeys::MouseX || Key == EKeys::MouseY)
 	{
-		FRotator DeltaRotator(ForceInitToZero);
-		const float RotationSpeed = .2f;
-		if (Key == EKeys::MouseY)
+		UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
+		if (IsTextureUsingVolumeOrientation(Texture))
 		{
-			DeltaRotator.Pitch = Delta * RotationSpeed;
-		}
-		else
-		{
-			DeltaRotator.Yaw = Delta * RotationSpeed;
-		}
+			FRotator DeltaRotator(ForceInitToZero);
+			const float RotationSpeed = .2f;
+			if (Key == EKeys::MouseY)
+			{
+				DeltaRotator.Pitch = Delta * RotationSpeed;
+			}
+			else
+			{
+				DeltaRotator.Yaw = Delta * RotationSpeed;
+			}
 
-		TextureEditorPtr.Pin()->SetVolumeOrientation((FRotationMatrix::Make(DeltaRotator) * FRotationMatrix::Make(TextureEditorPtr.Pin()->GetVolumeOrientation())).Rotator());
+			TextureEditorPtr.Pin()->SetVolumeOrientation((FRotationMatrix::Make(DeltaRotator) * FRotationMatrix::Make(TextureEditorPtr.Pin()->GetVolumeOrientation())).Rotator());
+		}
+		else if (ShouldUseMousePanning(Viewport))
+		{
+			TSharedPtr<STextureEditorViewport> EditorViewport = TextureEditorViewportPtr.Pin();
+
+			uint32 Height = 1;
+			uint32 Width = 1;
+			TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
+
+			if (Key == EKeys::MouseY)
+			{
+				float VDistFromBottom = EditorViewport->GetVerticalScrollBar()->DistanceFromBottom();
+				float VRatio = GetViewportVerticalScrollBarRatio();
+				float localDelta = (Delta / static_cast<float>(Height));
+				EditorViewport->GetVerticalScrollBar()->SetState(FMath::Clamp((1.f - VDistFromBottom - VRatio) + localDelta, 0.0f, 1.0f - VRatio), VRatio);
+			}
+			else
+			{
+				float HDistFromBottom = EditorViewport->GetHorizontalScrollBar()->DistanceFromBottom();
+				float HRatio = GetViewportHorizontalScrollBarRatio();
+				float localDelta = (Delta / static_cast<float>(Width)) * -1.f; // delta needs to be inversed
+				EditorViewport->GetHorizontalScrollBar()->SetState(FMath::Clamp((1.f - HDistFromBottom - HRatio) + localDelta, 0.0f, 1.0f - HRatio), HRatio);
+			}
+		}
 		return true;
 	}
 
 	return false;
+}
+
+bool FTextureEditorViewportClient::ShouldUseMousePanning(FViewport* Viewport) const
+{
+	if (!IsTextureUsingVolumeOrientation(TextureEditorPtr.Pin()->GetTexture()) && Viewport->KeyState(EKeys::RightMouseButton))
+	{
+		TSharedPtr<STextureEditorViewport> EditorViewport = TextureEditorViewportPtr.Pin();
+		return EditorViewport.IsValid() && EditorViewport->GetVerticalScrollBar().IsValid() && EditorViewport->GetHorizontalScrollBar().IsValid();
+	}
+
+	return false;
+}
+
+EMouseCursor::Type FTextureEditorViewportClient::GetCursor(FViewport* Viewport, int32 X, int32 Y)
+{
+	return ShouldUseMousePanning(Viewport) ? EMouseCursor::GrabHandClosed : EMouseCursor::Default;
 }
 
 bool FTextureEditorViewportClient::InputGesture(FViewport* Viewport, EGestureEvent GestureType, const FVector2D& GestureDelta, bool bIsDirectionInvertedFromDevice)

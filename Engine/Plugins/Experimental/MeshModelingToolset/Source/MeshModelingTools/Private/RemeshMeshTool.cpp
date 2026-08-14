@@ -148,6 +148,10 @@ void URemeshMeshTool::Setup()
 	AddToolPropertySource(MeshStatisticsProperties);
 
 	Preview->InvalidateResult();
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Retriangulate the selected Mesh. Use the Boundary Constraints to preserve mesh borders. Enable Discard Attributes to ignore UV/Normal Seams. "),
+		EToolMessageLevel::UserNotification);
 }
 
 void URemeshMeshTool::Shutdown(EToolShutdownType ShutdownType)
@@ -280,14 +284,9 @@ double URemeshMeshTool::CalculateTargetEdgeLength(int TargetTriCount)
 	return (double)FMath::RoundToInt(EdgeLen*100.0) / 100.0;
 }
 
-bool URemeshMeshTool::HasAccept() const
-{
-	return true;
-}
-
 bool URemeshMeshTool::CanAccept() const
 {
-	return Preview->HaveValidResult();
+	return Super::CanAccept() && Preview->HaveValidResult();
 }
 
 void URemeshMeshTool::GenerateAsset(const FDynamicMeshOpResult& Result)

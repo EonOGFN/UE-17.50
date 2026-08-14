@@ -21,6 +21,7 @@
 #include "UObject/UObjectIterator.h"
 #include "UObject/PropertyPortFlags.h"
 #include "Components/SplineMeshComponent.h"
+#include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
 
 #include "ChaosCheck.h"
 #include "Chaos/Convex.h"
@@ -871,8 +872,8 @@ void UBodySetup::AddShapesToRigidActor_AssumesLocked(
 
 void UBodySetup::RemoveSimpleCollision()
 {
-	AggGeom.EmptyElements();
 	InvalidatePhysicsData();
+	AggGeom.EmptyElements();
 }
 
 void UBodySetup::RescaleSimpleCollision( FVector BuildScale )
@@ -969,6 +970,7 @@ void UBodySetup::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 	Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
 
 	// Load GUID (or create one for older versions)
 	Ar << BodySetupGuid;
@@ -1033,6 +1035,12 @@ void UBodySetup::Serialize(FArchive& Ar)
 		{
 			if (Ar.UE4Ver() >= VER_UE4_STORE_HASCOOKEDDATA_FOR_BODYSETUP)
 			{
+				// CL#14327190 Removed cooked implicit collision structures from the UBodySetup.
+				// UBodySetups saved with support for cooked implicit geometry store a counter for the number 
+				// of implicit objects saved to the file. This count needs to be removed from the input stream. 
+				// Note: We only need to extract the count, not the array. Editor operations for populating the 
+				// implicit array were never added, so it's expected that the actual implicit array would 
+				// always be empty.
 				bool bTemp = bHasCookedCollisionData;
 				Ar << bTemp;
 				bHasCookedCollisionData = bTemp;
@@ -1066,8 +1074,11 @@ void UBodySetup::Serialize(FArchive& Ar)
 
 
 	// Levelset Serialization support for BodySetup.
-	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::LevelsetSerializationSupportForBodySetup)
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::LevelsetSerializationSupportForBodySetup
+		&& Ar.CustomVer(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::DisableLevelset_v14_10)
 	{
+		TArray<TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe>> ChaosImplicitObjects;
+#if WITH_CHAOS
 		using namespace Chaos;
 		FChaosArchive ChaosAr(Ar);
 
@@ -1088,6 +1099,7 @@ void UBodySetup::Serialize(FArchive& Ar)
 				}
 			}
 		}
+		/*
 		else if (Ar.IsSaving())
 		{
 			for (int i = 0; i < ChaosImplicitObjects.Num(); i++)
@@ -1108,6 +1120,14 @@ void UBodySetup::Serialize(FArchive& Ar)
 				}
 			}
 		}
+		*/
+#else
+		if(Ar.IsLoading())
+		{
+			int32 DummyCount;
+			Ar << DummyCount;
+		}
+#endif
 	}
 
 
@@ -1453,7 +1473,13 @@ void UBodySetup::GetGeometryDDCKey(FString& OutString) const
 		CDP->GetMeshId(MeshIdString);
 	}
 
-	OutString = FString::Printf(TEXT("%s_%s_%s_%d_%d_%d_%d_%d"),
+#if WITH_CHAOS
+	const int32 ConvexMarginType = Chaos::Chaos_Collision_ConvexMarginType;
+#else
+	const int32 ConvexMarginType = 0;
+#endif
+
+	OutString = FString::Printf(TEXT("%s_%s_%s_%d_%d_%d_%d_%f_%f_%d_%d"),
 		*BodySetupGuid.ToString(),
 		*MeshIdString,
 		*AggGeom.MakeDDCKey().ToString(),
@@ -1461,6 +1487,9 @@ void UBodySetup::GetGeometryDDCKey(FString& OutString) const
 		(int32)bGenerateMirroredCollision,
 		(int32)UPhysicsSettings::Get()->bSupportUVFromHitResults,
 		(int32)GetCollisionTraceFlag(),
+		UPhysicsSettings::Get()->SolverOptions.CollisionMarginFraction,
+		UPhysicsSettings::Get()->SolverOptions.CollisionMarginMax,
+		ConvexMarginType,
 		(int32)BODY_SETUP_GEOMETRY_KEY_VER);
 
 	if (bSupportUVsAndFaceRemap)

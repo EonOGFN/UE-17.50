@@ -98,6 +98,10 @@ struct FMovieSceneSubSequenceData
 	UPROPERTY()
 	int16 HierarchicalBias;
 
+	/** Whether this sub-sequence has hierarchical easing. */
+	UPROPERTY()
+	bool bHasHierarchicalEasing;
+
 	/** Instance data that should be used for any tracks contained immediately within this sub sequence */
 	UPROPERTY()
 	FMovieSceneSequenceInstanceDataPtr InstanceData;
@@ -107,6 +111,7 @@ struct FMovieSceneSubSequenceData
 	/** This sequence's path within its movie scene */
 	UPROPERTY()
 	FName SectionPath;
+
 #endif
 
 private:
@@ -273,6 +278,12 @@ struct FMovieSceneSequenceHierarchy
 	void AddRange(FMovieSceneSequenceIDRef InSequenceID, const TRange<FFrameNumber>& RootSpaceRange, ESectionEvaluationFlags InFlags)
 	{
 		Tree.Data.AddUnique(RootSpaceRange, FMovieSceneSubSequenceTreeEntry{ InSequenceID, InFlags });
+	}
+	
+	/** Get all sub-sequence IDs */
+	void AllSubSequenceIDs(TArray<FMovieSceneSequenceID>& OutSequenceIDs) const
+	{
+		Hierarchy.GetKeys(OutSequenceIDs);
 	}
 
 	/** Access to all the subsequence data */

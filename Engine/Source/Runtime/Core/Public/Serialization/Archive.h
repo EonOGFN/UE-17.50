@@ -32,6 +32,7 @@ template<class TEnum> class TEnumAsByte;
 typedef TFunction<bool (double RemainingTime)> FExternalReadCallback;
 struct FUObjectSerializeContext;
 class FField;
+enum class EFileRegionType : uint8;
 
 // Temporary while we shake out the EDL at boot
 #define USE_EVENT_DRIVEN_ASYNC_LOAD_AT_BOOT_TIME (1)
@@ -1347,6 +1348,12 @@ public:
 		{
 			uint32 OldUBoolValue = D ? 1 : 0;
 			Ar.Serialize(&OldUBoolValue, sizeof(OldUBoolValue));
+
+			if (OldUBoolValue > 1)
+			{
+				Ar.SetError();
+			}
+
 			D = !!OldUBoolValue;
 		}
 		return Ar;
@@ -2020,7 +2027,11 @@ public:
 			Ar.PopDebugDataString();
 		}
 	};
-#endif	
+#endif
+
+	/** Called whilst cooking to provide file region hints to the cooker. */
+	virtual void PushFileRegionType(EFileRegionType Type) { }
+	virtual void PopFileRegionType() { }
 
 private:
 	/** Holds the cooking target platform. */

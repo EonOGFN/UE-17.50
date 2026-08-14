@@ -175,6 +175,7 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 
 	// This Pipeline belongs to the world being created so that they have context for things they execute.
 	ActiveMoviePipeline = NewObject<UMoviePipeline>(ExecutingWorld, PipelineClass);
+	ActiveMoviePipeline->DebugWidgetClass = DebugWidgetClass;
 	
 	// We allow users to set a multi-frame delay before we actually run the Initialization function and start thinking.
 	// This solves cases where there are engine systems that need to finish loading before we do anything.
@@ -185,7 +186,6 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 
 	// Listen for when the pipeline thinks it has finished.
 	ActiveMoviePipeline->OnMoviePipelineFinished().AddUObject(this, &UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished);
-	ActiveMoviePipeline->OnMoviePipelineErrored().AddUObject(this, &UMoviePipelinePIEExecutor::OnPipelineErrored);
 	
 	if (ExecutorSettings->InitialDelayFrameCount == 0)
 	{
@@ -221,8 +221,13 @@ void UMoviePipelinePIEExecutor::OnTick()
 	}
 }
 
-void UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished(UMoviePipeline* InMoviePipeline)
+void UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished(UMoviePipeline* InMoviePipeline, bool bFatalError)
 {
+	if (bFatalError)
+	{
+		OnPipelineErrored(InMoviePipeline, true, FText());
+	}
+
 	// Unsubscribe to the EndPIE event so we don't think the user canceled it.
 	FCoreDelegates::OnBeginFrame.RemoveAll(this);
 
@@ -246,8 +251,7 @@ void UMoviePipelinePIEExecutor::OnPIEEnded(bool)
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("PIE Ended while Movie Pipeline was still active. Stalling to do full shutdown."));
 
 		// This will flush any outstanding work on the movie pipeline (file writes) immediately
-		ActiveMoviePipeline->RequestShutdown(); // Set the Shutdown Requested flag.
-		ActiveMoviePipeline->Shutdown(); // Flush the shutdown.
+		ActiveMoviePipeline->Shutdown(true);
 		
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("MoviePipelinePIEExecutor: Stalling finished, pipeline has shut down."));
 	}
@@ -256,6 +260,10 @@ void UMoviePipelinePIEExecutor::OnPIEEnded(bool)
 	// Delay for one frame so that PIE can finish shut down. It's not a huge fan of us starting up on the same frame.
 	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateUObject(this, &UMoviePipelinePIEExecutor::DelayedFinishNotification));
 
+	// Restore the previous settings.
+	FApp::SetUseFixedTimeStep(bPreviousUseFixedTimeStep);
+	FApp::SetFixedDeltaTime(PreviousFixedTimeStepDelta);
+
 	// Stop capturing logging messages
 	ValidationMessageGatherer.StopGathering();
 	ValidationMessageGatherer.OpenLog();
@@ -263,15 +271,14 @@ void UMoviePipelinePIEExecutor::OnPIEEnded(bool)
 
 void UMoviePipelinePIEExecutor::DelayedFinishNotification()
 {
+	OnIndividualJobFinishedImpl(Queue->GetJobs()[CurrentPipelineIndex]);
+
+	// Now that PIE has finished
 	UMoviePipeline* MoviePipeline = ActiveMoviePipeline;
 	
 	// Null these out now since OnIndividualPipelineFinished might invoke something that causes a GC
 	// and we want them to go away with the GC.
 	ActiveMoviePipeline = nullptr;
-
-	// Restore the previous settings.
-	FApp::SetUseFixedTimeStep(bPreviousUseFixedTimeStep);
-	FApp::SetFixedDeltaTime(PreviousFixedTimeStepDelta);
 	
 	// Now that another frame has passed and we should be OK to start another PIE session, notify our owner.
 	OnIndividualPipelineFinished(MoviePipeline);

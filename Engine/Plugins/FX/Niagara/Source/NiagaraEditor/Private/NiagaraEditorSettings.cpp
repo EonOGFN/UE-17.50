@@ -105,6 +105,18 @@ void UNiagaraEditorSettings::SetupNamespaceMetadata()
 			.AddOption(ENiagaraNamespaceMetadataOptions::AdvancedInScript)
 			.AddOption(ENiagaraNamespaceMetadataOptions::AdvancedInSystem)
 			.AddOption(ENiagaraNamespaceMetadataOptions::PreventEditingNamespaceModifier),
+		FNiagaraNamespaceMetadata({FNiagaraConstants::StackContextNamespace})
+			.SetDisplayName(LOCTEXT("StackContextDisplayName", "StackContext"))
+			.SetDisplayNameLong(LOCTEXT("StackContextDisplayNameLong", "Stack Context Sensitive"))
+			.SetDescription(LOCTEXT("StackContextDescription", "A value which can be written to and read from from any module.\nStackContext values do  persist from frame to frame, or between stages, e.g. emitter to particle, or spawn to update.\nThey take on the namespace most relevant to where they are used.\nSystem Spawn/Update: \"System\"\nEmitter Spawn/Update: \"Emitter\".\nParticle Spawn/Update/Events: \"Particles\".\nParticle Simulation Stage iterating Particles: \"Particles\".\nParticle Simulation Stage with Iteration Source: Writes to the iteration source directly."))
+			.SetBackgroundColor(FLinearColor(FColor(87, 131, 121)))
+			.SetSortId(80)
+			.AddOption(ENiagaraNamespaceMetadataOptions::AdvancedInScript)
+			.AddOption(ENiagaraNamespaceMetadataOptions::AdvancedInSystem)
+		//.AddOption(ENiagaraNamespaceMetadataOptions::PreventEditingNamespaceModifier),
+			.AddOptionalNamespaceModifier(FNiagaraConstants::ModuleNamespace)
+			.AddOptionalNamespaceModifier(FNiagaraConstants::InitialNamespace)
+			.AddOptionalNamespaceModifier(FNiagaraConstants::PreviousNamespace),
 		FNiagaraNamespaceMetadata({FNiagaraConstants::EngineNamespace})
 			.SetDisplayName(LOCTEXT("EngineDisplayName", "Engine"))
 			.SetDisplayNameLong(LOCTEXT("EngineDisplayNameLong", "Engine Provided"))

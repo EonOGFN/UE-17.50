@@ -7,6 +7,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "PhysicsSettingsEnums.h"
 #include "BodySetupEnums.h"
+#include "ChaosSolverConfiguration.h"
 
 #include "PhysicsSettingsCore.generated.h"
 
@@ -113,7 +114,19 @@ class PHYSICSCORE_API UPhysicsSettingsCore: public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Simulation)
 	TEnumAsByte<ECollisionTraceFlag> DefaultShapeComplexity;
 
-	static UPhysicsSettingsCore* Get() { return CastChecked<UPhysicsSettingsCore>(UPhysicsSettingsCore::StaticClass()->GetDefaultObject()); }
+	/** Options to apply to Chaos solvers on creation */
+	UPROPERTY(config, EditAnywhere, Category = ChaosPhysics)
+	FChaosSolverConfiguration SolverOptions;
+
+	static UPhysicsSettingsCore* Get();
 
 	virtual void PostInitProperties() override;
+
+protected:
+	static void SetDefaultSettings(UPhysicsSettingsCore* InSettings);
+
+private:
+	// Override default settings.
+	// This should be set up to point to the CDO of the leaf settings class (as edited in Project Settings)
+	static UPhysicsSettingsCore* DefaultSettings;
 };

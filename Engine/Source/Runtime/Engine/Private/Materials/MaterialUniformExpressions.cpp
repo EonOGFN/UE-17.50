@@ -17,18 +17,6 @@
 #include "VirtualTexturing.h"
 #include "VT/RuntimeVirtualTexture.h"
 
-static TAutoConsoleVariable<int32> CVarSupportMaterialLayers(
-	TEXT("r.SupportMaterialLayers"),
-	0,
-	TEXT("Support new material layering"),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
-
-// Temporary flag for toggling experimental material layers functionality
-bool AreExperimentalMaterialLayersEnabled()
-{
-	return CVarSupportMaterialLayers.GetValueOnAnyThread() == 1;
-}
-
 TLinkedList<FMaterialUniformExpressionType*>*& FMaterialUniformExpressionType::GetTypeList()
 {
 	static TLinkedList<FMaterialUniformExpressionType*>* TypeList = NULL;
@@ -94,17 +82,30 @@ static void GetTextureParameterValue(const FHashedMaterialParameterInfo& Paramet
 	{
 		UTexture* Value = nullptr;
 
-		if (AreExperimentalMaterialLayersEnabled())
-		{
-			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
-			if (!Interface || !Interface->GetTextureParameterDefaultValue(ParameterInfo, Value))
-			{
-				Value = GetIndexedTexture<UTexture>(Context.Material, TextureIndex);
-			}
-		}
-		else
+		UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
+		if (!Interface || !Interface->GetTextureParameterDefaultValue(ParameterInfo, Value))
 		{
 			Value = GetIndexedTexture<UTexture>(Context.Material, TextureIndex);
+		}
+
+		OutValue = Value;
+	}
+}
+
+static void GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, int32 TextureIndex, const FMaterialRenderContext& Context, const URuntimeVirtualTexture*& OutValue)
+{
+	if (ParameterInfo.Name.IsNone())
+	{
+		OutValue = GetIndexedTexture<URuntimeVirtualTexture>(Context.Material, TextureIndex);
+	}
+	else if (!Context.MaterialRenderProxy || !Context.MaterialRenderProxy->GetTextureValue(ParameterInfo, &OutValue, Context))
+	{
+		URuntimeVirtualTexture* Value = nullptr;
+
+		UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
+		if (!Interface || !Interface->GetRuntimeVirtualTextureParameterDefaultValue(ParameterInfo, Value))
+		{
+			Value = GetIndexedTexture<URuntimeVirtualTexture>(Context.Material, TextureIndex);
 		}
 
 		OutValue = Value;
@@ -404,6 +405,7 @@ FShaderParametersMetadata* FUniformExpressionSet::CreateBufferStruct()
 	static FString MediaTextureSamplerNames[128];
 	static FString VirtualTexturePageTableNames0[128];
 	static FString VirtualTexturePageTableNames1[128];
+	static FString VirtualTexturePageTableIndirectionNames[128];
 	static FString VirtualTexturePhysicalNames[128];
 	static FString VirtualTexturePhysicalSamplerNames[128];
 	static bool bInitializedTextureNames = false;
@@ -424,8 +426,9 @@ FShaderParametersMetadata* FUniformExpressionSet::CreateBufferStruct()
 			MediaTextureSamplerNames[i] = FString::Printf(TEXT("ExternalTexture_%dSampler"), i);
 			VirtualTexturePageTableNames0[i] = FString::Printf(TEXT("VirtualTexturePageTable0_%d"), i);
 			VirtualTexturePageTableNames1[i] = FString::Printf(TEXT("VirtualTexturePageTable1_%d"), i);
-			VirtualTexturePhysicalNames[i] = FString::Printf(TEXT("VirtualTexturePhysicalTable_%d"), i);
-			VirtualTexturePhysicalSamplerNames[i] = FString::Printf(TEXT("VirtualTexturePhysicalTable_%dSampler"), i);
+			VirtualTexturePageTableIndirectionNames[i] = FString::Printf(TEXT("VirtualTexturePageTableIndirection_%d"), i);
+			VirtualTexturePhysicalNames[i] = FString::Printf(TEXT("VirtualTexturePhysical_%d"), i);
+			VirtualTexturePhysicalSamplerNames[i] = FString::Printf(TEXT("VirtualTexturePhysical_%dSampler"), i);
 		}
 	}
 
@@ -491,6 +494,8 @@ FShaderParametersMetadata* FUniformExpressionSet::CreateBufferStruct()
 			new(Members) FShaderParametersMetadata::FMember(*VirtualTexturePageTableNames1[i], TEXT("Texture2D<uint4>"), NextMemberOffset, UBMT_TEXTURE, EShaderPrecisionModifier::Float, 1, 1, 0, NULL);
 			NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
 		}
+		new(Members) FShaderParametersMetadata::FMember(*VirtualTexturePageTableIndirectionNames[i], TEXT("Texture2D<uint>"), NextMemberOffset, UBMT_TEXTURE, EShaderPrecisionModifier::Float, 1, 1, 0, NULL);
+		NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
 	}
 
 	for (int32 i = 0; i < UniformTextureParameters[(uint32)EMaterialTextureParameterType::Virtual].Num(); ++i)
@@ -628,15 +633,8 @@ static void GetVectorParameter(const FUniformExpressionSet& UniformExpressionSet
 	{
 		const bool bOveriddenParameterOnly = Parameter.ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter;
 
-		if (AreExperimentalMaterialLayersEnabled())
-		{
-			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
-			if (!Interface || !Interface->GetVectorParameterDefaultValue(Parameter.ParameterInfo, OutValue, bOveriddenParameterOnly))
-			{
-				bNeedsDefaultValue = true;
-			}
-		}
-		else
+		UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
+		if (!Interface || !Interface->GetVectorParameterDefaultValue(Parameter.ParameterInfo, OutValue, bOveriddenParameterOnly))
 		{
 			bNeedsDefaultValue = true;
 		}
@@ -664,15 +662,8 @@ static void GetScalarParameter(const FUniformExpressionSet& UniformExpressionSet
 	{
 		const bool bOveriddenParameterOnly = Parameter.ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter;
 
-		if (AreExperimentalMaterialLayersEnabled())
-		{
-			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
-			if (!Interface || !Interface->GetScalarParameterDefaultValue(Parameter.ParameterInfo, OutValue.A, bOveriddenParameterOnly))
-			{
-				bNeedsDefaultValue = true;
-			}
-		}
-		else
+		UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
+		if (!Interface || !Interface->GetScalarParameterDefaultValue(Parameter.ParameterInfo, OutValue.A, bOveriddenParameterOnly))
 		{
 			bNeedsDefaultValue = true;
 		}
@@ -1064,11 +1055,19 @@ void FUniformExpressionSet::GetTextureValue(EMaterialTextureParameterType Type, 
 	GetTextureParameterValue(Parameter.ParameterInfo, Parameter.TextureIndex, Context, OutValue);
 }
 
-void FUniformExpressionSet::GetTextureValue(int32 Index, const FMaterial& Material, const URuntimeVirtualTexture*& OutValue) const
+void FUniformExpressionSet::GetTextureValue(int32 Index, const FMaterialRenderContext& Context, const FMaterial& Material, const URuntimeVirtualTexture*& OutValue) const
 {
 	check(IsInParallelRenderingThread());
-	const FMaterialTextureParameterInfo& Parameter = GetTextureParameter(EMaterialTextureParameterType::Virtual, Index);
-	OutValue = GetIndexedTexture<URuntimeVirtualTexture>(Material, Parameter.TextureIndex);
+	const int32 VirtualTexturesNum = GetNumTextures(EMaterialTextureParameterType::Virtual);
+	if (ensure(Index < VirtualTexturesNum))
+	{
+		const FMaterialTextureParameterInfo& Parameter = GetTextureParameter(EMaterialTextureParameterType::Virtual, Index);
+		GetTextureParameterValue(Parameter.ParameterInfo, Parameter.TextureIndex, Context, OutValue);
+	}
+	else
+	{
+		OutValue = nullptr;
+	}
 }
 
 void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& MaterialRenderContext, const FUniformExpressionCache& UniformExpressionCache, uint8* TempBuffer, int TempBufferSize) const
@@ -1077,7 +1076,8 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 
 	if (UniformBufferLayout.ConstantBufferSize > 0)
 	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_FUniformExpressionSet_FillUniformBuffer);
+		// stat disabled by default due to low-value/high-frequency
+		//QUICK_SCOPE_CYCLE_COUNTER(STAT_FUniformExpressionSet_FillUniformBuffer);
 
 		void* BufferCursor = TempBuffer;
 		check(BufferCursor <= TempBuffer + TempBufferSize);
@@ -1131,7 +1131,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 			if (!bFoundTexture)
 			{
 				const URuntimeVirtualTexture* Texture = nullptr;
-				GetTextureValue(ExpressionIndex, MaterialRenderContext.Material, Texture);
+				GetTextureValue(ExpressionIndex, MaterialRenderContext, MaterialRenderContext.Material, Texture);
 				if (Texture != nullptr)
 				{
 					IAllocatedVirtualTexture const* AllocatedVT = Texture->GetAllocatedVirtualTexture();
@@ -1182,9 +1182,11 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 #if DO_CHECK
 		{
 			uint32 NumPageTableTextures = 0u;
+			uint32 NumPageTableIndirectionTextures = 0u;
 			for (int i = 0; i < VTStacks.Num(); ++i)
 			{
 				NumPageTableTextures += VTStacks[i].GetNumLayers() > 4u ? 2: 1;
+				NumPageTableIndirectionTextures++;
 			}
 	
 			check(UniformBufferLayout.Resources.Num() == 
@@ -1195,6 +1197,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				+ UniformExternalTextureParameters.Num() * 2
 				+ UniformTextureParameters[(uint32)EMaterialTextureParameterType::Virtual].Num() * 2
 				+ NumPageTableTextures
+				+ NumPageTableIndirectionTextures
 				+ 2);
 		}
 #endif // DO_CHECK
@@ -1255,7 +1258,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 			// It's possible for this command to trigger before a given material is cleaned up and removed from deferred update list
 			// Technically I don't think it's necessary to check 'Resource' for nullptr here, as if TextureReferenceRHI has been initialized, that should be enough
 			// Going to leave the check for now though, to hopefully avoid any unexpected problems
-			if (Value && Value->Resource && Value->TextureReference.TextureReferenceRHI && (Value->GetMaterialType() & ValidTextureTypes) != 0u)
+			if (Value && Value->Resource && Value->TextureReference.TextureReferenceRHI && Value->TextureReference.TextureReferenceRHI->GetReferencedTexture() && (Value->GetMaterialType() & ValidTextureTypes) != 0u)
 			{
 				FSamplerStateRHIRef* SamplerSource = &Value->Resource->SamplerStateRHI;
 
@@ -1461,6 +1464,9 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				BufferCursor = ((uint8*)BufferCursor) + SHADER_PARAMETER_POINTER_ALIGNMENT;
 			}
 
+			void** ResourceTablePageIndirectionBuffer = (void**)((uint8*)BufferCursor + 0 * SHADER_PARAMETER_POINTER_ALIGNMENT);
+			BufferCursor = ((uint8*)BufferCursor) + SHADER_PARAMETER_POINTER_ALIGNMENT;
+
 			const IAllocatedVirtualTexture* AllocatedVT = UniformExpressionCache.AllocatedVTs[VTStackIndex];
 			if (AllocatedVT != nullptr)
 			{
@@ -1474,6 +1480,10 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 					ensure(PageTable1RHI);
 					*ResourceTablePageTexture1Ptr = PageTable1RHI;
 				}
+
+				FRHITexture* PageTableIndirectionRHI = AllocatedVT->GetPageTableIndirectionTexture();
+				ensure(PageTableIndirectionRHI);
+				*ResourceTablePageIndirectionBuffer = PageTableIndirectionRHI;
 			}
 			else
 			{
@@ -1483,6 +1493,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					*ResourceTablePageTexture1Ptr = GBlackUintTexture->TextureRHI;
 				}
+				*ResourceTablePageIndirectionBuffer = GBlackUintTexture->TextureRHI;
 			}
 		}
 
@@ -1528,7 +1539,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 			if (!bValidResources)
 			{
 				const URuntimeVirtualTexture* Texture = nullptr;
-				GetTextureValue(ExpressionIndex, MaterialRenderContext.Material, Texture);
+				GetTextureValue(ExpressionIndex, MaterialRenderContext, MaterialRenderContext.Material, Texture);
 				if (Texture != nullptr)
 				{
 					IAllocatedVirtualTexture const* AllocatedVT = Texture->GetAllocatedVirtualTexture();
@@ -1683,6 +1694,7 @@ FMaterialUniformExpressionExternalTextureParameter::FMaterialUniformExpressionEx
 
 FMaterialUniformExpressionExternalTextureParameter::FMaterialUniformExpressionExternalTextureParameter(FName InParameterName, int32 InTextureIndex)
 	: Super(InTextureIndex)
+	, ParameterName(InParameterName)
 {}
 
 void FMaterialUniformExpressionExternalTextureParameter::GetExternalTextureParameterInfo(FMaterialExternalTextureParameterInfo& OutParameter) const
@@ -1772,7 +1784,7 @@ void FMaterialTextureParameterInfo::GetGameThreadTextureValue(const UMaterialInt
 {
 	if (!ParameterInfo.Name.IsNone())
 	{
-		const bool bOverrideValuesOnly = !AreExperimentalMaterialLayersEnabled();
+		const bool bOverrideValuesOnly = false;
 		if (!MaterialInterface->GetTextureParameterValue(ParameterInfo, OutValue, bOverrideValuesOnly))
 		{
 			OutValue = GetIndexedTexture<UTexture>(Material, TextureIndex);

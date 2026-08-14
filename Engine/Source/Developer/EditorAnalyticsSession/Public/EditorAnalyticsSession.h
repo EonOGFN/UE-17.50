@@ -10,12 +10,13 @@
 
 struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 {
-	enum class EEventType
+	enum class EEventType : int32
 	{
 		Crashed = 0,
 		GpuCrashed,
 		Terminated,
 		Shutdown,
+		LogOut,
 	};
 
 	FString SessionId;
@@ -32,10 +33,13 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 	uint32 PlatformProcessID;
 	uint32 MonitorProcessID; // Set to the CrashReportClientEditor PID when out-of-process reporting is used.
 	TOptional<int32> ExitCode; // Set by CrashReportClientEditor after the Editor process exit when out-of-process reporting is used and reading the exit code is supported.
-	TOptional<int32> MonitorExceptCode; // Set by CrashReportClientEditor if an exception is caught by monitoring the Editor. This is to detect if CRC crashes itself.
+	TOptional<int32> MonitorExceptCode; // Set in CrashReportClientEditor process when an exception or an error is caught.
+	TOptional<int32> MonitorExitCode; // Set in the Editor process when the Editor detects that CrashReportClientEditor process unexpectedly died.
 
-	FDateTime StartupTimestamp;
-	FDateTime Timestamp;
+	FDateTime StartupTimestamp; // Wall time (UTC) when the session started.
+	FDateTime Timestamp; // Wall time (UTC) when the session was ended.
+	FDateTime LastTickTimestamp; // Wall time (UTC) of the last engine tick recorded for the session.
+	TOptional<FDateTime> DeathTimestamp; // Wall time (UTC) of the Editor death from CRC p.o.v. (when CRC observed the Editor death)
 	volatile int32 SessionDuration = 0; // The session duration in seconds, computed using FPlatformTime::Seconds() rather than Timestamp - StartupTimestamp which can be affected by daylight saving.
 	volatile int32 IdleSeconds = 0; // Can be updated from concurrent threads.
 	volatile int32 Idle1Min = 0;
@@ -46,6 +50,10 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 	TArray<FString> Plugins;
 	float AverageFPS;
 
+	uint64 SessionTickCount = 0; // Number of times the analytic session was ticked. Zero is the interesting value. If the Editor is hang during boot, some users may be prompt to kill it.
+	uint64 EngineTickCount = 0;  // Number or times the engine was ticked.
+	uint32 UserInteractionCount = 0; // Number of slate user interactions. Zero is the interesting value. If the Editor UI hang at start up, some users may be prompt to kill it.
+
 	FString DesktopGPUAdapter;
 	FString RenderingGPUAdapter;
 	uint32 GPUVendorID;
@@ -53,6 +61,7 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 	uint32 GRHIDeviceRevision;
 	FString GRHIAdapterInternalDriverVersion;
 	FString GRHIAdapterUserDriverVersion;
+	FString GRHIName;
 
 	uint64 TotalPhysicalRAM;
 	int32 CPUPhysicalCores;
@@ -60,6 +69,7 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 	FString CPUVendor;
 	FString CPUBrand;
 
+	FString CommandLine;
 	FString OSMajor;
 	FString OSMinor;
 	FString OSVersion;
@@ -72,10 +82,13 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 	bool bIsVanilla : 1;
 	bool bIsTerminating : 1;
 	bool bWasShutdown : 1;
+	bool bIsUserLoggingOut: 1; // Also cover shutdown/reboot as logging out is part of the process. Logging out currently end up as an abnormal termination.
 	bool bIsInPIE : 1;
 	bool bIsInEnterprise : 1;
 	bool bIsInVRMode : 1;
 	bool bIsLowDriveSpace : 1;
+	bool bIsCrcExeMissing: 1; // CrashReportClient executable is missing? To explain with MonitorProcessID would be zero.
+	bool bIsDebuggerIgnored: 1; // True if GIgnoreDebugger is true.
 
 	FEditorAnalyticsSession();
 
@@ -172,17 +185,19 @@ struct EDITORANALYTICSSESSION_API FEditorAnalyticsSession
 
 	/**
 	 * Persist the Editor exit code corresponding of this session in the key-store value.
+	 * @return true if the exit code is persisted with the session data.
 	 * @node This function should only be called by the out of process monitor when the process exit value is known.
 	 */
-	void SaveExitCode(int32 ExitCode);
+	bool SaveExitCode(int32 ExitCode, const FDateTime& ApproximativeDeathTimeUtc);
 
 	/**
 	 * Set the exception code that caused the monitor application to crash. When the monitoring application raises
 	 * and catches an unexpected exception, it tries to save the exception code it in the session before dying.
+	 * @return true if the exception code is persisted with the session data.
 	 * @note This is to diagnose the cases where CrashReportClientEditor send the summary event delayed and without
 	 *       the Editor exit code.
 	 */
-	void SaveMonitorExceptCode(int32 ExceptCode);
+	bool SaveMonitorExceptCode(int32 ExceptCode);
 
 private:
 	static FSystemWideCriticalSection* StoredValuesLock;

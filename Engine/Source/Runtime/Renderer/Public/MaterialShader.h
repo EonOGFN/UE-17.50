@@ -73,8 +73,8 @@ struct FMaterialShaderPermutationParameters : public FShaderPermutationParameter
 {
 	FMaterialShaderParameters MaterialParameters;
 
-	FMaterialShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, int32 InPermutationId)
-		: FShaderPermutationParameters(InPlatform, InPermutationId)
+	FMaterialShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, int32 InPermutationId, EShaderPermutationFlags InFlags)
+		: FShaderPermutationParameters(InPlatform, InPermutationId, InFlags)
 		, MaterialParameters(InMaterialParameters)
 	{}
 };
@@ -89,11 +89,7 @@ public:
 
 	static FName UniformBufferLayoutName;
 
-	FMaterialShader()
-#if WITH_EDITORONLY_DATA
-		: DebugUniformExpressionUBLayout(FRHIUniformBufferLayout::Zero)
-#endif
-	{}
+	FMaterialShader() = default;
 
 	FMaterialShader(const FMaterialShaderType::CompiledShaderInitializerType& Initializer);
 

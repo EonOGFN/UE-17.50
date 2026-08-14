@@ -1219,7 +1219,7 @@ bool FEditorBuildUtils::EditorBuildTextureStreaming(UWorld* InWorld, EViewModeIn
 
 		if (Materials.Num())
 		{
-			if (!CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, SelectedViewMode == VMI_Unknown, true, Materials, &BuildTextureStreamingTask))
+			if (!CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, Materials, &BuildTextureStreamingTask))
 			{
 				return false;
 			}
@@ -1337,7 +1337,7 @@ bool FEditorBuildUtils::EditorBuildMaterialTextureStreamingData(UPackage* Packag
 	const float OneOverNumMaterials = 1.f / FMath::Max(1.f, (float)Materials.Num());
 
 	bool bAnyPackagesDirtied = false;
-	if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, true, true, Materials, &SlowTask))
+	if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, Materials, &SlowTask))
 	{
 		FMaterialUtilities::FExportErrorManager ExportErrors(FeatureLevel);
 		for (UMaterialInterface* MaterialInterface : Materials)
@@ -1402,7 +1402,7 @@ bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 	TArray<URuntimeVirtualTextureComponent*> Components;
 	for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
 	{
-		if (Module->HasStreamedMips(*It) || Module->HasMinMaxHeightTexture(*It))
+		if (Module->HasStreamedMips(*It))
 		{
 			Components.Add(*It);
 		}
@@ -1421,7 +1421,7 @@ bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 		BuildTask.EnterProgressFrame();
 
 		// Note that Build*() functions return true if the associated Has*() functions return false
-		if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component) || !Module->BuildMinMaxHeightTexture(Component))
+		if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component))
 		{
 			return false;
 		}

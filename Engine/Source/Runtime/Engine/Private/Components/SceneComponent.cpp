@@ -1374,7 +1374,7 @@ void USceneComponent::SetRelativeScale3D(FVector NewScale3D)
 	{
 		if (NewScale3D.ContainsNaN())
 		{
-			UE_LOG(LogBlueprint, Warning, TEXT("SetRelativeScale3D : Invalid Scale entered (%s). Resetting to 1.f."), *NewScale3D.ToString());
+			UE_LOG(LogBlueprint, Warning, TEXT("SetRelativeScale3D : Invalid Scale (%s) set for '%s'. Resetting to 1.f."), *NewScale3D.ToString(), *GetFullName());
 			NewScale3D = FVector(1.f);
 		}
 
@@ -3206,9 +3206,9 @@ void USceneComponent::OnRep_AttachChildren()
 	{
 		for (USceneComponent* AttachChild : AttachChildren)
 		{
-			if (AttachChild)
+			// Clear out any initially attached components from the ClientAttachedChildren array that end up becoming replicated, but only if the child now is NetSimulating.
+			if (AttachChild && AttachChild->IsNetSimulating())
 			{
-				// Clear out any initially attached components from the client attached list that end up becoming replicated
 				ClientAttachedChildren.Remove(AttachChild);
 			}
 		}
@@ -3266,11 +3266,11 @@ void USceneComponent::PostRepNotifies()
 		Exchange(NetOldAttachSocketName, AttachSocketName);
 		
 		// Note: This is a local fix for JIRA UE-43355.
-		if (bShouldSnapLocationWhenAttached)
+		if (bShouldSnapLocationWhenAttached && !bNetUpdateTransform)
 		{
 			SetRelativeLocation_Direct(FVector::ZeroVector);
 		}
-		if (bShouldSnapRotationWhenAttached)
+		if (bShouldSnapRotationWhenAttached && !bNetUpdateTransform)
 		{
 			SetRelativeRotation_Direct(FRotator::ZeroRotator);
 		}
@@ -3300,7 +3300,7 @@ void USceneComponent::PostRepNotifies()
 
 	if (bNetUpdateTransform)
 	{
-		UpdateComponentToWorld(EUpdateTransformFlags::SkipPhysicsUpdate);
+		UpdateComponentToWorld();
 		bNetUpdateTransform = false;
 	}
 }
@@ -3342,9 +3342,13 @@ void USceneComponent::PostEditComponentMove(bool bFinished)
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		// Call on all attached children
-		for (USceneComponent* ChildComponent : GetAttachChildren())
+		TArray<USceneComponent*> AttachChildrenCopy(GetAttachChildren());
+		for (USceneComponent* ChildComponent : AttachChildrenCopy)
 		{
-			ChildComponent->PostEditComponentMove(bFinished);
+			if (ChildComponent)
+			{
+				ChildComponent->PostEditComponentMove(bFinished);
+			}
 		}
 	}
 }

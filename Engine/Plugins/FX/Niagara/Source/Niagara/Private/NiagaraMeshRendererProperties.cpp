@@ -5,12 +5,12 @@
 #include "Engine/StaticMesh.h"
 #include "NiagaraConstants.h"
 #include "NiagaraBoundsCalculatorHelper.h"
+#include "NiagaraCustomVersion.h"
 #include "Modules/ModuleManager.h"
 #if WITH_EDITOR
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
-#include "Styling/SlateBrush.h"
 #include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
 #endif
@@ -87,8 +87,42 @@ FNiagaraBoundsCalculator* UNiagaraMeshRendererProperties::CreateBoundsCalculator
 {
 	if (ParticleMesh)
 	{
+		FBox LocalBounds = ParticleMesh->GetBounds().GetBox();
+		FVector MeshOffset(ForceInitToZero);
+		ENiagaraBoundsMeshOffsetTransform MeshOffsetTransform = ENiagaraBoundsMeshOffsetTransform::None;
+		if (PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::Mesh)
+		{
+			// Offset the local bounds
+			LocalBounds = LocalBounds.ShiftBy(PivotOffset);
+		}
+		else
+		{
+			// Offset is in either system-local or world space, and we need to decide how to transform it, if at all
+			MeshOffset = PivotOffset;
+
+			if (PivotOffsetSpace != ENiagaraMeshPivotOffsetSpace::Simulation)
+			{
+				bool bLocalSpace = false;
+				if (UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(GetOuter()))
+				{
+					bLocalSpace = Emitter->bLocalSpace;
+				}
+
+				if (bLocalSpace && PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::World)
+				{
+					MeshOffsetTransform = ENiagaraBoundsMeshOffsetTransform::WorldToLocal;
+				}
+				else if (!bLocalSpace && PivotOffsetSpace == ENiagaraMeshPivotOffsetSpace::Local)
+				{
+					MeshOffsetTransform = ENiagaraBoundsMeshOffsetTransform::LocalToWorld;
+				}
+			}			
+		}
+
+		// Take the bounding center into account with the extents, as it may not be at the origin
+		const FVector Extents = LocalBounds.Max.GetAbs().ComponentMax(LocalBounds.Min.GetAbs());
 		FNiagaraBoundsCalculatorHelper<false, true, false>* BoundsCalculator
-			= new FNiagaraBoundsCalculatorHelper<false, true, false>(ParticleMesh->GetBounds().BoxExtent);
+			= new FNiagaraBoundsCalculatorHelper<false, true, false>(Extents, MeshOffset, MeshOffsetTransform);
 		return BoundsCalculator;
 	}
 
@@ -202,9 +236,9 @@ void UNiagaraMeshRendererProperties::CacheFromCompiledData(const FNiagaraDataSet
 
 void UNiagaraMeshRendererProperties::GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const
 {
-	if (ParticleMesh && ParticleMesh->RenderData)
+	if (ParticleMesh && ParticleMesh->GetRenderData())
 	{
-		const FStaticMeshLODResources& LODModel = ParticleMesh->RenderData->LODResources[0];
+		const FStaticMeshLODResources& LODModel = ParticleMesh->GetRenderData()->LODResources[0];
 		if (bOverrideMaterials)
 		{
 			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
@@ -255,17 +289,17 @@ void UNiagaraMeshRendererProperties::GetUsedMaterials(const FNiagaraEmitterInsta
 uint32 UNiagaraMeshRendererProperties::GetNumIndicesPerInstance() const
 {
 	// TODO: Add proper support for multiple mesh sections for GPU mesh particles.
-	//return ParticleMesh ? ParticleMesh->RenderData->LODResources[0].Sections[0].NumTriangles * 3 : 0;
-	return ParticleMesh && ParticleMesh->RenderData ? ParticleMesh->RenderData->LODResources[0].IndexBuffer.GetNumIndices() : 0;
+	//return ParticleMesh ? ParticleMesh->GetRenderData()->LODResources[0].Sections[0].NumTriangles * 3 : 0;
+	return ParticleMesh && ParticleMesh->GetRenderData() ? ParticleMesh->GetRenderData()->LODResources[0].IndexBuffer.GetNumIndices() : 0;
 }
 
 void UNiagaraMeshRendererProperties::GetIndexInfoPerSection(int32 LODIndex, TArray<TPair<int32, int32>>& IndexInfoPerSection) const
 {
-	check(ParticleMesh && ParticleMesh->RenderData && ParticleMesh->RenderData->LODResources.IsValidIndex(LODIndex));
+	check(ParticleMesh && ParticleMesh->GetRenderData() && ParticleMesh->GetRenderData()->LODResources.IsValidIndex(LODIndex));
 
-	if (ParticleMesh && ParticleMesh->RenderData->LODResources.IsValidIndex(LODIndex))
+	if (ParticleMesh && ParticleMesh->GetRenderData()->LODResources.IsValidIndex(LODIndex))
 	{
-		const FStaticMeshLODResources& MeshLod = ParticleMesh->RenderData->LODResources[LODIndex];
+		const FStaticMeshLODResources& MeshLod = ParticleMesh->GetRenderData()->LODResources[LODIndex];
 		const int32 SectionCount = MeshLod.Sections.Num();
 		IndexInfoPerSection.SetNum(SectionCount);
 
@@ -411,12 +445,23 @@ void UNiagaraMeshRendererProperties::PostEditChangeProperty(FPropertyChangedEven
 	SubImageSize.Y = FMath::Max<float>(SubImageSize.Y, 1.f);
 
 	static FName ParticleMeshName(TEXT("ParticleMesh"));
-	if (ParticleMesh && PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == ParticleMeshName)
+
+	if (ParticleMesh)
 	{
-		// We only need to check material usage as we will invalidate any renderers later on
-		CheckMaterialUsage();
-		ParticleMesh->GetOnMeshChanged().AddUObject(this, &UNiagaraMeshRendererProperties::OnMeshChanged);
-		ParticleMesh->OnPostMeshBuild().AddUObject(this, &UNiagaraMeshRendererProperties::OnMeshPostBuild);
+		const bool IsRedirect = PropertyChangedEvent.ChangeType == EPropertyChangeType::Redirected;
+		if (IsRedirect)
+		{
+			// Do this in case the redirected property is not ParticleMesh (we have no way of knowing b/c the property is nullptr)
+			ParticleMesh->GetOnMeshChanged().RemoveAll(this);
+			ParticleMesh->OnPostMeshBuild().RemoveAll(this);
+		}
+		if (IsRedirect || (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == ParticleMeshName))
+		{
+			// We only need to check material usage as we will invalidate any renderers later on
+			CheckMaterialUsage();
+			ParticleMesh->GetOnMeshChanged().AddUObject(this, &UNiagaraMeshRendererProperties::OnMeshChanged);
+			ParticleMesh->OnPostMeshBuild().AddUObject(this, &UNiagaraMeshRendererProperties::OnMeshPostBuild);
+		}
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -442,9 +487,9 @@ void UNiagaraMeshRendererProperties::OnMeshPostBuild(UStaticMesh*)
 
 void UNiagaraMeshRendererProperties::CheckMaterialUsage()
 {
-	if (ParticleMesh && ParticleMesh->RenderData)
+	if (ParticleMesh && ParticleMesh->GetRenderData())
 	{
-		const FStaticMeshLODResources& LODModel = ParticleMesh->RenderData->LODResources[0];
+		const FStaticMeshLODResources& LODModel = ParticleMesh->GetRenderData()->LODResources[0];
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
 			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];

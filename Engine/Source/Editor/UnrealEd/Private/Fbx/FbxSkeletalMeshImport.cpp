@@ -1745,6 +1745,8 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	FSkeletalMeshBuildSettings BuildOptions;
 	//Make sure the build option change in the re-import ui is reconduct
 	BuildOptions.bBuildAdjacencyBuffer = true;
+	BuildOptions.bUseFullPrecisionUVs = false;
+	BuildOptions.bUseHighPrecisionTangentBasis = false;
 	BuildOptions.bRecomputeNormals = !ImportOptions->ShouldImportNormals() || !SkelMeshImportDataPtr->bHasNormals;
 	BuildOptions.bRecomputeTangents = !ImportOptions->ShouldImportTangents() || !SkelMeshImportDataPtr->bHasTangents;
 	BuildOptions.bUseMikkTSpace = (ImportOptions->NormalGenerationMethod == EFBXNormalGenerationMethod::MikkTSpace) && (!ImportOptions->ShouldImportNormals() || !ImportOptions->ShouldImportTangents());
@@ -1764,10 +1766,13 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 		FSkeletalMeshLODInfo* LODInfoPtr = ExistingSkelMesh->GetLODInfo(SafeReimportLODIndex);
 		if (LODInfoPtr)
 		{
-			//Adjacency buffer cannot be change in the re-import options, it must be backup before and restored after the copy.
-			bool bBuildAdjacencyBuffer = LODInfoPtr->BuildSettings.bBuildAdjacencyBuffer;
+			//Adjacency buffer, full precision UV and High precision tangent cannot be change in the re-import options, it must not be change from the original data.
+			BuildOptions.bBuildAdjacencyBuffer = LODInfoPtr->BuildSettings.bBuildAdjacencyBuffer;
+			BuildOptions.bUseFullPrecisionUVs = LODInfoPtr->BuildSettings.bUseFullPrecisionUVs;
+			BuildOptions.bUseHighPrecisionTangentBasis = LODInfoPtr->BuildSettings.bUseHighPrecisionTangentBasis;
+
+			//Copy all the build option to reflect any change in the setting using the re-import UI
 			LODInfoPtr->BuildSettings = BuildOptions;
-			LODInfoPtr->BuildSettings.bBuildAdjacencyBuffer = bBuildAdjacencyBuffer;
 		}
 		//The backup of the skeletal mesh data empty the LOD array in the ImportedResource of the skeletal mesh
 		//If the import fail after this step the editor can crash when updating the bone later since the LODModel will not exist anymore
@@ -1813,7 +1818,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 		UE_LOG(LogFbx, Warning, TEXT("Bones digested - %i  Depth of hierarchy - %i"), SkeletalMesh->RefSkeleton.GetNum(), SkeletalDepth);
 
 	// process bone influences from import data
-	SkeletalMeshHelper::ProcessImportMeshInfluences(*SkelMeshImportDataPtr);
+	SkeletalMeshHelper::ProcessImportMeshInfluences(*SkelMeshImportDataPtr, SkeletalMesh->GetPathName());
 
 	//Store the original fbx import data the SkelMeshImportDataPtr should not be modified after this
 	SkeletalMesh->SaveLODImportedData(ImportLODModelIndex, *SkelMeshImportDataPtr);
@@ -1867,7 +1872,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 			TArray<FText> WarningMessages;
 			TArray<FName> WarningNames;
 			// Create actual rendering data.
-			bBuildSuccess = MeshUtilities.BuildSkeletalMesh(ImportedResource->LODModels[ImportLODModelIndex], SkeletalMesh->RefSkeleton, LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, LegacyBuildOptions, &WarningMessages, &WarningNames);
+			bBuildSuccess = MeshUtilities.BuildSkeletalMesh(ImportedResource->LODModels[ImportLODModelIndex], SkeletalMesh->GetPathName(), SkeletalMesh->RefSkeleton, LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, LegacyBuildOptions, &WarningMessages, &WarningNames);
 
 			// temporary hack of message/names, should be one token or a struct
 			if (WarningMessages.Num() > 0 && WarningNames.Num() == WarningMessages.Num())
@@ -1998,9 +2003,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 			if(bFirstMesh || (LastMergeBonesChoice != EAppReturnType::NoAll && LastMergeBonesChoice != EAppReturnType::YesAll))
 			{
 				LastMergeBonesChoice = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAllCancel,
-					LOCTEXT("SkeletonFailed_BoneMerge", "FAILED TO MERGE BONES:\n\n This could happen if significant hierarchical changes have been made\n"
-					"e.g. inserting a bone between nodes.\nWould you like to regenerate the Skeleton from this mesh?\n\n"
-					"***WARNING: THIS MAY INVALIDATE OR REQUIRE RECOMPRESSION OF ANIMATION DATA.***\n"));
+					LOCTEXT("SkeletonFailed_BoneMerge", "FAILED TO MERGE BONES:\n\n This could happen if significant hierarchical changes have been made\ne.g. inserting a bone between nodes.\nWould you like to regenerate the Skeleton from this mesh?\n\n***WARNING: THIS MAY INVALIDATE OR REQUIRE RECOMPRESSION OF ANIMATION DATA.***\n"));
 				bToastSaveMessage = true;
 			}
 			
@@ -2238,9 +2241,9 @@ void UnFbx::FFbxImporter::UpdateSkeletalMeshImportData(USkeletalMesh *SkeletalMe
 UObject* UnFbx::FFbxImporter::CreateAssetOfClass(UClass* AssetClass, FString ParentPackageName, FString ObjectName, bool bAllowReplace)
 {
 	// See if this sequence already exists.
-	UObject* 	ParentPkg = CreatePackage(NULL, *ParentPackageName);
+	UObject* 	ParentPkg = CreatePackage( *ParentPackageName);
 	FString 	ParentPath = FString::Printf(TEXT("%s/%s"), *FPackageName::GetLongPackagePath(*ParentPackageName), *ObjectName);
-	UObject* 	Parent = CreatePackage(NULL, *ParentPath);
+	UObject* 	Parent = CreatePackage( *ParentPath);
 	// See if an object with this name exists
 	UObject* Object = LoadObject<UObject>(Parent, *ObjectName, NULL, LOAD_NoWarn | LOAD_Quiet, NULL);
 
@@ -3784,6 +3787,7 @@ void UnFbx::FFbxImporter::InsertNewLODToBaseSkeletalMesh(USkeletalMesh* InSkelet
 							//We found a match, restore the data
 							NewSection.bCastShadow = ExistSection.bCastShadow;
 							NewSection.bRecomputeTangent = ExistSection.bRecomputeTangent;
+							NewSection.RecomputeTangentsVertexMaskChannel = ExistSection.RecomputeTangentsVertexMaskChannel;
 							NewSection.bDisabled = ExistSection.bDisabled;
 							NewSection.GenerateUpToLodIndex = ExistSection.GenerateUpToLodIndex;
 							bool bBoneChunkedSection = NewSection.ChunkedParentSectionIndex >= 0;
@@ -3794,7 +3798,8 @@ void UnFbx::FFbxImporter::InsertNewLODToBaseSkeletalMesh(USkeletalMesh* InSkelet
 								FSkelMeshSourceSectionUserData& UserSectionData = NewLODModel.UserSectionsData.FindOrAdd(ParentOriginalSectionIndex);
 								UserSectionData.bDisabled = NewSection.bDisabled;
 								UserSectionData.bCastShadow = NewSection.bCastShadow;
-								UserSectionData.bRecomputeTangent = NewSection.bRecomputeTangent;
+								UserSectionData.bRecomputeTangent = NewSection.bRecomputeTangent;					
+								UserSectionData.RecomputeTangentsVertexMaskChannel = NewSection.RecomputeTangentsVertexMaskChannel;
 								UserSectionData.GenerateUpToLodIndex = NewSection.GenerateUpToLodIndex;
 								//The cloth will be rebind later after the reimport is done
 							}
@@ -4041,98 +4046,97 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 
 	if (!bApplyBaseSkinning)
 	{
-		//Fix up the new LOD import data to use the same bone hierarchy order has the base LOD
-		if (!InSkeletalMesh->IsLODImportedDataEmpty(0))
+		//The imported LOD is always in LOD 0 of the InSkeletalMesh
+		const int32 SourceLODIndex = 0;
+		if(!InSkeletalMesh->IsLODImportedDataEmpty(SourceLODIndex))
 		{
-			FSkeletalMeshImportData SkeletalMeshImportData;
-			InSkeletalMesh->LoadLODImportedData(0, SkeletalMeshImportData);
-			int32 ImportBoneCount = SkeletalMeshImportData.RefBonesBinary.Num();
-			TArray<SkeletalMeshImportData::FBone> MergedRefBonesBinary;
-			TArray<int32> RemapBoneIndex;
-			RemapBoneIndex.AddZeroed(ImportBoneCount);
-
-			//AddZeroed the base ref skeleton array, we don't care if the LOD do not use all entries
-			MergedRefBonesBinary.AddZeroed(BaseSkeletalMesh->RefSkeleton.GetNum());
-
-			//Build the remap and the replacement array
-			for (int32 ImportBoneIndex = 0; ImportBoneIndex < ImportBoneCount; ++ImportBoneIndex)
+			// Fix up the imported data bone indexes
+			FSkeletalMeshImportData LODImportData;
+			InSkeletalMesh->LoadLODImportedData(SourceLODIndex, LODImportData);
+			const int32 LODImportDataBoneNumber = LODImportData.RefBonesBinary.Num();
+			//We want to create a remap array so we can fix all influence easily
+			TArray<int32> ImportDataBoneRemap;
+			ImportDataBoneRemap.AddZeroed(LODImportDataBoneNumber);
+			//We generate a new RefBonesBinary array to replace the existing one
+			TArray<SkeletalMeshImportData::FBone> RemapedRefBonesBinary;
+			RemapedRefBonesBinary.AddZeroed(BaseSkeletalMesh->RefSkeleton.GetNum());
+			for (int32 ImportBoneIndex = 0; ImportBoneIndex < LODImportDataBoneNumber; ++ImportBoneIndex)
 			{
-				const SkeletalMeshImportData::FBone& ImportBone = SkeletalMeshImportData.RefBonesBinary[ImportBoneIndex];
-				FName LODBoneName(ImportBone.Name);
-
+				SkeletalMeshImportData::FBone& ImportedBone = LODImportData.RefBonesBinary[ImportBoneIndex];
+				int32 LODBoneIndex = ImportBoneIndex;
+				FName LODBoneName = FName(*ImportedBone.Name);
 				int32 BaseBoneIndex = BaseSkeletalMesh->RefSkeleton.FindBoneIndex(LODBoneName);
-				if (BaseBoneIndex == INDEX_NONE)
+				ImportDataBoneRemap[ImportBoneIndex] = BaseBoneIndex;
+				if (BaseBoneIndex != INDEX_NONE)
 				{
-					//Added Bones, we store them at the end of the LOD ref skeleton
-					RemapBoneIndex[ImportBoneIndex] = MergedRefBonesBinary.Add(ImportBone);
-
-				}
-				else
-				{
-					RemapBoneIndex[ImportBoneIndex] = BaseBoneIndex;
-					MergedRefBonesBinary[BaseBoneIndex] = ImportBone;
+					RemapedRefBonesBinary[BaseBoneIndex] = ImportedBone;
+					if(RemapedRefBonesBinary[BaseBoneIndex].ParentIndex != INDEX_NONE)
+					{
+						RemapedRefBonesBinary[BaseBoneIndex].ParentIndex = ImportDataBoneRemap[RemapedRefBonesBinary[BaseBoneIndex].ParentIndex];
+					}
 				}
 			}
-			//Remap the parent
-			for (int32 ImportBoneIndex = 0; ImportBoneIndex < ImportBoneCount; ++ImportBoneIndex)
+			//Copy the new RefBonesBinary over the existing one
+			LODImportData.RefBonesBinary = RemapedRefBonesBinary;
+		
+			//Fix the influences
+			bool bNeedShrinking = false;
+			const int32 InfluenceNumber = LODImportData.Influences.Num();
+			for (int32 InfluenceIndex = InfluenceNumber-1; InfluenceIndex >= 0; --InfluenceIndex)
 			{
-				SkeletalMeshImportData::FBone& ImportBone = MergedRefBonesBinary[ImportBoneIndex];
-				int32 OriginalParentindex = ImportBone.ParentIndex;
-				if (OriginalParentindex != INDEX_NONE && RemapBoneIndex.IsValidIndex(OriginalParentindex))
+				SkeletalMeshImportData::FRawBoneInfluence& Influence = LODImportData.Influences[InfluenceIndex];
+				Influence.BoneIndex = ImportDataBoneRemap[Influence.BoneIndex];
+				if (Influence.BoneIndex == INDEX_NONE)
 				{
-					ImportBone.ParentIndex = RemapBoneIndex[OriginalParentindex];
+					const int32 DeleteCount = 1;
+					const bool AllowShrink = false;
+					LODImportData.Influences.RemoveAt(InfluenceIndex, DeleteCount, AllowShrink);
+					bNeedShrinking = true;
 				}
 			}
-
-			//Copy the merged bone array
-			SkeletalMeshImportData.RefBonesBinary = MergedRefBonesBinary;
-
-			//Remap the influences
-			const int32 InfluenceCount = SkeletalMeshImportData.Influences.Num();
-			for (int32 InfluenceIndex = 0; InfluenceIndex < InfluenceCount; ++InfluenceIndex)
+			//Shrink the array if we have deleted at least one entry
+			if(bNeedShrinking)
 			{
-				SkeletalMeshImportData::FRawBoneInfluence& Influence = SkeletalMeshImportData.Influences[InfluenceIndex];
-				Influence.BoneIndex = RemapBoneIndex[Influence.BoneIndex];
+				LODImportData.Influences.Shrink();
 			}
-
-			//Save the fixed ImportData
-			InSkeletalMesh->SaveLODImportedData(0, SkeletalMeshImportData);
+			//Save the fix up remap bone index
+			InSkeletalMesh->SaveLODImportedData(SourceLODIndex, LODImportData);
 		}
 
 		// Fix up the ActiveBoneIndices array.
-		for (int32 i = 0; i < NewLODModel.ActiveBoneIndices.Num(); i++)
+		for (int32 ActiveIndex = 0; ActiveIndex < NewLODModel.ActiveBoneIndices.Num(); ActiveIndex++)
 		{
-			int32 LODBoneIndex = NewLODModel.ActiveBoneIndices[i];
+			int32 LODBoneIndex = NewLODModel.ActiveBoneIndices[ActiveIndex];
 			FName LODBoneName = InSkeletalMesh->RefSkeleton.GetBoneName(LODBoneIndex);
 			int32 BaseBoneIndex = BaseSkeletalMesh->RefSkeleton.FindBoneIndex(LODBoneName);
-			NewLODModel.ActiveBoneIndices[i] = BaseBoneIndex;
+			NewLODModel.ActiveBoneIndices[ActiveIndex] = BaseBoneIndex;
 		}
 
 		// Fix up the chunk BoneMaps.
 		for (int32 SectionIndex = 0; SectionIndex < NewLODModel.Sections.Num(); SectionIndex++)
 		{
 			FSkelMeshSection& Section = NewLODModel.Sections[SectionIndex];
-			for (int32 i = 0; i < Section.BoneMap.Num(); i++)
+			for (int32 BoneMapIndex = 0; BoneMapIndex < Section.BoneMap.Num(); BoneMapIndex++)
 			{
-				int32 LODBoneIndex = Section.BoneMap[i];
+				int32 LODBoneIndex = Section.BoneMap[BoneMapIndex];
 				FName LODBoneName = InSkeletalMesh->RefSkeleton.GetBoneName(LODBoneIndex);
 				int32 BaseBoneIndex = BaseSkeletalMesh->RefSkeleton.FindBoneIndex(LODBoneName);
-				Section.BoneMap[i] = BaseBoneIndex;
+				Section.BoneMap[BoneMapIndex] = BaseBoneIndex;
 			}
 		}
 
 		// Create the RequiredBones array in the LODModel from the ref skeleton.
-		for (int32 i = 0; i < NewLODModel.RequiredBones.Num(); i++)
+		for (int32 RequiredBoneIndex = 0; RequiredBoneIndex < NewLODModel.RequiredBones.Num(); RequiredBoneIndex++)
 		{
-			FName LODBoneName = InSkeletalMesh->RefSkeleton.GetBoneName(NewLODModel.RequiredBones[i]);
+			FName LODBoneName = InSkeletalMesh->RefSkeleton.GetBoneName(NewLODModel.RequiredBones[RequiredBoneIndex]);
 			int32 BaseBoneIndex = BaseSkeletalMesh->RefSkeleton.FindBoneIndex(LODBoneName);
 			if (BaseBoneIndex != INDEX_NONE)
 			{
-				NewLODModel.RequiredBones[i] = BaseBoneIndex;
+				NewLODModel.RequiredBones[RequiredBoneIndex] = BaseBoneIndex;
 			}
 			else
 			{
-				NewLODModel.RequiredBones.RemoveAt(i--);
+				NewLODModel.RequiredBones.RemoveAt(RequiredBoneIndex--);
 			}
 		}
 
@@ -4205,6 +4209,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 						//Set the value and exit
 						ImportedSection.bCastShadow = ExistingSection.bCastShadow;
 						ImportedSection.bRecomputeTangent = ExistingSection.bRecomputeTangent;
+						ImportedSection.RecomputeTangentsVertexMaskChannel = ExistingSection.RecomputeTangentsVertexMaskChannel;
 						break;
 					}
 				}
@@ -4213,6 +4218,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 					//Set the value and exit
 					ImportedSection.bCastShadow = ExistingSection.bCastShadow;
 					ImportedSection.bRecomputeTangent = ExistingSection.bRecomputeTangent;
+					ImportedSection.RecomputeTangentsVertexMaskChannel = ExistingSection.RecomputeTangentsVertexMaskChannel;
 					break;
 				}
 			}

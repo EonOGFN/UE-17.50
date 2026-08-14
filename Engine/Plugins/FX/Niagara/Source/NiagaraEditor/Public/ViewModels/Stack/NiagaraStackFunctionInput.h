@@ -111,6 +111,9 @@ public:
 	/** Gets the tooltip that should be shown for the value of this input. */
 	FText GetValueToolTip() const;
 
+	/** Gets the tooltip that should be shown for the value of this input. */
+	FText GetCollapsedStateText() const;
+
 	/** Gets the path of parameter handles from the owning module to the function call which owns this input. */
 	const TArray<FNiagaraParameterHandle>& GetInputParameterHandlePath() const;
 
@@ -170,6 +173,9 @@ public:
 
 	/** Resets the value and handle of this input to the value and handle defined in the module. */
 	void Reset();
+
+	/** Checks if any data needs a fixup after the module definition changed. */
+	void ApplyModuleChanges();
 
 	/** Determine if this field is editable */
 	bool IsEditable() const;
@@ -246,9 +252,12 @@ public:
 
 	bool IsScratchDynamicInput() const;
 
-public:
+	virtual bool IsSemanticChild() const;
+	void SetSemanticChild(bool IsSemanticChild);
+
 	//~ UNiagaraStackEntry interface
 	virtual void GetSearchItems(TArray<FStackSearchItem>& SearchItems) const override;
+	virtual bool HasFrontDivider() const override;
 
 	/** If false then the stack parameter is not visible */
 	bool bIsVisible = true;
@@ -338,6 +347,10 @@ private:
 	/** Handles the message manager refreshing messages. */
 	void OnMessageManagerRefresh(const TArray<TSharedRef<const INiagaraMessage>>& NewMessages);
 
+	TArray<UNiagaraStackFunctionInput*> GetChildInputs() const;
+
+	void ResetDataInterfaceOverride();
+
 private:
 	/** The module function call which owns this input entry. NOTE: This input might not be an input to the module function
 		call, it may be an input to a dynamic input function call which is owned by the module. */
@@ -406,6 +419,9 @@ private:
 	/** A tooltip to show for the value of this input. */
 	mutable TOptional<FText> ValueToolTipCache;
 
+	/** Text to display on a collapsed node. */
+	mutable TOptional<FText> CollapsedTextCache;
+
 	mutable TOptional<bool> bIsScratchDynamicInputCache;
 
 	/** A flag to prevent handling graph changes when it's being updated directly by this object. */
@@ -453,4 +469,7 @@ private:
 	TArray<FStackIssue> MessageManagerIssues;
 
 	FGuid MessageLogGuid;
+
+	// If true then this stack entry is the semantic child of another stack entry
+	bool bIsSemanticChild = false;
 };

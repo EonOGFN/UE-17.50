@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
 #include "ComponentSourceInterfaces.h"
+#include "UObject/ObjectMacros.h"
 
 
 // predeclarations so we don't have to include these in all tools
@@ -14,6 +15,7 @@ class UActorComponent;
 class FToolCommandChange;
 class UPackage;
 class FPrimitiveDrawInterface;
+class FSceneView;
 class UInteractiveToolManager;
 class UInteractiveGizmoManager;
 struct FMeshDescription;
@@ -341,6 +343,14 @@ public:
 
 };
 
+UENUM()
+enum class EViewInteractionState {
+	None = 0,
+	Hovered = 1,
+	Focused = 2
+};
+ENUM_CLASS_FLAGS(EViewInteractionState);
+
 /**
  * Users of the Tools Framework need to implement IToolsContextRenderAPI to allow
  * Tools, Indicators, and Gizmos to make low-level rendering calls for things like line drawing.
@@ -355,8 +365,14 @@ public:
 	/** @return Current PDI */
 	virtual FPrimitiveDrawInterface* GetPrimitiveDrawInterface() = 0;
 
+	/** @return Current FSceneView */
+	virtual const FSceneView* GetSceneView() = 0;
+
 	/** @return Current Camera State for this Render API */
 	virtual FViewCameraState GetCameraState() = 0;
+
+	/** @return Current interaction state of the view to render */
+	virtual EViewInteractionState GetViewInteractionState() = 0;
 };
 
 

@@ -3,6 +3,7 @@
 #include "EditorSkeletalMeshLibrary.h"
 
 #include "Animation/Skeleton.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
 #include "EditorScriptingUtils.h"
@@ -24,7 +25,7 @@ bool UEditorSkeletalMeshLibrary::RegenerateLOD(USkeletalMesh* SkeletalMesh, int3
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -42,7 +43,7 @@ int32 UEditorSkeletalMeshLibrary::GetNumVerts(USkeletalMesh* SkeletalMesh, int32
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return 0;
 	}
@@ -170,7 +171,7 @@ int32 UEditorSkeletalMeshLibrary::ImportLOD(USkeletalMesh* BaseMesh, const int32
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("SkeletalMesh ImportLOD: Cannot import or re-import when editor PIE is active."));
 		return INDEX_NONE;
@@ -239,7 +240,7 @@ bool UEditorSkeletalMeshLibrary::ReimportAllCustomLODs(USkeletalMesh* SkeletalMe
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("SkeletalMesh ReimportAllCustomLODs: Cannot import or re-import when editor PIE is active."));
 		return false;
@@ -279,7 +280,7 @@ void UEditorSkeletalMeshLibrary::GetLodBuildSettings(const USkeletalMesh* Skelet
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -309,7 +310,7 @@ void UEditorSkeletalMeshLibrary::SetLodBuildSettings(USkeletalMesh* SkeletalMesh
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -355,4 +356,44 @@ void UEditorSkeletalMeshLibrary::SetLodBuildSettings(USkeletalMesh* SkeletalMesh
 	}
 }
 
+bool UEditorSkeletalMeshLibrary::RemoveLODs(USkeletalMesh* SkeletalMesh, TArray<int32> ToRemoveLODs)
+{
+	FSkeletalMeshUpdateContext UpdateContext;
+	UpdateContext.SkeletalMesh = SkeletalMesh;
+	int32 OriginalLODNumber = SkeletalMesh->GetLODNum();
+
+	// Close the mesh editor to be sure the editor is showing the correct data after the LODs are removed.
+	bool bMeshIsEdited = false;
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem->FindEditorForAsset(SkeletalMesh, false))
+	{
+		AssetEditorSubsystem->CloseAllEditorsForAsset(SkeletalMesh);
+		bMeshIsEdited = true;
+	}
+
+	// Now iterate over all skeletal mesh components to add them to the UpdateContext
+	for (TObjectIterator<USkinnedMeshComponent> It; It; ++It)
+	{
+		USkinnedMeshComponent* SkinComp = *It;
+		if (SkinComp->SkeletalMesh == SkeletalMesh)
+		{
+			UpdateContext.AssociatedComponents.Add(SkinComp);
+		}
+	}
+
+	FLODUtilities::RemoveLODs(UpdateContext, ToRemoveLODs);
+
+	if (bMeshIsEdited)
+	{
+		AssetEditorSubsystem->OpenEditorForAsset(SkeletalMesh);
+	}
+
+	int32 FinalLODNumber = SkeletalMesh->GetLODNum();
+	return (OriginalLODNumber-FinalLODNumber == ToRemoveLODs.Num());
+}
+
+bool UEditorSkeletalMeshLibrary::StripLODGeometry(USkeletalMesh* SkeletalMesh, const int32 LODIndex, UTexture2D* TextureMask, const float Threshold)
+{
+	return FLODUtilities::StripLODGeometry(SkeletalMesh, LODIndex, TextureMask, Threshold);
+}
 #undef LOCTEXT_NAMESPACE

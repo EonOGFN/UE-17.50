@@ -293,6 +293,17 @@ UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::Creat
 	return const_cast<UNiagaraClipboardFunctionInput*>(CreateLocalValue(InOuter, InInputName, InputType, bInHasEditCondition, bInEditConditionValue, IntValue));
 }
 
+UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::CreateBoolLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditConditionValue, bool InBoolValue)
+{
+	FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition::GetBoolDef();
+	const int32 BoolAsIntValue = InBoolValue ? 1 : 0;
+	TArray<uint8> IntValue;
+	IntValue.AddUninitialized(InputType.GetSize());
+	FMemory::Memcpy(IntValue.GetData(), &BoolAsIntValue, InputType.GetSize());
+
+	return const_cast<UNiagaraClipboardFunctionInput*>(CreateLocalValue(InOuter, InInputName, InputType, bInHasEditCondition, bInEditConditionValue, IntValue));
+}
+
 UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::CreateStructLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditConditionValue, UUserDefinedStruct* InStructValue)
 {
 	FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition(InStructValue);
@@ -311,12 +322,12 @@ UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::Creat
 	);
 }
 
-UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::CreateEnumLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditCoditionValue, UUserDefinedEnum* InEnumValue)
+UNiagaraClipboardFunctionInput* UNiagaraClipboardEditorScriptingUtilities::CreateEnumLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditCoditionValue, UUserDefinedEnum* InEnumType, int32 InEnumValue)
 {
-	FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition(Cast<UEnum>(InEnumValue));
+	FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition(Cast<UEnum>(InEnumType));
 	TArray<uint8> EnumValue;
-	EnumValue.AddUninitialized(sizeof(int64));
-	FMemory::Memcpy(EnumValue.GetData(), InEnumValue, sizeof(int64));
+	EnumValue.AddUninitialized(sizeof(int32));
+	FMemory::Memcpy(EnumValue.GetData(), &InEnumValue, sizeof(int32));
 
 	return const_cast<UNiagaraClipboardFunctionInput*>(UNiagaraClipboardFunctionInput::CreateLocalValue(
 		InOuter != nullptr ? InOuter : GetTransientPackage(),

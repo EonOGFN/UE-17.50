@@ -8,6 +8,7 @@
 #include "Engine/EngineTypes.h"
 #include "DSP/BufferVectorOperations.h"
 #include "Evaluation/MovieSceneSequenceTransform.h"
+#include "OpenColorIOColorSpace.h"
 #include "MovieRenderPipelineDataTypes.generated.h"
 
 class UMovieSceneCinematicShotSection;
@@ -28,6 +29,7 @@ class FMoviePipelineOutputMerger;
 class FRenderTarget;
 class UMoviePipeline;
 struct FMoviePipelineFormatArgs;
+
 namespace Audio { class FMixerSubmix; }
 
 /**
@@ -540,6 +542,7 @@ public:
 	{
 		TimeData.ResetPerFrameData();
 		bSkipRendering = false;
+		bCaptureRendering = false;
 		bDiscardRenderResult = false;
 		SourceFrameNumber = 0;
 		SourceTimeCode = FTimecode();
@@ -566,6 +569,11 @@ public:
 	* and simply omit rendering them. This increases consistency with non-skipped renders, and will be useful for consistency when rendering on a farm.
 	*/
 	bool bSkipRendering;
+
+	/**
+	* If true, and a IRenderCaptureProvider is available, trigger a capture of the rendering process of this frame.
+	*/
+	bool bCaptureRendering;
 
 	/**
 	* If this is true, then the frame will be rendered but the results discarded and not sent to the accumulator. This is used for render warmup frames
@@ -726,11 +734,6 @@ public:
 	FVector2D ProjectionMatrixJitterAmount;
 
 	/**
-	* If set, forces the exposure compensation on a render. Useful when doing tiled renders where auto-exposure is disabled.
-	*/
-	TOptional<float> ExposureCompensation;
-
-	/**
 	* Any additional texture mip map bias that should be added when rendering. Can be used to force extra sharpness. A more negative number means more likely to use a higher quality mip map.
 	*/
 	float TextureSharpnessBias;
@@ -749,6 +752,8 @@ public:
 	MoviePipeline::FTileWeight1D WeightFunctionY;
 
 	MoviePipeline::FMoviePipelineFrameInfo FrameInfo;
+
+	FOpenColorIODisplayConfiguration* OCIOConfiguration;
 };
 
 namespace MoviePipeline
@@ -781,8 +786,11 @@ struct FImagePixelDataPayload : IImagePixelDataPayload, public TSharedFromThis<F
 	/** Does this output data have to be transparent to be useful? Overrides output format to one that supports transparency. */
 	bool bRequireTransparentOutput;
 
+	int32 SortingOrder;
+
 	FImagePixelDataPayload()
 		: bRequireTransparentOutput(false)
+		, SortingOrder(TNumericLimits<int32>::Max())
 	{}
 
 	/** Is this the first tile of an image and we should start accumulating? */
@@ -847,6 +855,10 @@ public:
 
 namespace MoviePipeline
 {
+	struct MOVIERENDERPIPELINECORE_API IMoviePipelineOverlappedAccumulator : public TSharedFromThis<IMoviePipelineOverlappedAccumulator>
+	{
+	};
+
 	struct FAudioState
 	{
 		struct FAudioSegment
@@ -875,13 +887,5 @@ namespace MoviePipeline
 
 		/** An array of active submixes we are recording for this shot. Gets cleared when recording stops on a shot. */
 		TArray<TWeakPtr<Audio::FMixerSubmix, ESPMode::ThreadSafe>> ActiveSubmixes;
-	};
-
-	struct FSampleAccumulationArgs
-	{
-	public:
-		TSharedPtr<FImageOverlappedAccumulator, ESPMode::ThreadSafe> ImageAccumulator;
-		TSharedPtr<FMoviePipelineOutputMerger, ESPMode::ThreadSafe> OutputMerger;
-		bool bAccumulateAlpha;
 	};
 }

@@ -6,6 +6,19 @@
 #include "CoreMinimal.h"
 #include "ChaosClothConfig.generated.h"
 
+/** Long range attachment options. */
+UENUM()
+enum class EChaosClothTetherMode : uint8
+{
+	// Fast Tether Fast Length: Use fast euclidean methods to both setup the tethers and calculate their lengths. Fast initialization and simulation times, but is very prone to artifacts.
+	FastTetherFastLength,
+	// Accurate Tether Fast Length: Use the accurate geodesic method to setup the tethers and a fast euclidean method to calculate their lengths. Slow initialization times and fast simulation times, but can still be prone to artifacts.
+	AccurateTetherFastLength,
+	// Accurate Tether Accurate Length: Use accurate geodesic method to both setup the tethers and calculate their lengths. Slow initialization and simulation times, but this is the most accurate setting showing the less artifacts.
+	AccurateTetherAccurateLength UMETA(Hidden),  // TODO: Fix Geodesic LRA
+	MaxChaosClothTetherMode UMETA(Hidden)
+};
+
 /** Holds initial, asset level config for clothing actors. */
 // Hiding categories that will be used in the future
 UCLASS(HideCategories = (Collision))
@@ -27,6 +40,9 @@ public:
 
 	/** PostLoad override used to deal with updates/changes in properties. */
 	virtual void PostLoad() override;
+
+	/** Return the mass value, from whichever mass mode (Density, UniformMass, or TotalMass) is selected. */
+	float GetMassValue() const;
 
 	/**
 	 * How cloth particle mass is determined
@@ -93,10 +109,20 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Long Range Attachment", meta = (UIMin = "1.", UIMax = "1.1", ClampMin = "0.01", ClampMax = "10"))
 	float LimitScale = 1.f;
 
+	/**
+	 * How the long range attachment tethers are created, and how their length is updated.
+	 * This determines how fast and accurate both the tether initialization and simulation runs.
+	 * -	Fast Tether Fast Length: Use fast euclidean methods to both setup the tethers and calculate their lengths. Fast initialization and simulation times, but is very prone to artifacts.
+	 * -	Accurate Tether Fast Length: Use the accurate geodesic method to setup the tethers and a fast euclidean method to calculate their lengths. Slow initialization times and fast simulation times, but can still be prone to artifacts.
+	 * -	Accurate Tether Accurate Length: Use accurate geodesic method to both setup the tethers and calculate their lengths. Slow initialization and simulation times, but this is the most accurate setting showing the less artifacts.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Long Range Attachment")
+	EChaosClothTetherMode TetherMode = EChaosClothTetherMode::AccurateTetherFastLength;
+
 	// Use geodesic instead of euclidean distance calculations in the long range attachment constraint,
 	// which is slower at setup but less prone to artifacts during simulation.
 	UPROPERTY()
-	bool bUseGeodesicDistance = true;
+	bool bUseGeodesicDistance_DEPRECATED = true;
 
 	// The stiffness of the shape target constraints
 	UPROPERTY()
@@ -118,13 +144,30 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Collision Properties", meta = (UIMin = "0", UIMax = "100", ClampMin = "0", ClampMax = "1000", EditCondition = "bUseSelfCollisions"))
 	float SelfCollisionThickness = 2.0f;
 
+	// This parameter is automatically set by the migration code. It can be overridden here to use the old way of authoring the backstop distances.
+	// The legacy backstop requires the sphere radius to be included within the painted distance mask, making it difficult to author correctly. In this case the backstop distance is the distance from the animated mesh to the center of the corresponding backstop collision sphere.
+	// The non legacy backstop automatically adds the matching sphere's radius to the distance calculations at runtime to make for a simpler authoring of the backstop distances. In this case the backstop distance is the distance from the animated mesh to the surface of the backstop collision sphere.
+	// In both cases, a positive backstop distance goes against the corresponding animated mesh's normal, and a negative backstop distance goes along the corresponding animated mesh's normal.
+	UPROPERTY(EditAnywhere, Category = "Collision Properties")
+	bool bUseLegacyBackstop = false;
+
 	// The amount of damping applied to the cloth velocities.
 	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1"))
 	float DampingCoefficient = 0.01f;
 
-	// The drag coefficient applying on each particle.
-	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "10"))
-	float DragCoefficient = 0.1f;
+	// This parameter is automatically set by the migration code. It can be overridden here to use the old deprecated "Legacy" wind model in order to preserve behavior with previous versions of the engine.
+	// The old wind model is not an accurate aerodynamic model and as such should be avoided. Being point based, it doesn't take into account the surface area that gets hit by the wind.
+	// Using this model makes the simulation slightly slower, disables the aerodynamically accurate wind model, and prevents the cloth to interact with the surrounding environment (air, water, ...etc.) even when there is no wind.
+	UPROPERTY(EditAnywhere, Category = "Environmental Properties")
+	bool bUsePointBasedWindModel = false;
+
+	// The aerodynamic coefficient of drag applying on each particle.
+	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "10", EditCondition = "!bUsePointBasedWindModel"))
+	float DragCoefficient = 0.07f;
+
+	// The aerodynamic coefficient of lift applying on each particle.
+	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "10", EditCondition = "!bUsePointBasedWindModel"))
+	float LiftCoefficient = 0.035f;
 
 	// Use the config gravity value instead of world gravity.
 	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (InlineEditConditionToggle))

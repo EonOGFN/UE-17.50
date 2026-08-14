@@ -23,12 +23,14 @@
 #include "DynamicMeshChangeTracker.h"
 #include "Changes/MeshChange.h"
 #include "MeshIndexUtil.h"
+#include "MeshRegionBoundaryLoops.h"
 
 #include "Operations/OffsetMeshRegion.h"
 #include "Operations/InsetMeshRegion.h"
 #include "Operations/SimpleHoleFiller.h"
 #include "MeshTransforms.h"
 
+#include "Algo/ForEach.h"
 #include "Async/ParallelFor.h"
 #include "Containers/BitArray.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -66,7 +68,7 @@ void UEditMeshPolygonsToolActionPropertySet::PostAction(EEditMeshPolygonsToolAct
 
 UEditMeshPolygonsTool::UEditMeshPolygonsTool()
 {
-	SetToolDisplayName(LOCTEXT("EditMeshPolygonsToolName", "Edit PolyGroups"));
+	SetToolDisplayName(LOCTEXT("EditMeshPolygonsToolName", "Edit PolyGroups Tool"));
 }
 
 void UEditMeshPolygonsTool::EnableTriangleMode()
@@ -100,7 +102,7 @@ void UEditMeshPolygonsTool::Setup()
 	}
 
 	// configure secondary render material
-	UMaterialInterface* SelectionMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor(0.9f, 0.1f, 0.1f), GetToolManager());
+	UMaterialInterface* SelectionMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor::Yellow, GetToolManager());
 	if (SelectionMaterial != nullptr)
 	{
 		DynamicMeshComponent->SetSecondaryRenderMaterial(SelectionMaterial);
@@ -125,6 +127,7 @@ void UEditMeshPolygonsTool::Setup()
 
 	// add properties
 	CommonProps = NewObject<UPolyEditCommonProperties>(this);
+	CommonProps->RestoreProperties(this);
 	AddToolPropertySource(CommonProps);
 	CommonProps->WatchProperty(CommonProps->LocalFrameMode,
 								  [this](ELocalFrameMode) { UpdateMultiTransformerFrame(); });
@@ -133,10 +136,14 @@ void UEditMeshPolygonsTool::Setup()
 								  {
 									  LockedTransfomerFrame = LastTransformerFrame; UpdateMultiTransformerFrame();
 								  });
+	// We are going to SilentUpdate here because otherwise the Watches above will immediately fire (why??)
+	// and cause UpdateMultiTransformerFrame() to be called for each, emitting two spurious Transform changes. 
+	CommonProps->SilentUpdateWatched();
 
 	// set up SelectionMechanic
 	SelectionMechanic = NewObject<UPolygonSelectionMechanic>(this);
 	SelectionMechanic->Setup(this);
+	SelectionMechanic->Properties->RestoreProperties(this);
 	SelectionMechanic->OnSelectionChanged.AddUObject(this, &UEditMeshPolygonsTool::OnSelectionModifiedEvent);
 	if (bTriangleMode)
 	{
@@ -161,7 +168,7 @@ void UEditMeshPolygonsTool::Setup()
 	bInDrag = false;
 
 	MultiTransformer = NewObject<UMultiTransformer>(this);
-	MultiTransformer->Setup(GetToolManager()->GetPairedGizmoManager());
+	MultiTransformer->Setup(GetToolManager()->GetPairedGizmoManager(), GetToolManager());
 	MultiTransformer->OnTransformStarted.AddUObject(this, &UEditMeshPolygonsTool::OnMultiTransformerTransformBegin);
 	MultiTransformer->OnTransformUpdated.AddUObject(this, &UEditMeshPolygonsTool::OnMultiTransformerTransformUpdate);
 	MultiTransformer->OnTransformCompleted.AddUObject(this, &UEditMeshPolygonsTool::OnMultiTransformerTransformEnd);
@@ -203,6 +210,21 @@ void UEditMeshPolygonsTool::Setup()
 	ExtrudeProperties->WatchProperty(ExtrudeProperties->Direction,
 									 [this](EPolyEditExtrudeDirection){ RestartExtrude(); });
 
+	OffsetProperties = NewObject<UPolyEditOffsetProperties>();
+	OffsetProperties->RestoreProperties(this);
+	AddToolPropertySource(OffsetProperties);
+	SetToolPropertySourceEnabled(OffsetProperties, false);
+
+	InsetProperties = NewObject<UPolyEditInsetProperties>();
+	InsetProperties->RestoreProperties(this);
+	AddToolPropertySource(InsetProperties);
+	SetToolPropertySourceEnabled(InsetProperties, false);
+
+	OutsetProperties = NewObject<UPolyEditOutsetProperties>();
+	OutsetProperties->RestoreProperties(this);
+	AddToolPropertySource(OutsetProperties);
+	SetToolPropertySourceEnabled(OutsetProperties, false);
+
 	CutProperties = NewObject<UPolyEditCutProperties>();
 	CutProperties->RestoreProperties(this);
 	AddToolPropertySource(CutProperties);
@@ -214,9 +236,20 @@ void UEditMeshPolygonsTool::Setup()
 	SetToolPropertySourceEnabled(SetUVProperties, false);
 
 
-	GetToolManager()->DisplayMessage(
-		LOCTEXT("OnStartEditMeshPolygonsTool", "Select PolyGroups to edit mesh. Q to toggle Gizmo Orientation Lock."),
-		EToolMessageLevel::UserNotification);
+	if (bTriangleMode)
+	{
+		SetToolDisplayName(LOCTEXT("EditMeshTrianglesToolName", "Edit Triangles Tool"));
+		GetToolManager()->DisplayMessage(
+			LOCTEXT("OnStartEditMeshPolygonsTool_TriangleMode", "Select Triangles to edit mesh. Q to toggle Gizmo Orientation Lock."),
+			EToolMessageLevel::UserNotification);
+	}
+	else
+	{
+		GetToolManager()->DisplayMessage(
+			LOCTEXT("OnStartEditMeshPolygonsTool", "Select PolyGroups to edit mesh. Q to toggle Gizmo Orientation Lock."),
+			EToolMessageLevel::UserNotification);
+	}
+
 	if (Topology->Groups.Num() < 2)
 	{
 		GetToolManager()->DisplayMessage( LOCTEXT("NoGroupsWarning", "This object has a single PolyGroup. Use the PolyGroups or Select Tool to assign PolyGroups."), EToolMessageLevel::UserWarning);
@@ -225,9 +258,13 @@ void UEditMeshPolygonsTool::Setup()
 
 void UEditMeshPolygonsTool::Shutdown(EToolShutdownType ShutdownType)
 {
+	CommonProps->SaveProperties(this);
 	ExtrudeProperties->SaveProperties(this);
+	OffsetProperties->SaveProperties(this);
+	InsetProperties->SaveProperties(this);
 	CutProperties->SaveProperties(this);
 	SetUVProperties->SaveProperties(this);
+	SelectionMechanic->Properties->SaveProperties(this);
 
 	MultiTransformer->Shutdown();
 	SelectionMechanic->Shutdown();
@@ -421,7 +458,8 @@ void UEditMeshPolygonsTool::UpdateMultiTransformerFrame(const FFrame3d* UseFrame
 	}
 
 	LastTransformerFrame = SetFrame;
-	MultiTransformer->SetGizmoPositionFromWorldFrame(SetFrame, true);
+	//MultiTransformer->UpdateGizmoPositionFromWorldFrame(SetFrame, true);
+	MultiTransformer->InitializeGizmoPositionFromWorldFrame(SetFrame, true);
 }
 
 
@@ -545,16 +583,16 @@ void UEditMeshPolygonsTool::UpdateDeformerFromSelection(const FGroupTopologySele
 	if (Selection.SelectedCornerIDs.Num() > 0)
 	{
 		//Add all the the Corner's adjacent poly-groups (NbrGroups) to the ongoing array of groups.
-		LinearDeformer.SetActiveHandleCorners(Selection.SelectedCornerIDs);
+		LinearDeformer.SetActiveHandleCorners(Selection.SelectedCornerIDs.Array());
 	}
 	else if (Selection.SelectedEdgeIDs.Num() > 0)
 	{
 		//Add all the the edge's adjacent poly-groups (NbrGroups) to the ongoing array of groups.
-		LinearDeformer.SetActiveHandleEdges(Selection.SelectedEdgeIDs);
+		LinearDeformer.SetActiveHandleEdges(Selection.SelectedEdgeIDs.Array());
 	}
 	else if (Selection.SelectedGroupIDs.Num() > 0)
 	{
-		LinearDeformer.SetActiveHandleFaces(Selection.SelectedGroupIDs);
+		LinearDeformer.SetActiveHandleFaces(Selection.SelectedGroupIDs.Array());
 	}
 }
 
@@ -625,6 +663,10 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 		if (SelectionMechanic->HasSelection())
 		{
 			MultiTransformer->SetGizmoVisibility(true);
+
+			// update frame because we might be here due to an undo event/etc, rather than an explicit selection change
+			LastGeometryFrame = SelectionMechanic->GetSelectionFrame(true, &LastGeometryFrame);
+			UpdateMultiTransformerFrame();
 		}
 		else
 		{
@@ -747,12 +789,24 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 		}
 		else if (CurrentToolMode == ECurrentToolMode::OffsetSelection)
 		{
-			EditPreview->UpdateExtrudeType(ExtrudeHeightMechanic->CurrentHeight, true);
+			if (OffsetProperties->bUseFaceNormals)
+			{
+				EditPreview->UpdateExtrudeType_FaceNormalAvg(ExtrudeHeightMechanic->CurrentHeight);
+			}
+			else
+			{
+				EditPreview->UpdateExtrudeType(ExtrudeHeightMechanic->CurrentHeight, true);
+			}
 		}
 		else if (CurrentToolMode == ECurrentToolMode::InsetSelection || CurrentToolMode == ECurrentToolMode::OutsetSelection)
 		{
-			double Sign = (CurrentToolMode == ECurrentToolMode::OutsetSelection) ? -1.0 : 1.0;
-			EditPreview->UpdateInsetType(Sign * CurveDistMechanic->CurrentDistance);
+			bool bOutset = (CurrentToolMode == ECurrentToolMode::OutsetSelection);
+			double Sign = bOutset ? -1.0 : 1.0;
+			bool bReproject = (bOutset) ? false : InsetProperties->bReproject;
+			double Softness = (bOutset) ? OutsetProperties->Softness : InsetProperties->Softness;
+			bool bBoundaryOnly = (bOutset) ? OutsetProperties->bBoundaryOnly : InsetProperties->bBoundaryOnly;
+			double AreaCorrection = (bOutset) ? OutsetProperties->AreaScale : InsetProperties->AreaScale;
+			EditPreview->UpdateInsetType(Sign* CurveDistMechanic->CurrentDistance, bReproject, Softness, AreaCorrection, bBoundaryOnly);
 		}
 		else if (CurrentToolMode == ECurrentToolMode::SetUVs)
 		{
@@ -774,7 +828,6 @@ void UEditMeshPolygonsTool::PrecomputeTopology()
 		[this]() { return &GetSpatial(); },
 		[this]() { return GetShiftToggle(); }
 		);
-	SelectionMechanic->SetShouldSelectEdgeLoopsFunc([this]() { return CommonProps->bSelectEdgeLoops; });
 
 	LinearDeformer.Initialize(Mesh, Topology.Get());
 }
@@ -925,8 +978,7 @@ void UEditMeshPolygonsTool::BeginExtrude(bool bIsNormalOffset)
 
 	ExtrudeHeightMechanic->WorldHitQueryFunc = [this](const FRay& WorldRay, FHitResult& HitResult)
 	{
-		FCollisionObjectQueryParams QueryParams(FCollisionObjectQueryParams::AllObjects);
-		return DynamicMeshComponent->GetWorld()->LineTraceSingleByObjectType(HitResult, WorldRay.Origin, WorldRay.PointAt(999999), QueryParams);
+		return ToolSceneQueriesUtil::FindNearestVisibleObjectHit(DynamicMeshComponent->GetWorld(), HitResult, WorldRay);
 	};
 	ExtrudeHeightMechanic->WorldPointSnapFunc = [this](const FVector3d& WorldPos, FVector3d& SnapPos)
 	{
@@ -941,6 +993,11 @@ void UEditMeshPolygonsTool::BeginExtrude(bool bIsNormalOffset)
 	{
 		SetToolPropertySourceEnabled(ExtrudeProperties, true);
 	}
+	else
+	{
+		SetToolPropertySourceEnabled(OffsetProperties, true);
+	}
+	SetActionButtonPanelsVisible(false);
 }
 
 
@@ -960,22 +1017,36 @@ void UEditMeshPolygonsTool::ApplyExtrude(bool bIsOffset)
 	Extruder.OffsetPositionFunc = [&](const FVector3d& Pos, const FVector3f& Normal, int32 VertexID) {
 		return Pos + ExtrudeDist * (bIsOffset ? (FVector3d)Normal : ExtrudeDir);
 	};
+	Extruder.bIsPositiveOffset = (ExtrudeDist > 0);
+	Extruder.bUseFaceNormals = (bIsOffset && OffsetProperties->bUseFaceNormals);
+	Extruder.bOffsetFullComponentsAsSolids = bIsOffset || ExtrudeProperties->bShellsToSolids;
 	Extruder.ChangeTracker = MakeUnique<FDynamicMeshChangeTracker>(Mesh);
 	Extruder.ChangeTracker->BeginChange();
 	Extruder.Apply();
 
 	FMeshNormals::QuickComputeVertexNormalsForTriangles(*Mesh, Extruder.AllModifiedTriangles);
 
+	// construct new selection
+	FGroupTopologySelection NewSelection;
+	for (const FOffsetMeshRegion::FOffsetInfo& Info : Extruder.OffsetRegions)
+	{
+		for (int32 gid : Info.OffsetGroups)
+		{
+			NewSelection.SelectedGroupIDs.Add(gid);
+		}
+	}
+
 	// emit undo
-	FGroupTopologySelection CurSelection = SelectionMechanic->GetActiveSelection();
 	TUniquePtr<FMeshChange> MeshChange = MakeUnique<FMeshChange>(Extruder.ChangeTracker->EndChange());
 	CompleteMeshEditChange( (bIsOffset) ? LOCTEXT("PolyMeshOffsetChange", "Offset") : LOCTEXT("PolyMeshExtrudeChange", "Extrude"),
-		MoveTemp(MeshChange), CurSelection);
+		MoveTemp(MeshChange), NewSelection);
 
 	ExtrudeHeightMechanic = nullptr;
 	CurrentToolMode = ECurrentToolMode::TransformSelection;
 
 	SetToolPropertySourceEnabled(ExtrudeProperties, false);
+	SetToolPropertySourceEnabled(OffsetProperties, false);
+	SetActionButtonPanelsVisible(true);
 }
 
 
@@ -1042,6 +1113,10 @@ void UEditMeshPolygonsTool::BeginInset(bool bOutset)
 	Loops.Loops[0].GetVertices(LoopVertices);
 	CurveDistMechanic->InitializePolyLoop(LoopVertices, FTransform3d::Identity());
 	CurrentToolMode = (bOutset) ? ECurrentToolMode::OutsetSelection : ECurrentToolMode::InsetSelection;
+
+	SetToolPropertySourceEnabled((bOutset) ? 
+		(UInteractiveToolPropertySet*)OutsetProperties : (UInteractiveToolPropertySet*)InsetProperties, true);
+	SetActionButtonPanelsVisible(false);
 }
 
 
@@ -1056,6 +1131,11 @@ void UEditMeshPolygonsTool::ApplyInset(bool bOutset)
 	Inset.UVScaleFactor = UVScaleFactor;
 	Inset.Triangles = ActiveTriangleSelection;
 	Inset.InsetDistance = (bOutset) ? -CurveDistMechanic->CurrentDistance : CurveDistMechanic->CurrentDistance;
+	Inset.bReproject = (bOutset) ? false : InsetProperties->bReproject;
+	Inset.Softness = (bOutset) ? OutsetProperties->Softness : InsetProperties->Softness;
+	Inset.bSolveRegionInteriors = (bOutset) ? (!OutsetProperties->bBoundaryOnly) : (!InsetProperties->bBoundaryOnly);
+	Inset.AreaCorrection = (bOutset) ? OutsetProperties->AreaScale : InsetProperties->AreaScale;
+
 	Inset.ChangeTracker = MakeUnique<FDynamicMeshChangeTracker>(Mesh);
 	Inset.ChangeTracker->BeginChange();
 	Inset.Apply();
@@ -1069,6 +1149,10 @@ void UEditMeshPolygonsTool::ApplyInset(bool bOutset)
 
 	CurveDistMechanic = nullptr;
 	CurrentToolMode = ECurrentToolMode::TransformSelection;
+
+	SetToolPropertySourceEnabled((bOutset) ?
+		(UInteractiveToolPropertySet*)OutsetProperties : (UInteractiveToolPropertySet*)InsetProperties, false);
+	SetActionButtonPanelsVisible(true);
 }
 
 
@@ -1107,6 +1191,7 @@ void UEditMeshPolygonsTool::BeginCutFaces()
 
 	CurrentToolMode = ECurrentToolMode::CutSelection;
 	SetToolPropertySourceEnabled(CutProperties, true);
+	SetActionButtonPanelsVisible(false);
 }
 
 void UEditMeshPolygonsTool::ApplyCutFaces()
@@ -1164,6 +1249,7 @@ void UEditMeshPolygonsTool::ApplyCutFaces()
 	SurfacePathMechanic = nullptr;
 	CurrentToolMode = ECurrentToolMode::TransformSelection;
 	SetToolPropertySourceEnabled(CutProperties, false);
+	SetActionButtonPanelsVisible(true);
 }
 
 
@@ -1199,6 +1285,7 @@ void UEditMeshPolygonsTool::BeginSetUVs()
 
 	CurrentToolMode = ECurrentToolMode::SetUVs;
 	SetToolPropertySourceEnabled(SetUVProperties, true);
+	SetActionButtonPanelsVisible(false);
 }
 
 void UEditMeshPolygonsTool::UpdateSetUVS()
@@ -1265,6 +1352,7 @@ void UEditMeshPolygonsTool::ApplySetUVs()
 	SurfacePathMechanic = nullptr;
 	CurrentToolMode = ECurrentToolMode::TransformSelection;
 	SetToolPropertySourceEnabled(SetUVProperties, false);
+	SetActionButtonPanelsVisible(true);
 }
 
 
@@ -1416,11 +1504,44 @@ void UEditMeshPolygonsTool::ApplyRetriangulate()
 		FMeshRegionBoundaryLoops RegionLoops(Mesh, Triangles, true);
 		if (!RegionLoops.bFailed && RegionLoops.Loops.Num() == 1 && Triangles.Num() > 1)
 		{
-			Editor.RemoveTriangles(Topology->GetGroupTriangles(GroupID), true);
+			TArray<FMeshRegionBoundaryLoops::VidOverlayMap<FVector2f>> VidUVMaps;
+			if (Mesh->HasAttributes())
+			{
+				const FDynamicMeshAttributeSet* Attributes = Mesh->Attributes();
+				for (int i = 0; i < Attributes->NumUVLayers(); ++i)
+				{
+					VidUVMaps.Emplace();
+					RegionLoops.GetLoopOverlayMap(RegionLoops.Loops[0], *Attributes->GetUVLayer(i), VidUVMaps.Last());
+				}
+			}
+
+			// We don't want to remove isolated vertices while removing triangles because we don't
+			// want to throw away boundary verts. However, this means that we'll have to go back
+			// through these vertices later to throw away isolated internal verts.
+			TArray<int32> OldVertices;
+			MeshIndexUtil::TriangleToVertexIDs(Mesh, Triangles, OldVertices);
+			Editor.RemoveTriangles(Topology->GetGroupTriangles(GroupID), false);
+
 			RegionLoops.Loops[0].Reverse();
 			FSimpleHoleFiller Filler(Mesh, RegionLoops.Loops[0]);
 			Filler.FillType = FSimpleHoleFiller::EFillType::PolygonEarClipping;
 			Filler.Fill(GroupID);
+
+			// Throw away any of the old verts that are still isolated (they were in the interior of the group)
+			Algo::ForEachIf(OldVertices, [Mesh](int32 Vid) { return !Mesh->IsReferencedVertex(Vid); },
+				[Mesh](int32 Vid) { Mesh->RemoveVertex(Vid, false, false); } // Don't try to remove attached tris, don't care about bowties
+			);
+
+			if (Mesh->HasAttributes())
+			{
+				const FDynamicMeshAttributeSet* Attributes = Mesh->Attributes();
+				for (int i = 0; i < Attributes->NumUVLayers(); ++i)
+				{
+					RegionLoops.UpdateLoopOverlayMapValidity(VidUVMaps[i], *Attributes->GetUVLayer(i));
+				}
+				Filler.UpdateAttributes(VidUVMaps);
+			}
+
 			nCompleted++;
 		}
 	}
@@ -1952,9 +2073,8 @@ bool UEditMeshPolygonsTool::BeginMeshEdgeEditChange(TFunctionRef<bool(int32)> Gr
 		return false;
 	}
 	ActiveEdgeSelection.Reserve(NumEdges);
-	for (int32 k = 0; k < NumEdges; ++k)
+	for (int32 EdgeID : ActiveSelection.SelectedEdgeIDs)
 	{
-		int32 EdgeID = ActiveSelection.SelectedEdgeIDs[k];
 		if (GroupEdgeIDFilterFunc(EdgeID))
 		{
 			FSelectedEdge& Edge = ActiveEdgeSelection.Emplace_GetRef();
@@ -1984,9 +2104,12 @@ void UEditMeshPolygonsTool::CancelMeshEditChange()
 
 	// hide properties that might be visible
 	SetToolPropertySourceEnabled(ExtrudeProperties, false);
+	SetToolPropertySourceEnabled(OffsetProperties, false);
+	SetToolPropertySourceEnabled(InsetProperties, false);
+	SetToolPropertySourceEnabled(OutsetProperties, false);
 	SetToolPropertySourceEnabled(CutProperties, false);
 	SetToolPropertySourceEnabled(SetUVProperties, false);
-
+	SetActionButtonPanelsVisible(true);
 
 	CurrentToolMode = ECurrentToolMode::TransformSelection;
 }
@@ -2024,6 +2147,39 @@ void UEditMeshPolygonsTool::UpdateEditPreviewMaterials(EPreviewMaterialType Mate
 	}
 }
 
+
+
+
+
+void UEditMeshPolygonsTool::SetActionButtonPanelsVisible(bool bVisible)
+{
+	if (bTriangleMode == false)
+	{
+		if (EditActions)
+		{
+			SetToolPropertySourceEnabled(EditActions, bVisible);
+		}
+		if (EditEdgeActions)
+		{
+			SetToolPropertySourceEnabled(EditEdgeActions, bVisible);
+		}
+		if (EditUVActions)
+		{
+			SetToolPropertySourceEnabled(EditUVActions, bVisible);
+		}
+	}
+	else
+	{
+		if (EditActions_Triangles)
+		{
+			SetToolPropertySourceEnabled(EditActions_Triangles, bVisible);
+		}
+		if (EditEdgeActions_Triangles)
+		{
+			SetToolPropertySourceEnabled(EditEdgeActions_Triangles, bVisible);
+		}
+	}
+}
 
 
 

@@ -27,6 +27,7 @@
 #include "NiagaraEditorModule.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "EdGraphSchema_NiagaraSystemOverview.h"
+#include "EdGraphUtilities.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
 
 #include "Editor.h"
@@ -601,33 +602,7 @@ void FNiagaraSystemViewModel::PostUndo(bool bSuccess)
 
 bool FNiagaraSystemViewModel::WaitingOnCompilation() const
 {
-	UNiagaraSystem& ViewedSystem = GetSystem();
-
-	if (ViewedSystem.HasOutstandingCompilationRequests())
-	{
-		return true;
-	}
-
-	// the above check only handles the VM script generation, and so GPU compute script compilation can still
-	// be underway, so we'll check for that explicitly so that we don't burden the user with excessive compiles
-	for (const FNiagaraEmitterHandle& EmitterHandle : ViewedSystem.GetEmitterHandles())
-	{
-		if (const UNiagaraEmitter* Emitter = EmitterHandle.GetInstance())
-		{
-			if (const UNiagaraScript* GPUComputeScript = Emitter->GetGPUComputeScript())
-			{
-				if (const FNiagaraShaderScript* ShaderScript = GPUComputeScript->GetRenderThreadScript())
-				{
-					if (!ShaderScript->IsCompilationFinished())
-					{
-						return true;
-					}
-				}
-			}
-		}
-	}
-
-	return false;
+	return GetSystem().HasOutstandingCompilationRequests(true);
 }
 
 void FNiagaraSystemViewModel::Tick(float DeltaTime)
@@ -694,19 +669,20 @@ void FNiagaraSystemViewModel::Tick(float DeltaTime)
 
 void FNiagaraSystemViewModel::NotifyPreSave()
 {
-	if (GetSystem().HasOutstandingCompilationRequests())
+	if (GetSystem().HasOutstandingCompilationRequests(true))
 	{
 		UE_LOG(LogNiagaraEditor, Log, TEXT("System %s has pending compile jobs. Waiting for that code to complete before Saving.."), *GetSystem().GetName());
-		GetSystem().WaitForCompilationComplete();
+
+		GetSystem().WaitForCompilationComplete(true);
 	}
 }
 
 void FNiagaraSystemViewModel::NotifyPreClose()
 {
-	if (GetSystem().HasOutstandingCompilationRequests())
+	if (GetSystem().HasOutstandingCompilationRequests(true))
 	{
 		UE_LOG(LogNiagaraEditor, Log, TEXT("System %s has pending compile jobs. Waiting for that code to complete before Closing.."), *GetSystem().GetName());
-		GetSystem().WaitForCompilationComplete();
+		GetSystem().WaitForCompilationComplete(true);
 	}
 	OnPreCloseDelegate.Broadcast();
 }
@@ -1020,6 +996,12 @@ void FNiagaraSystemViewModel::SetupPreviewComponentAndInstance()
 
 void FNiagaraSystemViewModel::RefreshAll()
 {
+	if (GetSystem().HasOutstandingCompilationRequests() == false)
+	{
+		// Data changes which require full refreshes can cause stability problems when resetting the accompanying system, especially
+		// when used in conjunction with warm up.  This is a temporary fix for these crashes.
+		CompileSystem(false);
+	}
 	ResetSystem(ETimeResetMode::AllowResetTime, EMultiResetMode::ResetThisInstance, EReinitMode::ReinitializeSystem);
 	RefreshEmitterHandleViewModels();
 	RefreshSequencerTracks();
@@ -1032,6 +1014,11 @@ void FNiagaraSystemViewModel::RefreshAll()
 
 void FNiagaraSystemViewModel::NotifyDataObjectChanged(UObject* ChangedObject)
 {
+	if (ChangedObject && (ChangedObject->IsA<UNiagaraEmitter>() || ChangedObject->IsA<UNiagaraSystem>()))
+	{
+		// we do nothing on emitter or system changes here, because they will trigger a compile and reset on their own, depending on the changed property
+		return;
+	}
 	UNiagaraDataInterface* ChangedDataInterface = Cast<UNiagaraDataInterface>(ChangedObject);
 	if (ChangedDataInterface)
 	{
@@ -2080,7 +2067,6 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 		}
 		FNiagaraEmitterHandle* SelectedEmitterHandle = EmitterHandleViewModel->GetEmitterHandle();
 		check(SelectedEmitterHandle);
-		UNiagaraEmitter* Emitter = SelectedEmitterHandle->GetInstance();
 		for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInst : PreviewComponent->GetSystemInstance()->GetEmitters())
 		{
 			if (&EmitterInst->GetEmitterHandle() == SelectedEmitterHandle && !EmitterInst->IsComplete())
@@ -2091,6 +2077,19 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 	}
 	PreviewComponent->MarkRenderTransformDirty();
 	ResetSystem(ETimeResetMode::KeepCurrentTime, EMultiResetMode::ResetThisInstance, EReinitMode::ResetSystem);
+}
+
+void FNiagaraSystemViewModel::ClearEmitterStats()
+{
+#if STATS
+	for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
+	{
+		if (UNiagaraEmitter* Emitter = Handle.GetInstance())
+		{
+			Emitter->GetStatData().ClearStatCaptures();
+		}
+	}
+#endif
 }
 
 void FNiagaraSystemViewModel::AddSystemEventHandlers()

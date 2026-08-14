@@ -207,6 +207,7 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
+struct FNiagaraDataInterfaceProxyRW;
 struct FNiagaraDataInterfaceProxy : TSharedFromThis<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe>
 {
 	FNiagaraDataInterfaceProxy() {}
@@ -224,10 +225,6 @@ struct FNiagaraDataInterfaceProxy : TSharedFromThis<FNiagaraDataInterfaceProxy, 
 	// a set of the shader stages that require the data interface for setting number of output elements
 	TSet<int> IterationSimulationStages_DEPRECATED;
 	
-	// number of elements to output to
-	uint32 ElementCount;
-
-	void SetElementCount(uint32 Count) { ElementCount = Count;  }
 	virtual bool IsOutputStage_DEPRECATED(uint32 CurrentStage) const { return OutputSimulationStages_DEPRECATED.Contains(CurrentStage); }
 	virtual bool IsIterationStage_DEPRECATED(uint32 CurrentStage) const { return IterationSimulationStages_DEPRECATED.Contains(CurrentStage); }
 
@@ -236,6 +233,8 @@ struct FNiagaraDataInterfaceProxy : TSharedFromThis<FNiagaraDataInterfaceProxy, 
 	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) {}
 	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) {}
 	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) {}
+
+	virtual FNiagaraDataInterfaceProxyRW* AsIterationProxy() { return nullptr; }
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -253,6 +252,19 @@ public:
 	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Does this data interface need setup and teardown for each stage when working a sim stage sim source? */
+	virtual bool SupportsSetupAndTeardownHLSL() const { return false; }
+	/** Generate the necessary HLSL to set up data when being added as a sim stage sim source. */
+	virtual bool GenerateSetupHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, TConstArrayView<FNiagaraVariable> InArguments, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false;}
+	/** Generate the necessary HLSL to tear down data when being added as a sim stage sim source. */
+	virtual bool GenerateTeardownHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, TConstArrayView<FNiagaraVariable> InArguments, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; }
+	/** Can this data interface be used as a StackContext parameter map replacement when being used as a sim stage iteration source? */
+	virtual bool SupportsIterationSourceNamespaceAttributesHLSL() const { return false; }
+	/** Generate the necessary plumbing HLSL at the beginning of the stage where this is used as a sim stage iteration source. Note that this should inject other internal calls using the CustomHLSL node syntax. See GridCollection2D for an example.*/
+	virtual bool GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
+	/** Generate the necessary plumbing HLSL at the end of the stage where this is used as a sim stage iteration source. Note that this should inject other internal calls using the CustomHLSL node syntax. See GridCollection2D for an example.*/
+	virtual bool GenerateIterationSourceNamespaceWriteAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
 #endif
 	// UObject Interface END
 
@@ -329,6 +341,9 @@ public:
 	virtual bool HasTickGroupPrereqs() const { return false; }
 	virtual ETickingGroup CalculateTickGroup(const void* PerInstanceData) const { return NiagaraFirstTickGroup; }
 
+	/** Used to determine if we need to create GPU resources for the emitter. */
+	bool IsUsedWithGPUEmitter(class FNiagaraSystemInstance* SystemInstance) const;
+
 	/** Determines if this type definition matches to a known data interface type.*/
 	static bool IsDataInterfaceType(const FNiagaraTypeDefinition& TypeDef);
 
@@ -395,8 +410,34 @@ public:
 	* Allows a DI to specify data dependencies between emitters, so the system can ensure that the emitter instances are executed in the correct order.
 	* The Dependencies array may already contain items, and this method should only append to it.
 	*/
-	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const
+	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const {}
+
+	virtual bool ReadsEmitterParticleData(const FString& EmitterName) const { return false; }
+
+protected:
+	virtual void PushToRenderThreadImpl() {}
+
+public:
+	void PushToRenderThread()
 	{
+		if (bUsedByGPUEmitter && bRenderDataDirty)
+		{
+			PushToRenderThreadImpl();
+			bRenderDataDirty = false;
+		}
+	}
+
+	void MarkRenderDataDirty()
+	{
+		bRenderDataDirty = true;
+		PushToRenderThread();
+	}
+
+	void SetUsedByGPUEmitter(bool bUsed = true)
+	{
+		check(IsInGameThread());
+		bUsedByGPUEmitter = bUsed;
+		PushToRenderThread();
 	}
 
 protected:
@@ -411,6 +452,9 @@ protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const;
 
 	TUniquePtr<FNiagaraDataInterfaceProxy> Proxy;
+
+	uint32 bRenderDataDirty : 1;
+	uint32 bUsedByGPUEmitter : 1;
 
 private:
 #if WITH_EDITOR
@@ -767,6 +811,50 @@ struct FNDIOutputParam<FQuat>
 		*Y.GetDestAndAdvance() = Val.Y;
 		*Z.GetDestAndAdvance() = Val.Z;
 		*W.GetDestAndAdvance() = Val.W;
+	}
+};
+
+template<>
+struct FNDIOutputParam<FMatrix>
+{
+	VectorVM::FExternalFuncRegisterHandler<float> Out00;
+	VectorVM::FExternalFuncRegisterHandler<float> Out01;
+	VectorVM::FExternalFuncRegisterHandler<float> Out02;
+	VectorVM::FExternalFuncRegisterHandler<float> Out03;
+	VectorVM::FExternalFuncRegisterHandler<float> Out04;
+	VectorVM::FExternalFuncRegisterHandler<float> Out05;
+	VectorVM::FExternalFuncRegisterHandler<float> Out06;
+	VectorVM::FExternalFuncRegisterHandler<float> Out07;
+	VectorVM::FExternalFuncRegisterHandler<float> Out08;
+	VectorVM::FExternalFuncRegisterHandler<float> Out09;
+	VectorVM::FExternalFuncRegisterHandler<float> Out10;
+	VectorVM::FExternalFuncRegisterHandler<float> Out11;
+	VectorVM::FExternalFuncRegisterHandler<float> Out12;
+	VectorVM::FExternalFuncRegisterHandler<float> Out13;
+	VectorVM::FExternalFuncRegisterHandler<float> Out14;
+	VectorVM::FExternalFuncRegisterHandler<float> Out15;
+
+	FORCEINLINE FNDIOutputParam(FVectorVMContext& Context) : Out00(Context), Out01(Context), Out02(Context), Out03(Context), Out04(Context), Out05(Context),
+		Out06(Context), Out07(Context), Out08(Context), Out09(Context), Out10(Context), Out11(Context), Out12(Context), Out13(Context), Out14(Context), Out15(Context)	{}
+	FORCEINLINE bool IsValid() const { return Out00.IsValid(); }
+	FORCEINLINE void SetAndAdvance(const FMatrix& Val)
+	{
+		*Out00.GetDestAndAdvance() = Val.M[0][0];
+		*Out01.GetDestAndAdvance() = Val.M[0][1];
+		*Out02.GetDestAndAdvance() = Val.M[0][2];
+		*Out03.GetDestAndAdvance() = Val.M[0][3];
+		*Out04.GetDestAndAdvance() = Val.M[1][0];
+		*Out05.GetDestAndAdvance() = Val.M[1][1];
+		*Out06.GetDestAndAdvance() = Val.M[1][2];
+		*Out07.GetDestAndAdvance() = Val.M[1][3];
+		*Out08.GetDestAndAdvance() = Val.M[2][0];
+		*Out09.GetDestAndAdvance() = Val.M[2][1];
+		*Out10.GetDestAndAdvance() = Val.M[2][2];
+		*Out11.GetDestAndAdvance() = Val.M[2][3];
+		*Out12.GetDestAndAdvance() = Val.M[3][0];
+		*Out13.GetDestAndAdvance() = Val.M[3][1];
+		*Out14.GetDestAndAdvance() = Val.M[3][2];
+		*Out15.GetDestAndAdvance() = Val.M[3][3];
 	}
 };
 

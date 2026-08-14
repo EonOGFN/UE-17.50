@@ -23,6 +23,7 @@ namespace EMeshPass
 	{
 		DepthPass,
 		BasePass,
+		AnisotropyPass,
 		SkyPass,
 		SingleLayerWaterPass,
 		CSMShadowDepth,
@@ -59,6 +60,7 @@ inline const TCHAR* GetMeshPassName(EMeshPass::Type MeshPass)
 	{
 	case EMeshPass::DepthPass: return TEXT("DepthPass");
 	case EMeshPass::BasePass: return TEXT("BasePass");
+	case EMeshPass::AnisotropyPass: return TEXT("AnisotropyPass");
 	case EMeshPass::SkyPass: return TEXT("SkyPass");
 	case EMeshPass::SingleLayerWaterPass: return TEXT("SingleLayerWaterPass");
 	case EMeshPass::CSMShadowDepth: return TEXT("CSMShadowDepth");
@@ -206,7 +208,7 @@ class FGraphicsMinimalPipelineStateInitializer
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats = TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags = TStaticArray<uint32, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags = TStaticArray<uint32/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
 
 	FGraphicsMinimalPipelineStateInitializer()
 		: BlendState(nullptr)
@@ -260,7 +262,7 @@ public:
 			, FGraphicsPipelineStateInitializer::TRenderTargetFormats(PF_Unknown)
 			, FGraphicsPipelineStateInitializer::TRenderTargetFlags(0)
 			, PF_Unknown
-			, 0
+			, TexCreate_None
 			, ERenderTargetLoadAction::ENoAction
 			, ERenderTargetStoreAction::ENoAction
 			, ERenderTargetLoadAction::ENoAction
@@ -271,7 +273,7 @@ public:
 			, 0
 			, 0
 			, bDepthBounds
-			, bMultiView
+			, MultiViewCount
 			, bHasFragmentDensityAttachment
 			, DrawShadingRate
 		);
@@ -299,7 +301,7 @@ public:
 			DepthStencilState != rhs.DepthStencilState ||
 			ImmutableSamplerState != rhs.ImmutableSamplerState ||
 			bDepthBounds != rhs.bDepthBounds ||
-			bMultiView != rhs.bMultiView ||
+			MultiViewCount != rhs.MultiViewCount ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			DrawShadingRate != rhs.DrawShadingRate ||
 			PrimitiveType != rhs.PrimitiveType)
@@ -367,7 +369,7 @@ public:
 			COMPARE_FIELD(RasterizerState)
 			COMPARE_FIELD(DepthStencilState)
 			COMPARE_FIELD(bDepthBounds)
-			COMPARE_FIELD(bMultiView)
+			COMPARE_FIELD(MultiViewCount)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
 			COMPARE_FIELD(DrawShadingRate)
 			COMPARE_FIELD(PrimitiveType)
@@ -399,7 +401,7 @@ public:
 			COMPARE_FIELD(RasterizerState)
 			COMPARE_FIELD(DepthStencilState)
 			COMPARE_FIELD(bDepthBounds)
-			COMPARE_FIELD(bMultiView)
+			COMPARE_FIELD(MultiViewCount)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
 			COMPARE_FIELD(DrawShadingRate)
 			COMPARE_FIELD(PrimitiveType)
@@ -424,7 +426,7 @@ public:
 	// as it is sometimes hashed and compared as raw bytes. Explicit padding is therefore required between
 	// all data members and at the end of the structure.
 	bool							bDepthBounds = false;
-	bool							bMultiView = false;
+	uint8							MultiViewCount = 0;
 	bool							bHasFragmentDensityAttachment = false;
 	EVRSShadingRate					DrawShadingRate  = EVRSShadingRate::VRSSR_1x1;
 
@@ -1406,7 +1408,7 @@ struct FMeshPassProcessorRenderState
 	{
 	}
 
-	FMeshPassProcessorRenderState(const TUniformBufferRef<FViewUniformShaderParameters>& InViewUniformBuffer, FRHIUniformBuffer* InPassUniformBuffer) :
+	FMeshPassProcessorRenderState(const TUniformBufferRef<FViewUniformShaderParameters>& InViewUniformBuffer, FRHIUniformBuffer* InPassUniformBuffer = nullptr) :
 		  BlendState(nullptr)
 		, DepthStencilState(nullptr)
 		, DepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead)
@@ -1730,7 +1732,7 @@ public:
 	FRHIRayTracingShader* MaterialShader = nullptr;
 	uint32 MaterialShaderIndex = UINT_MAX;
 
-	uint8 GeometrySegmentIndex = 0xFF;
+	uint32 GeometrySegmentIndex = ~0u;
 	uint8 InstanceMask = 0xFF;
 
 	bool bCastRayTracedShadows = true;
@@ -1805,7 +1807,7 @@ public:
 	(
 		FDynamicRayTracingMeshCommandStorage& InDynamicCommandStorage,
 		FRayTracingMeshCommandOneFrameArray& InVisibleCommands,
-		uint8 InGeometrySegmentIndex = 0xFF,
+		uint32 InGeometrySegmentIndex = ~0u,
 		uint32 InRayTracingInstanceIndex = ~0u
 	) :
 		DynamicCommandStorage(InDynamicCommandStorage),
@@ -1833,6 +1835,6 @@ public:
 private:
 	FDynamicRayTracingMeshCommandStorage& DynamicCommandStorage;
 	FRayTracingMeshCommandOneFrameArray& VisibleCommands;
-	uint8 GeometrySegmentIndex;
+	uint32 GeometrySegmentIndex;
 	uint32 RayTracingInstanceIndex;
 };

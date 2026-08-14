@@ -81,7 +81,7 @@ int32 FGlobalComponentReregisterContext::ActiveGlobalReregisterContextCount = 0;
 
 #if WITH_CHAOS
 // Allows for CreatePhysicsState to be deferred, to batch work and parallelize.
-int32 GEnableDeferredPhysicsCreation = 1;
+int32 GEnableDeferredPhysicsCreation = 0;
 FAutoConsoleVariableRef CVarEnableDeferredPhysicsCreation(
 	TEXT("p.EnableDeferredPhysicsCreation"), 
 	GEnableDeferredPhysicsCreation,
@@ -94,12 +94,22 @@ int32 GEnableDeferredPhysicsCreation = 0;
 void FRegisterComponentContext::Process()
 {
 	FSceneInterface* Scene = World->Scene;
+	const bool bAppCanEverRender = FApp::CanEverRender();
+
 	ParallelFor(AddPrimitiveBatches.Num(),
 		[&](int32 Index)
 		{
-			if (!AddPrimitiveBatches[Index]->IsPendingKill())
+			UPrimitiveComponent* Component = AddPrimitiveBatches[Index];
+			if (!Component->IsPendingKill())
 			{
-				Scene->AddPrimitive(AddPrimitiveBatches[Index]);
+				if (Component->IsRenderStateCreated() || !bAppCanEverRender)
+				{
+					Scene->AddPrimitive(Component);
+				}
+				else // Fallback for some edge case where the component renderstate are missing
+				{
+					Component->CreateRenderState_Concurrent(nullptr);
+				}
 			}
 		},
 		!FApp::ShouldUseThreadingForPerformance()
@@ -265,6 +275,8 @@ UActorComponent::UActorComponent(const FObjectInitializer& ObjectInitializer /*=
 
 	bCanEverAffectNavigation = false;
 	bNavigationRelevant = false;
+
+	bMarkedForPreEndOfFrameSync = false;
 }
 
 void UActorComponent::PostInitProperties()
@@ -737,7 +749,11 @@ void UActorComponent::PreEditChange(FProperty* PropertyThatWillChange)
 		if( !IsPendingKill() )
 		{
 			// One way this check can fail is that component subclass does not call Super::PostEditChangeProperty
-			check(!EditReregisterContexts.Find(this));
+			checkf(!EditReregisterContexts.Find(this),
+				TEXT("UActorComponent::PreEditChange(this=%s, owner actor class=%s) already had PreEditChange called on it with no matching PostEditChange; You might be missing a call to Super::PostEditChangeProperty in your PostEditChangeProperty implementation"),
+				*GetFullNameSafe(this),
+				(GetOwner() != nullptr) ? *GetOwner()->GetClass()->GetName() : TEXT("no owner"));
+
 			EditReregisterContexts.Add(this,new FComponentReregisterContext(this));
 		}
 		else
@@ -1401,6 +1417,13 @@ void UActorComponent::DestroyRenderState_Concurrent()
 	check(bRenderStateCreated);
 	bRenderStateCreated = false;
 
+	// Also reset other dirty states
+	// There is a path in the engine that immediately unregisters the component after registration (AActor::RerunConstructionScripts())
+	// so that the component can be left in a state where its transform is marked for update while render state destroyed
+	bRenderStateDirty = false;
+	bRenderTransformDirty = false;
+	bRenderDynamicDataDirty = false;
+
 #if LOG_RENDER_STATE
 	UE_LOG(LogActorComponent, Log, TEXT("DestroyRenderState_Concurrent: %s"), *GetPathName());
 #endif
@@ -1738,6 +1761,11 @@ bool UActorComponent::RequiresGameThreadEndOfFrameUpdates() const
 bool UActorComponent::RequiresGameThreadEndOfFrameRecreate() const
 {
 	return true;
+}
+
+bool UActorComponent::RequiresPreEndOfFrameSync() const
+{
+	return false;
 }
 
 void UActorComponent::Activate(bool bReset)

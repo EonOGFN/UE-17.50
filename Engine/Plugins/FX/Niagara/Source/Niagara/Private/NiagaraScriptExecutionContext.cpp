@@ -6,7 +6,6 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraWorldManager.h"
-#include "NiagaraSystemInstance.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraGPUInstanceCountManager.h"
@@ -31,6 +30,7 @@ static FAutoConsoleVariableRef CVarNiagaraExecVMScripts(
 
 FNiagaraScriptExecutionContextBase::FNiagaraScriptExecutionContextBase()
 	: Script(nullptr)
+	, bAllowParallel(true)
 {
 
 }
@@ -98,6 +98,31 @@ void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataBuffe
 	}
 }
 
+#if STATS
+void FNiagaraScriptExecutionContextBase::CreateStatScopeData()
+{
+	StatScopeData.Empty();
+	for (const TStatId& StatId : Script->GetStatScopeIDs())
+	{
+		StatScopeData.Add(FStatScopeData(StatId));
+	}
+}
+
+TMap<TStatIdData const*, float> FNiagaraScriptExecutionContextBase::ReportStats()
+{
+	// Process recorded times
+	for (FStatScopeData& ScopeData : StatScopeData)
+	{
+		uint64 ExecCycles = ScopeData.ExecutionCycleCount.exchange(0);
+		if (ExecCycles > 0)
+		{
+			ExecutionTimings.FindOrAdd(ScopeData.StatId.GetRawPointer()) = ExecCycles;
+		}
+	}
+	return ExecutionTimings;
+}
+#endif
+
 bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
 {
 	if (NumInstances == 0)
@@ -110,24 +135,30 @@ bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScr
 
 	if (GbExecVMScripts != 0)
 	{
-		const FNiagaraVMExecutableData& ExecData = Script->GetVMExecutableData();
-		VectorVM::Exec(
-			ExecData.ByteCode.GetData(),
-			ExecData.OptimizedByteCode.Num() > 0 ? ExecData.OptimizedByteCode.GetData() : nullptr,
-			ExecData.NumTempRegisters,
-			ConstantBufferTable.Buffers.Num(),
-			ConstantBufferTable.Buffers.GetData(),
-			ConstantBufferTable.BufferSizes.GetData(),
-			DataSetMetaTable,
-			FunctionTable.GetData(),
-			UserPtrTable.GetData(),
-			NumInstances
 #if STATS
-			, Script->GetStatScopeIDs()
-#elif ENABLE_STATNAMEDEVENTS
-			, Script->GetStatNamedEvents()
+		CreateStatScopeData();
 #endif
-		);
+		const FNiagaraVMExecutableData& ExecData = Script->GetVMExecutableData();
+
+		VectorVM::FVectorVMExecArgs ExecArgs;
+		ExecArgs.ByteCode = ExecData.ByteCode.GetData();
+		ExecArgs.OptimizedByteCode = ExecData.OptimizedByteCode.Num() > 0 ? ExecData.OptimizedByteCode.GetData() : nullptr;
+		ExecArgs.NumTempRegisters = ExecData.NumTempRegisters;
+		ExecArgs.ConstantTableCount = ConstantBufferTable.Buffers.Num();
+		ExecArgs.ConstantTable = ConstantBufferTable.Buffers.GetData();
+		ExecArgs.ConstantTableSizes = ConstantBufferTable.BufferSizes.GetData();
+		ExecArgs.DataSetMetaTable = DataSetMetaTable;
+		ExecArgs.ExternalFunctionTable = FunctionTable.GetData();
+		ExecArgs.UserPtrTable = UserPtrTable.GetData();
+		ExecArgs.NumInstances = NumInstances;
+#if STATS
+		ExecArgs.StatScopes = MakeArrayView(StatScopeData);
+#elif ENABLE_STATNAMEDEVENTS
+		ExecArgs.StatNamedEventsScopes = Script->GetStatNamedEvents();
+#endif
+		
+		ExecArgs.bAllowParallel = bAllowParallel;
+		VectorVM::Exec(ExecArgs);
 	}
 
 	// Tell the datasets we wrote how many instances were actually written.
@@ -163,10 +194,12 @@ bool FNiagaraScriptExecutionContextBase::CanExecute()const
 TArrayView<const uint8> FNiagaraScriptExecutionContextBase::GetScriptLiterals() const
 {
 #if WITH_EDITORONLY_DATA
-	return Parameters.GetScriptLiterals();
-#else
-	return MakeArrayView(Script->GetVMExecutableData().ScriptLiterals);
+	if (!Script->IsScriptCooked())
+	{
+		return Parameters.GetScriptLiterals();
+	}
 #endif
+	return MakeArrayView(Script->GetVMExecutableData().ScriptLiterals);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -374,6 +407,10 @@ void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMCont
 
 bool FNiagaraSystemScriptExecutionContext::Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
 {
+	//FORT - 314222 - There is a bug currently when system scripts execute in parallel.
+	//This is unlikely for these scripts but we're explicitly disallowing it for safety.
+	bAllowParallel = false;
+
 	return FNiagaraScriptExecutionContextBase::Init(InScript, InTarget);
 }
 
@@ -541,10 +578,12 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 	CA_ASSUME(InSystemInstance != nullptr);
 	ensure(!InSystemInstance->IsComplete());
 	SystemInstanceID = InSystemInstance->GetId();
+	SharedContext = InSystemInstance->GetComputeSharedContext();
 	bRequiresDistanceFieldData = InSystemInstance->RequiresDistanceFieldData();
 	bRequiresDepthBuffer = InSystemInstance->RequiresDepthBuffer();
 	bRequiresEarlyViewData = InSystemInstance->RequiresEarlyViewData();
-	bRequiresViewUniformBuffer = false;
+	bRequiresViewUniformBuffer = InSystemInstance->RequiresViewUniformBuffer();
+ 
 	uint32 DataSizeForGPU = InSystemInstance->GPUDataInterfaceInstanceDataSize;
 
 	if (DataSizeForGPU > 0)
@@ -558,7 +597,10 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 
 		uint8* InstanceDataBase = (uint8*) DIInstanceData->PerInstanceDataForRT;
 		uint32 RunningOffset = 0;
-		for (auto& Pair : InSystemInstance->DataInterfaceInstanceDataOffsets)
+
+		DIInstanceData->InterfaceProxiesToOffsets.Reserve(InSystemInstance->GPUDataInterfaces.Num());
+
+		for (const auto& Pair : InSystemInstance->GPUDataInterfaces)
 		{
 			UNiagaraDataInterface* Interface = Pair.Key.Get();
 			if (Interface == nullptr)
@@ -567,22 +609,21 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 			}
 
 			FNiagaraDataInterfaceProxy* Proxy = Interface->GetProxy();
-			int32 Offset = Pair.Value;
+			const int32 Offset = Pair.Value;
 
 			const int32 RTDataSize = Interface->PerInstanceDataPassedToRenderThreadSize();
-			if (RTDataSize > 0)
-			{
-				check(Proxy);
-				void* PerInstanceData = &InSystemInstance->DataInterfaceInstanceData[Offset];
+			ensure(RTDataSize > 0);
+			check(Proxy);
 
-				Interface->ProvidePerInstanceDataForRenderThread(InstanceDataBase, PerInstanceData, SystemInstanceID);
+			void* PerInstanceData = &InSystemInstance->DataInterfaceInstanceData[Offset];
 
-				// @todo rethink this. So ugly.
-				DIInstanceData->InterfaceProxiesToOffsets.Add(Proxy, RunningOffset);
+			Interface->ProvidePerInstanceDataForRenderThread(InstanceDataBase, PerInstanceData, SystemInstanceID);
 
-				InstanceDataBase += RTDataSize;
-				RunningOffset += RTDataSize;
-			}
+			// @todo rethink this. So ugly.
+			DIInstanceData->InterfaceProxiesToOffsets.Add(Proxy, RunningOffset);
+
+			InstanceDataBase += RTDataSize;
+			RunningOffset += RTDataSize;
 		}
 	}
 
@@ -601,10 +642,14 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 	FNiagaraComputeInstanceData* Instances = (FNiagaraComputeInstanceData*)(InstanceData_ParamData_Packed);
 	uint8* ParamDataBufferPtr = InstanceData_ParamData_Packed + PackedDispatchesSizeAligned;
 
-	int32 TickCount = InSystemInstance->GetTickCount();
-	check(TickCount > 0);
-	bNeedsReset = ( TickCount == 1);
+	bNeedsReset = InSystemInstance->RequiresGpuBufferReset();
 	NumInstancesWithSimStages = 0;
+
+	if ( bNeedsReset )
+	{
+		++SharedContext->ParticleCountReadFence;
+	}
+	ParticleCountFence = SharedContext->ParticleCountReadFence;
 
 	TotalDispatches = 0;
 
@@ -635,10 +680,16 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 	// This is spawn rate as well as DataInterface per instance data and the ParameterData for the emitter.
 	// @todo Ideally we would only update DataInterface and ParameterData bits if they have changed.
 	uint32 InstanceIndex = 0;
+	bool bStartNewOverlapGroup = false;
 
-	const TConstArrayView<int32> EmitterExecutionOrder = InSystemInstance->GetEmitterExecutionOrder();
-	for (const int32& EmitterIdx : EmitterExecutionOrder)
+	const TConstArrayView<FNiagaraEmitterExecutionIndex> EmitterExecutionOrder = InSystemInstance->GetEmitterExecutionOrder();
+	for (const FNiagaraEmitterExecutionIndex& EmiterExecIndex : EmitterExecutionOrder)
 	{
+		// The dependency resolution code does not consider CPU and GPU emitters separately, so the flag which marks the start of a new overlap group can be set on either
+		// a CPU or GPU emitter. We must turn on bStartNewOverlapGroup when we encounter the flag, and reset it when we've actually marked a GPU emitter as starting a new group.
+		bStartNewOverlapGroup |= EmiterExecIndex.bStartNewOverlapGroup;
+
+		const uint32 EmitterIdx = EmiterExecIndex.EmitterIndex;
 		if (FNiagaraEmitterInstance* EmitterInstance = &InSystemInstance->GetEmitters()[EmitterIdx].Get())
 		{
 			if (EmitterInstance->IsComplete() )
@@ -665,8 +716,6 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 				continue;
 			}
 
-			bRequiresViewUniformBuffer |= Emitter->RequiresViewUniformBuffer();
-
 			FNiagaraComputeInstanceData* InstanceData = new (&Instances[InstanceIndex]) FNiagaraComputeInstanceData;
 			InstanceIndex++;
 
@@ -692,6 +741,9 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 
 			GPUContext->CombinedParamStore.CopyParameterDataToPaddedBuffer(InstanceData->ExternalParamData, ParmSize);
 
+			InstanceData->bStartNewOverlapGroup = bStartNewOverlapGroup;
+			bStartNewOverlapGroup = false;
+
 			InstanceData->bUsesSimStages = Emitter->bSimulationStagesEnabled/* TODO limit to just with stages in the future! Leaving like this so what can convert! && EmitterRaw->GetSimulationStages().Num() > 0*/;
 			InstanceData->bUsesOldShaderStages = Emitter->bDeprecatedShaderStagesEnabled;
 
@@ -707,12 +759,18 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 			// @todo-threadsafety Think of a better way to do this!
 			const TArray<UNiagaraDataInterface*>& DataInterfaces = GPUContext->CombinedParamStore.GetDataInterfaces();
 			InstanceData->DataInterfaceProxies.Reserve(DataInterfaces.Num());
-			//UE_LOG(LogNiagara, Log, TEXT("InitTick %s %d"), GPUContext->GetDebugSimName())
+			InstanceData->IterationDataInterfaceProxies.Reserve(DataInterfaces.Num());
+
 			for (UNiagaraDataInterface* DI : DataInterfaces)
 			{
-				check(DI->GetProxy());
-				InstanceData->DataInterfaceProxies.Add(DI->GetProxy());
-				//UE_LOG(LogNiagara, Log, TEXT("Proxy %p for DI %p"), DI->GetProxy(), DI);
+				FNiagaraDataInterfaceProxy* DIProxy = DI->GetProxy();
+				check(DIProxy);
+				InstanceData->DataInterfaceProxies.Add(DIProxy);
+
+				if ( FNiagaraDataInterfaceProxyRW* RWProxy = DIProxy->AsIterationProxy() )
+				{
+					InstanceData->IterationDataInterfaceProxies.Add(RWProxy);
+				}
 			}
 		}
 	}
@@ -723,6 +781,8 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 
 void FNiagaraGPUSystemTick::Destroy()
 {
+	SharedContext->ParticleCountWriteFence = ParticleCountFence;
+
 	FNiagaraComputeInstanceData* Instances = GetInstanceData();
 	for (uint32 i = 0; i < Count; i++)
 	{
@@ -805,14 +865,6 @@ FNiagaraComputeExecutionContext::~FNiagaraComputeExecutionContext()
 	// EmitterInstanceReadback.GPUCountOffset should be INDEX_NONE at this point to ensure the index is reused.
 	// When the batcher is being destroyed though, we don't free the index, but this would not be leaking.
 	// check(EmitterInstanceReadback.GPUCountOffset == INDEX_NONE);
-
-#if WITH_EDITORONLY_DATA
-	GPUDebugDataReadbackFloat.Reset();
-	GPUDebugDataReadbackInt.Reset();
-	GPUDebugDataReadbackHalf.Reset();
-	GPUDebugDataReadbackCounts.Reset();
-#endif
-
 	SetDataToRender(nullptr);
 
 	ExternalCBufferLayout = nullptr;
@@ -828,29 +880,6 @@ void FNiagaraComputeExecutionContext::Reset(NiagaraEmitterInstanceBatcher* Batch
 		Context->ResetInternal(B);
 	}
 	);
-}
-
-void FNiagaraComputeExecutionContext::BakeVariableNamesForIterationLookup()
-{
-	// We need to store the name of each DI source variable here so that we can look it up later when looking for the 
-			// iteration interface.
-	TArray<FNiagaraVariable> Params;
-	CombinedParamStore.GetParameters(Params);
-	for (FNiagaraVariable& Var : Params)
-	{
-		if (!Var.IsDataInterface())
-			continue;
-
-		UNiagaraDataInterface* DI = CombinedParamStore.GetDataInterface(Var);
-		if (DI)
-		{
-			FNiagaraDataInterfaceProxy* Proxy = DI->GetProxy();
-			if (Proxy)
-			{
-				Proxy->SourceDIName = Var.GetName();
-			}
-		}
-	}
 }
 
 void FNiagaraComputeExecutionContext::InitParams(UNiagaraScript* InGPUComputeScript, ENiagaraSimTarget InSimTarget, const uint32 InDefaultSimulationStageIndex, const int32 InMaxUpdateIterations, const TSet<uint32> InSpawnStages)
@@ -1024,7 +1053,7 @@ bool FNiagaraComputeExecutionContext::IsIterationStage(FNiagaraDataInterfaceProx
 	return false;
 }
 
-FNiagaraDataInterfaceProxy* FNiagaraComputeExecutionContext::FindIterationInterface(const TArray<FNiagaraDataInterfaceProxy*>& InProxies, uint32 CurrentStage) const
+FNiagaraDataInterfaceProxyRW* FNiagaraComputeExecutionContext::FindIterationInterface(const TArray<FNiagaraDataInterfaceProxyRW*>& InProxies, uint32 CurrentStage) const
 {
 	const FSimulationStageMetaData* MetaData = GetSimStageMetaData(CurrentStage);
 	if (MetaData)
@@ -1032,7 +1061,7 @@ FNiagaraDataInterfaceProxy* FNiagaraComputeExecutionContext::FindIterationInterf
 		if (MetaData->IterationSource.IsNone()) // Per particle iteration...
 			return nullptr;
 
-		for (FNiagaraDataInterfaceProxy* Proxy : InProxies)
+		for (FNiagaraDataInterfaceProxyRW* Proxy : InProxies)
 		{
 			if (Proxy->SourceDIName == MetaData->IterationSource)
 				return Proxy;
@@ -1044,9 +1073,8 @@ FNiagaraDataInterfaceProxy* FNiagaraComputeExecutionContext::FindIterationInterf
 	}
 	else if (SimStageInfo.Num() == 0)
 	{
-
 		// Fallback to old shader stages
-		for (FNiagaraDataInterfaceProxy* Proxy : InProxies)
+		for (FNiagaraDataInterfaceProxyRW* Proxy : InProxies)
 		{
 			if (Proxy->IsIterationStage_DEPRECATED(CurrentStage))
 				return Proxy;
@@ -1084,7 +1112,6 @@ bool FNiagaraComputeExecutionContext::Tick(FNiagaraSystemInstance* ParentSystemI
 			}
 		}
 #endif
-
 		CombinedParamStore.Tick();
 	}
 
@@ -1114,12 +1141,7 @@ void FNiagaraComputeExecutionContext::ResetInternal(NiagaraEmitterInstanceBatche
 		EmitterInstanceReadback.GPUCountOffset = INDEX_NONE;
 	}
 
-#if WITH_EDITORONLY_DATA
-	GPUDebugDataReadbackFloat.Reset();
-	GPUDebugDataReadbackInt.Reset();
-	GPUDebugDataReadbackHalf.Reset();
-	GPUDebugDataReadbackCounts.Reset();
-#endif
+	GpuSpawnInfo_GT.Reset();
 
 	SetDataToRender(nullptr);
 }
@@ -1189,14 +1211,12 @@ bool FNiagaraComputeInstanceData::IsIterationStage(FNiagaraDataInterfaceProxy* D
 	return false;
 }
 
-FNiagaraDataInterfaceProxy* FNiagaraComputeInstanceData::FindIterationInterface(uint32 SimulationStageIndex) const
+FNiagaraDataInterfaceProxyRW* FNiagaraComputeInstanceData::FindIterationInterface(uint32 SimulationStageIndex) const
 {
-
 	if (bUsesOldShaderStages)
 	{
-		FNiagaraDataInterfaceProxy* IterationInterface = nullptr;
-
-		for (FNiagaraDataInterfaceProxy* Interface : DataInterfaceProxies)
+		FNiagaraDataInterfaceProxyRW* IterationInterface = nullptr;
+		for (FNiagaraDataInterfaceProxyRW* Interface : IterationDataInterfaceProxies)
 		{
 			if (Interface->IsIterationStage_DEPRECATED(SimulationStageIndex))
 			{
@@ -1210,11 +1230,12 @@ FNiagaraDataInterfaceProxy* FNiagaraComputeInstanceData::FindIterationInterface(
 				}
 			}
 		}
+
 		return IterationInterface;
 	}
 	else if (bUsesSimStages)
 	{
-		return Context->FindIterationInterface(DataInterfaceProxies, SimulationStageIndex);
+		return Context->FindIterationInterface(IterationDataInterfaceProxies, SimulationStageIndex);
 	}
 	return nullptr;
 }

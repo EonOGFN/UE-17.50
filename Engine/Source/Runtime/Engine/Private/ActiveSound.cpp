@@ -67,6 +67,8 @@ FActiveSound::FActiveSound()
 	, bUpdatePlaybackTime(false)
 	, bIsPlayingAudio(false)
 	, bIsStopping(false)
+	, bEnableOutputToBusOnlyOverride(false)
+	, bOutputToBusOnlyOverride(false)
 	, UserIndex(0)
 	, FadeOut(EFadeOut::None)
 	, bIsOccluded(false)
@@ -95,6 +97,7 @@ FActiveSound::FActiveSound()
 	, CurrentInteriorLPF(MAX_FILTER_FREQUENCY)
 	, EnvelopeFollowerAttackTime(10)
 	, EnvelopeFollowerReleaseTime(100)
+	, bHasNewBusSends(false)
 #if ENABLE_AUDIO_DEBUG
 	, DebugColor(FColor::Black)
 #endif // ENABLE_AUDIO_DEBUG
@@ -362,12 +365,34 @@ void FActiveSound::SetSourceBusSend(EBusSendType BusSendType, const FSoundSource
 		if (Info.SoundSourceBus == SendInfo.SoundSourceBus || Info.AudioBus == SendInfo.AudioBus)
 		{
 			Info.SendLevel = SendInfo.SendLevel;
+
+			bHasNewBusSends = true;
+			newBusSends.Add(TTuple<EBusSendType, FSoundSourceBusSendInfo>(BusSendType, SendInfo));
 			return;
 		}
 	}
 
 	// Otherwise, add it to the source bus send overrides
 	BusSendsOverride[(int32)BusSendType].Add(SendInfo);
+
+	bHasNewBusSends = true;
+	newBusSends.Add(TTuple<EBusSendType, FSoundSourceBusSendInfo>(BusSendType,SendInfo));
+}
+
+bool FActiveSound::HasNewBusSends() const
+{
+	return bHasNewBusSends;
+}
+
+TArray< TTuple<EBusSendType, FSoundSourceBusSendInfo> > const& FActiveSound::GetNewBusSends() const
+{
+	return newBusSends;
+}
+
+void FActiveSound::ResetNewBusSends()
+{
+	newBusSends.Empty();
+	bHasNewBusSends = false;
 }
 
 void FActiveSound::Stop()
@@ -635,6 +660,22 @@ void FActiveSound::UpdateWaveInstances(TArray<FWaveInstance*> &InWaveInstances, 
 			for (FWaveInstance* WaveInstance : ThisSoundsWaveInstances)
 			{
 				WaveInstance->SetStopping(true);
+			}
+		}
+
+
+		// each wave instance needs its own copy of the quantization command
+		for (FWaveInstance* WaveInstance : ThisSoundsWaveInstances)
+		{
+			check(WaveInstance);
+
+			if (!WaveInstance->QuantizedRequestData && QuantizedRequestData.QuantizedCommandPtr)
+			{
+				// shallow copy of the FQuartzQuantizedRequestData struct
+				WaveInstance->QuantizedRequestData = MakeUnique<Audio::FQuartzQuantizedRequestData>(QuantizedRequestData);
+
+				// manually deep copy the QuantizedCommandPtr object itself
+				WaveInstance->QuantizedRequestData->QuantizedCommandPtr = QuantizedRequestData.QuantizedCommandPtr->GetDeepCopyOfDerivedObject();
 			}
 		}
 

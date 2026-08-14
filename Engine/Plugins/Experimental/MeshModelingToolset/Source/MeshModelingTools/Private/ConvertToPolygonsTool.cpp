@@ -45,7 +45,7 @@ UInteractiveTool* UConvertToPolygonsToolBuilder::BuildTool(const FToolBuilderSta
  */
 UConvertToPolygonsTool::UConvertToPolygonsTool()
 {
-	SetToolDisplayName(LOCTEXT("ConvertToPolygonsToolName", "Find PolyGroups"));
+	SetToolDisplayName(LOCTEXT("ConvertToPolygonsToolName", "Find PolyGroups Tool"));
 }
 
 void UConvertToPolygonsTool::Setup()
@@ -87,6 +87,10 @@ void UConvertToPolygonsTool::Setup()
 	{
 		UpdateVisualization();
 	}
+
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Cluster triangles of the Mesh into PolyGroups using various strategies"),
+		EToolMessageLevel::UserNotification);
 
 	UpdatePolygons();
 }
@@ -148,17 +152,6 @@ void UConvertToPolygonsTool::Render(IToolsContextRenderAPI* RenderAPI)
 				LineColor, 0, 2.0*PDIScale, 1.0f, true);
 		}
 	}
-}
-
-
-bool UConvertToPolygonsTool::HasAccept() const
-{
-	return true;
-}
-
-bool UConvertToPolygonsTool::CanAccept() const
-{
-	return true;
 }
 
 

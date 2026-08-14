@@ -14,7 +14,12 @@
 #include "Chaos/ChaosScene.h"
 #include "SQAccelerator.h"
 #include "CollisionQueryFilterCallbackCore.h"
+#include "BodyInstanceCore.h"
 
+namespace Chaos
+{
+	extern CHAOS_API float AsyncInterpolationMultiplier;
+}
 
 namespace ChaosTest {
 
@@ -112,36 +117,221 @@ namespace ChaosTest {
 		Solver->AdvanceSolverBy(Dt);
 	}
 
-	GTEST_TEST(EngineInterface,AccelerationStructureHasSyncTime)
+	GTEST_TEST(EngineInterface,AccelerationStructureHasSyncTimestamp)
 	{
 		//make sure acceleration structure has appropriate sync time
 
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTime(),0);
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),0);	//timestamp of 0 because we flush when scene is created
 
 		FReal TotalDt = 0;
 		for(int Step = 1; Step < 10; ++Step)
 		{
 			FVec3 Grav(0,0,-1);
-			const FReal Dt = 1.f/Step;
-			Scene.SetUpForFrame(&Grav, Dt,99999,99999,10,false);
+			Scene.SetUpForFrame(&Grav, 1,99999,99999,10,false);
 			Scene.StartFrame();
 			Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();	//make sure we get a new tree every step
 			Scene.EndFrame();
 
-			EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTime(),TotalDt);
-			TotalDt += Dt;
+			EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),Step);
 		}
 	}
+
+	GTEST_TEST(EngineInterface, AccelerationStructureHasSyncTimestamp_MultiFrameDelay)
+	{
+		//make sure acceleration structure has appropriate sync time when PT falls behind GT
+
+		FChaosScene Scene(nullptr);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
+
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);	//timestamp of 0 because we flush when scene is created
+
+		FVec3 Grav(0, 0, -1);
+		Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+
+		// Game thread enqueues second solver task before first completes (we did not execute advance task)
+		Scene.StartFrame();
+		Scene.EndFrame();
+		Scene.StartFrame();
+
+		// Execute first enqueued advance task
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+
+		// No EndFrame called after PT execution, stamp should still be 0.
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
+		
+		// Endframe update structure to stamp 1, as we have completed 1 frame on PT.
+		Scene.EndFrame();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 1);
+
+		Scene.StartFrame();
+		
+		// PT catches up during this frame
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.EndFrame();
+		
+		// New structure should be at 3 as PT/GT are in sync.
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 3);
+	
+	}
+
+	GTEST_TEST(EngineInterface,AccelerationStructureHasSyncTimestamp_MultiFrameDelay2)
+	{
+		//make sure acceleration structure has appropriate sync time when PT falls behind GT
+
+		FChaosScene Scene(nullptr);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
+
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),0);	//timestamp of 0 because we flush when scene is created
+
+		FVec3 Grav(0,0,-1);
+		Scene.SetUpForFrame(&Grav, 1,99999,99999,10,false);
+
+		// PT not finished yet (we didn't execute solver task), should still be 0.
+		Scene.StartFrame();
+		Scene.EndFrame();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),0);
+
+		// PT not finished yet (we didn't execute solver task), should still be 0.
+		Scene.StartFrame();
+		Scene.EndFrame();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),0);
+
+		// First PT task finished this frame, we are two behind, now at time 1.
+		Scene.StartFrame();
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.EndFrame();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),1);
+
+		// Remaining two PT tasks finish, we are caught up, but still time 1 as EndFrame has not updated our structure.
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),1);
+
+		// PT task this frame finishes before EndFrame, putting us at 4, in sync with GT.
+		Scene.StartFrame();
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.EndFrame();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(),4);
+	}
+
+	GTEST_TEST(EngineInterface, PullFromPhysicsState_MultiFrameDelay)
+	{
+		// This test is designed to verify pulldata is being timestamped correctly, and that we will not write to a deleted GT particle 
+		// in this case. 
+
+		FChaosScene Scene(nullptr);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
+
+		FVec3 Grav(0,0,-1);
+		Scene.SetUpForFrame(&Grav, 1,99999,99999,10,false);
+
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+		Params.bSimulatePhysics = true;
+		Params.bEnableGravity = true;
+		Params.bStartAwake = true;
+
+
+		// Create two particles, one to remove for test, the other to ensure we have > 0 proxies to hit the pull physics data path.
+		TGeometryParticle<FReal,3>* Particle = nullptr;
+		FChaosEngineInterface::CreateActor(Params,Particle);
+		EXPECT_NE(Particle,nullptr);
+		{
+			auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+			Particle->SetGeometry(MoveTemp(Sphere));
+		}
+		TGeometryParticle<FReal,3>* Particle2 = nullptr;
+		FChaosEngineInterface::CreateActor(Params,Particle2);
+		EXPECT_NE(Particle2,nullptr);
+		{
+			auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+			Particle2->SetGeometry(MoveTemp(Sphere));
+		}
+		TArray<TGeometryParticle<FReal,3>*> Particles ={Particle, Particle2};
+		Scene.AddActorsToScene_AssumesLocked(Particles);
+
+		// verify external timestamps are as expected.
+		auto& MarshallingManager = Scene.GetSolver()->GetMarshallingManager();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 1);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 0);
+
+		// Execute a frame such that particles should be initialized in physics thread and game thread.
+		Scene.StartFrame();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 2);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 1);
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.EndFrame();
+
+		// run GT frame, no PT task executed.
+		Scene.StartFrame();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 3);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 2);
+		Scene.EndFrame();
+
+		// enqueue another frame.
+		Scene.StartFrame();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 4);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 3);
+		
+		// Remove particle, is stamped with external time 4. PT needs to run 3 frames before this will be removed,
+		// as we are two PT tasks behind, and this has not been enqueued yet.
+		auto* Proxy = Particle->GetProxy();
+		FChaosEngineInterface::ReleaseActor(Particle,&Scene);
+		EXPECT_EQ(Particle,nullptr);
+		EXPECT_EQ(*Proxy->GetSyncTimestamp().Get(), 4); // was removed on external timestamp 4.
+
+		// Run PT task for internal timestamp 2.
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+
+		// Particle should not get touched in Pull, as timestamp from removal should be greater than pulldata timestamp. (4 > 2).
+		// (if it was touched we'd crash as it is now deleted).
+		Scene.EndFrame();
+
+
+		Scene.StartFrame();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 5);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 4);
+		EXPECT_EQ(*Proxy->GetSyncTimestamp().Get(), 4);
+
+		// run pt task for internal timestamp 3. Particle still not removed on PT.
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		EXPECT_EQ(Scene.GetSolver()->GetEvolution()->GetParticles().GetAllParticlesView().Num(), 2); // none have been removed on pt, still 2 particles.
+
+		// particle should not get touched in pull, as timestamp from removal is less than pulldata timestamp (3 < 4)
+		// If this crashes in pull, that means this test has regressed. (Pulldata timestamp is likely wrong).
+		Scene.EndFrame();
+
+
+		Scene.StartFrame();
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 6);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestampConsumed_External(), 5);
+		EXPECT_EQ(*Proxy->GetSyncTimestamp().Get(), 4);
+		EXPECT_EQ(Scene.GetSolver()->GetEvolution()->GetParticles().GetAllParticlesView().Num(), 2); // particles not yet removed on pt, still 2.
+
+
+		// This is PT task that should remove particle (internal timestamp 4, matching stamp on removed particle's dirty data).
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		EXPECT_EQ(Scene.GetSolver()->GetEvolution()->GetParticles().GetAllParticlesView().Num(), 1); // one particle removed on pt, one remaining.
+
+		// This PT task catches up to gamethread.
+		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		Scene.EndFrame();
+	}
+
+
+
 
 	GTEST_TEST(EngineInterface,CreateActorPostFlush)
 	{
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -181,7 +371,6 @@ namespace ChaosTest {
 	{
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -225,7 +414,6 @@ namespace ChaosTest {
 	{
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -264,11 +452,53 @@ namespace ChaosTest {
 		}
 	}
 
+	GTEST_TEST(EngineInterface,RemoveActorPostFlush0Dt)
+	{
+		FChaosScene Scene(nullptr);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+
+		TGeometryParticle<FReal,3>* Particle = nullptr;
+
+		FChaosEngineInterface::CreateActor(Params,Particle);
+		EXPECT_NE(Particle,nullptr);
+
+		{
+			auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+			Particle->SetGeometry(MoveTemp(Sphere));
+		}
+
+		//create actor before structure is ticked
+		TArray<TGeometryParticle<FReal,3>*> Particles ={Particle};
+		Scene.AddActorsToScene_AssumesLocked(Particles);
+
+		//tick solver so that particle is created, but don't call EndFrame (want to flush and swap manually)
+		{
+			//use 0 dt to make sure pending operations are not sensitive to 0 dt
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,0,99999,99999,10,false);
+			Scene.StartFrame();
+		}
+
+		//make sure acceleration structure is built
+		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
+
+		//delete object to get no hit
+		FChaosEngineInterface::ReleaseActor(Particle,&Scene);
+
+		Scene.CopySolverAccelerationStructure();	//trigger swap manually and see pending changes apply
+		{
+			const auto HitBuffer = InSphereHelper(Scene,FTransform::Identity,3);
+			EXPECT_EQ(HitBuffer.GetNumHits(),0);
+		}
+	}
+
 	GTEST_TEST(EngineInterface,CreateAndRemoveActorPostFlush)
 	{
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -313,7 +543,6 @@ namespace ChaosTest {
 		{
 			FChaosScene Scene(nullptr);
 			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-			Scene.GetSolver()->SetEnabled(true);
 			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
 
 			FActorCreationParams Params;
@@ -437,11 +666,214 @@ namespace ChaosTest {
 		
 	}
 
+	GTEST_TEST(EngineInterface,RemoveDelayed)
+	{
+		for(int Delay = 0; Delay < 4; ++Delay)
+		{
+			FChaosScene Scene(nullptr);
+			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
+
+			FActorCreationParams Params;
+			Params.Scene = &Scene;
+
+			Params.bSimulatePhysics = true;	//simulate so that sync body is triggered
+			Params.bStartAwake = true;
+
+			TGeometryParticle<FReal,3>* Particle = nullptr;
+			FChaosEngineInterface::CreateActor(Params,Particle);
+			EXPECT_NE(Particle,nullptr);
+
+			{
+				auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+				Particle->SetGeometry(MoveTemp(Sphere));
+				auto Simulated = static_cast<TKinematicGeometryParticle<FReal,3>*>(Particle);
+				Simulated->SetV(FVec3(0,0,-1));
+			}
+
+
+			//make second simulating particle that we don't delete. Needed to trigger a sync
+			//this is because some data is cleaned up on GT immediately
+			TGeometryParticle<FReal,3>* Particle2 = nullptr;
+			FChaosEngineInterface::CreateActor(Params,Particle2);	
+			EXPECT_NE(Particle2,nullptr);
+			{
+				auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+				Particle2->SetGeometry(MoveTemp(Sphere));
+				auto Simulated = static_cast<TKinematicGeometryParticle<FReal,3>*>(Particle2);
+				Simulated->SetV(FVec3(0,-1,0));
+			}
+
+			//create actor
+			TArray<TGeometryParticle<FReal,3>*> Particles ={Particle, Particle2};
+			Scene.AddActorsToScene_AssumesLocked(Particles);
+
+			//tick until it's being synced from sim
+			for(int Repeat = 0; Repeat < Delay; ++Repeat)
+			{
+				{
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+					Scene.StartFrame();
+					Scene.EndFrame();
+				}
+			}
+
+			//x starts at 0
+			EXPECT_NEAR(Particle->X()[2],0, 1e-4);
+			EXPECT_NEAR(Particle2->X()[1],0, 1e-4);
+
+			//tick solver and see new position synced from sim
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle->X()[2],-1, 1e-4);
+				EXPECT_NEAR(Particle2->X()[1],-1, 1e-4);
+			}
+
+			//tick solver and delete in between solver finishing and sync
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+
+				//delete particle
+				FChaosEngineInterface::ReleaseActor(Particle,&Scene);
+
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle2->X()[1],-2, 1e-4);	//other particle keeps moving
+			}
+
+
+			//tick again and don't crash
+			for(int Repeat = 0; Repeat < Delay + 1; ++Repeat)
+			{
+				{
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+					Scene.StartFrame();
+					Scene.EndFrame();
+					EXPECT_NEAR(Particle2->X()[1],-3 - Repeat, 1e-4);	//other particle keeps moving
+				}
+			}
+		}
+	}
+
+	GTEST_TEST(EngineInterface,MoveDelayed)
+	{
+		for(int Delay = 0; Delay < 4; ++Delay)
+		{
+			FChaosScene Scene(nullptr);
+			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
+
+			FActorCreationParams Params;
+			Params.Scene = &Scene;
+
+			Params.bSimulatePhysics = true;	//simulated so that gt conflicts with sim thread
+			Params.bStartAwake = true;
+
+			TGeometryParticle<FReal,3>* Particle = nullptr;
+			FChaosEngineInterface::CreateActor(Params,Particle);
+			EXPECT_NE(Particle,nullptr);
+
+			{
+				auto Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(0),3);
+				Particle->SetGeometry(MoveTemp(Sphere));
+				auto Simulated = static_cast<TKinematicGeometryParticle<FReal,3>*>(Particle);
+				Simulated->SetV(FVec3(0,0,-1));
+			}
+
+			//create actor
+			TArray<TGeometryParticle<FReal,3>*> Particles ={Particle};
+			Scene.AddActorsToScene_AssumesLocked(Particles);
+
+			//tick until it's being synced from sim
+			for(int Repeat = 0; Repeat < Delay; ++Repeat)
+			{
+				{
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+					Scene.StartFrame();
+					Scene.EndFrame();
+				}
+			}
+
+			//x starts at 0
+			EXPECT_NEAR(Particle->X()[2],0,1e-4);
+
+			//tick solver and see new position synced from sim
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle->X()[2],-1,1e-4);
+			}
+
+			//set new x position and make sure we see it right away even though there's delay
+			FChaosEngineInterface::SetGlobalPose_AssumesLocked(Particle,FTransform(FQuat::Identity,FVec3(0,0,10)));
+
+			for(int Repeat = 0; Repeat < Delay; ++Repeat)
+			{
+				{
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+					Scene.StartFrame();
+					Scene.EndFrame();
+
+					EXPECT_NEAR(Particle->X()[2],10,1e-4);	//until we catch up, just use GT data
+				}
+			}
+
+			//tick solver one last time, should see sim results from the place we teleported to
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle->X()[2],9,1e-4);
+			}
+
+			//set x after sim but before EndFrame, make sure to see gt position since it was written after
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+				FChaosEngineInterface::SetGlobalPose_AssumesLocked(Particle,FTransform(FQuat::Identity,FVec3(0,0,100)));
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle->X()[2],100,1e-4);
+			}
+
+			for(int Repeat = 0; Repeat < Delay; ++Repeat)
+			{
+				{
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+					Scene.StartFrame();
+					Scene.EndFrame();
+
+					EXPECT_NEAR(Particle->X()[2],100,1e-4);	//until we catch up, just use GT data
+				}
+			}
+
+			//tick solver one last time, should see sim results from the place we teleported to
+			{
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,99999,99999,10,false);
+				Scene.StartFrame();
+				Scene.EndFrame();
+				EXPECT_NEAR(Particle->X()[2],99,1e-4);
+			}
+		}
+	}
+
 	GTEST_TEST(EngineInterface, SimRoundTrip)
 	{
 		FChaosScene Scene(nullptr);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
-		Scene.GetSolver()->SetEnabled(true);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -470,5 +902,94 @@ namespace ChaosTest {
 		EXPECT_EQ(Simulated->X(),FVec3(0,0,10));
 		EXPECT_EQ(Simulated->V(),FVec3(0,0,10));
 
+	}
+
+	GTEST_TEST(EngineInterface, SimInterpolated)
+	{
+		//Need to test:
+		//position interpolation
+		//position interpolation from an inactive particle (i.e a step function)
+		//position interpolation from an active to an inactive particle (i.e a step function but reversed)
+		//interpolation to a deleted particle
+		//state change should be a step function (sleep state)
+		//wake events must be collapsed (sleep awake sleep becomes sleep)
+		//collision events must be collapsed
+		FChaosScene Scene(nullptr);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+		const float FixedDT = 1;
+		Scene.GetSolver()->EnableAsyncMode(1);	//tick 1 dt at a time
+
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+
+		TGeometryParticle<FReal, 3>* Particle = nullptr;
+
+		FChaosEngineInterface::CreateActor(Params, Particle);
+
+		{
+			auto Sphere = MakeUnique<TSphere<FReal, 3>>(FVec3(0), 3);
+			Particle->SetGeometry(MoveTemp(Sphere));
+		}
+		TPBDRigidParticle<FReal, 3>* Simulated = static_cast<TPBDRigidParticle<FReal, 3>*>(Particle);
+
+		TArray<TGeometryParticle<FReal, 3>*> Particles = { Particle };
+		Scene.AddActorsToScene_AssumesLocked(Particles);
+		Simulated->SetObjectState(EObjectStateType::Dynamic);
+		const float ZVel = 10;
+		const float ZStart = 100;
+		Simulated->SetV(FVec3(0, 0, ZVel));
+		Simulated->SetX(FVec3(0, 0, ZStart));
+		const int32 NumGTSteps = 24;
+		const int32 NumPTSteps = 24 / 4;
+
+		struct FCallback : public TSimCallbackObject<FSimCallbackNoInput>
+		{
+			virtual FSimCallbackOutput* OnPreSimulate_Internal(const FReal SimStart, const FReal DeltaSeconds, const TArrayView<const FSimCallbackInput*>& Inputs) override
+			{
+				if(Count < NumPTSteps)
+				{
+					//we expect the dt to be 1, unless it's the final callback when solver is destroyed (that dt is always 0)
+					EXPECT_EQ(DeltaSeconds, 1);
+					EXPECT_EQ(SimStart, Count);
+				}
+				Count++;
+				return nullptr;
+			}
+
+			int32 Count = 0;
+
+			int32 NumPTSteps;
+		};
+
+		auto Callback = Scene.GetSolver()->CreateAndRegisterSimCallbackObject_External<FCallback>();
+		Callback->NumPTSteps = NumPTSteps;
+		float Time = 0;
+		const float GTDt = FixedDT * 0.25f;
+		for(int32 Step=0; Step<NumGTSteps;Step++)
+		{
+			FVec3 Grav(0, 0, 0);
+			Scene.SetUpForFrame(&Grav, GTDt, 99999, 99999, 10, false);
+			Scene.StartFrame();
+			Scene.EndFrame();
+			
+			Time += GTDt;
+			const float InterpolatedTime = Time - FixedDT * Chaos::AsyncInterpolationMultiplier;
+
+			if(InterpolatedTime < 0)
+			{
+				//not enough time to interpolate so just take initial value
+				EXPECT_NEAR(Simulated->X()[2], ZStart, 1e-2);
+			}
+			else
+			{
+				//interpolated
+				EXPECT_NEAR(Simulated->X()[2], ZStart + ZVel* InterpolatedTime, 1e-2);
+			}
+		}
+
+		EXPECT_EQ(Callback->Count, NumPTSteps);
+		const float LastInterpolatedTime = NumGTSteps * GTDt - FixedDT * Chaos::AsyncInterpolationMultiplier;
+		EXPECT_NEAR(Simulated->X()[2], ZStart + ZVel * LastInterpolatedTime, 1e-2);
+		EXPECT_NEAR(Simulated->V()[2], ZVel, 1e-2);
 	}
 }

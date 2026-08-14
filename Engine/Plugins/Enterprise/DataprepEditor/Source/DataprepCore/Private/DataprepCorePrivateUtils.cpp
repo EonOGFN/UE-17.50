@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "DataprepCorePrivateUtils.h"
+#include "Shared/DataprepCorePrivateUtils.h"
 
 #include "DataprepAsset.h"
 #include "DataprepCoreUtils.h"
@@ -76,7 +76,7 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 	{
 		for(UStaticMesh* StaticMesh : StaticMeshes)
 		{
-			if(StaticMesh && (!StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized()))
+			if(StaticMesh && (!StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized()))
 			{
 				BuiltMeshes.Add( StaticMesh );
 			}
@@ -157,7 +157,7 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 				SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
 			}
 
-			if(FStaticMeshRenderData* RenderData = StaticMesh->RenderData.Get())
+			if(FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData())
 			{
 				for ( FStaticMeshLODResources& LODResources : RenderData->LODResources )
 				{
@@ -175,9 +175,48 @@ void DataprepCorePrivateUtils::ClearAssets(const TArray<TWeakObjectPtr<UObject>>
 		if(UStaticMesh* StaticMesh = Cast<UStaticMesh>(ObjectPtr.Get()))
 		{
 			StaticMesh->PreEditChange( nullptr );
-			StaticMesh->RenderData.Reset(nullptr);
+			StaticMesh->SetRenderData( nullptr );
 		}
 	}
+}
+
+void DataprepCorePrivateUtils::CompileMaterial(UMaterialInterface* MaterialInterface)
+{
+	if (MaterialInterface == nullptr)
+	{
+		return;
+	}
+
+	FMaterialUpdateContext MaterialUpdateContext;
+
+	MaterialUpdateContext.AddMaterialInterface( MaterialInterface );
+
+	if ( UMaterialInstanceConstant* ConstantMaterialInstance = Cast< UMaterialInstanceConstant >( MaterialInterface ) )
+	{
+		// If BlendMode override property has been changed, make sure this combination of the parent material is compiled
+		if ( ConstantMaterialInstance->BasePropertyOverrides.bOverride_BlendMode == true )
+		{
+			ConstantMaterialInstance->ForceRecompileForRendering();
+		}
+		else
+		{
+			// If a switch is overridden, we need to recompile
+			FStaticParameterSet StaticParameters;
+			ConstantMaterialInstance->GetStaticParameterValues( StaticParameters );
+
+			for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
+			{
+				if ( Switch.bOverride )
+				{
+					ConstantMaterialInstance->ForceRecompileForRendering();
+					break;
+				}
+			}
+		}
+	}
+
+	MaterialInterface->PreEditChange( nullptr );
+	MaterialInterface->PostEditChange();
 }
 
 #undef LOCTEXT_NAMESPACE

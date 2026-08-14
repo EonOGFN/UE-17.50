@@ -5,12 +5,18 @@
 #include "CoreMinimal.h"
 #include "Misc/EnumRange.h"
 
+#if !defined(WITH_PLATFORM_INSTALL_BUNDLE_SOURCE)
+	#define WITH_PLATFORM_INSTALL_BUNDLE_SOURCE 0
+#endif
+
 enum class EInstallBundleSourceType : int
 {
 	Bulk,
+	Launcher,
 	BuildPatchServices,
-	PlayGo,
-	IntelligentDelivery,
+#if WITH_PLATFORM_INSTALL_BUNDLE_SOURCE
+	Platform,
+#endif // WITH_PLATFORM_INSTALL_BUNDLE_SOURCE
 	GameCustom,
 	Count,
 };
@@ -141,6 +147,7 @@ enum class EInstallBundleReleaseResult
 {
 	OK,
 	ManifestArchiveError,
+	UserCancelledError,
 	Count,
 };
 INSTALLBUNDLEMANAGER_API const TCHAR* LexToString(EInstallBundleReleaseResult Result);
@@ -157,13 +164,6 @@ struct FInstallBundleRequestInfo
 	EInstallBundleRequestInfoFlags InfoFlags = EInstallBundleRequestInfoFlags::None;
 	TArray<FName> BundlesEnqueued;
 };
-
-enum class EInstallBundleCancelFlags : uint32
-{
-	None = 0,
-	Resumable = (1 << 0),
-};
-ENUM_CLASS_FLAGS(EInstallBundleCancelFlags);
 
 enum class EInstallBundlePauseFlags : uint32
 {

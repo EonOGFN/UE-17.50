@@ -105,7 +105,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 
 	static bool IsUpdateAvailable();
 	
-	// Possible iOS devices
+	// GetIOSDeviceType is deprecated in 4.26 and is no longer updated. See below.
 	enum EIOSDevice
 	{
 		// add new devices to the top, and add to IOSDeviceNames below!
@@ -172,6 +172,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 		IOS_Unknown,
 	};
 
+	UE_DEPRECATED(4.26, "Use GetDefaultDeviceProfileName() which uses the [IOSDeviceMappings] entries in BaseDeviceProfiles.ini and can be updated to support newly released devices.")
 	static EIOSDevice GetIOSDeviceType();
 
 	static const TCHAR* GetDefaultDeviceProfileName();
@@ -181,6 +182,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	static void GetOSVersions(FString& out_OSVersionLabel, FString& out_OSSubVersionLabel);
 	static int32 IOSVersionCompare(uint8 Major, uint8 Minor, uint8 Revision);
 	static FString GetProjectVersion();
+	static FString GetBuildNumber();
 
 	static void SetGracefulTerminationHandler();
 	static void SetCrashHandler(void(*CrashHandler)(const FGenericCrashContext& Context));

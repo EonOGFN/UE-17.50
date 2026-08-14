@@ -134,6 +134,23 @@ FName FPackageName::GetShortFName(const TCHAR* LongName)
 	return FName(LongName);
 }
 
+bool FPackageName::TryConvertGameRelativePackagePathToLocalPath(FStringView RelativePackagePath, FString& OutLocalPath)
+{
+	if (RelativePackagePath.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
+	{
+		// If this starts with /, this includes a root like /engine
+		return FPackageName::TryConvertLongPackageNameToFilename(FString(RelativePackagePath), OutLocalPath);
+	}
+	else
+	{
+		// This is relative to /game
+		const FString AbsoluteGameContentDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
+		OutLocalPath = AbsoluteGameContentDir / FString(RelativePackagePath);
+		return true;
+	}
+}
+
+
 struct FPathPair
 {
 	// The virtual path (e.g., "/Engine/")
@@ -368,6 +385,7 @@ private:
 		// Allow the plugin manager to mount new content paths by exposing access through a delegate.  PluginManager is 
 		// a Core class, but content path functionality is added at the CoreUObject level.
 		IPluginManager::Get().SetRegisterMountPointDelegate( IPluginManager::FRegisterMountPointDelegate::CreateStatic( &FPackageName::RegisterMountPoint ) );
+		IPluginManager::Get().SetUnRegisterMountPointDelegate( IPluginManager::FRegisterMountPointDelegate::CreateStatic( &FPackageName::UnRegisterMountPoint ) );
 	}
 };
 
@@ -783,6 +801,22 @@ bool FPackageName::IsValidObjectPath(const FString& InObjectPath, FText* OutReas
 	}
 
 	return true;
+}
+
+bool FPackageName::IsValidPath(const FString& InPath)
+{
+	const FLongPackagePathsSingleton& Paths = FLongPackagePathsSingleton::Get();
+	FReadScopeLock ScopeLock(ContentMountPointCriticalSection);
+	for (const FPathPair& Pair : Paths.ContentRootToPath)
+	{
+		if (InPath.StartsWith(Pair.RootPath))
+		{
+			return true;
+		}
+	}
+
+	// The root folder is not handled in the above cases
+	return false;
 }
 
 void FPackageName::RegisterMountPoint(const FString& RootPath, const FString& ContentPath)
@@ -1376,15 +1410,22 @@ bool FPackageName::FindPackagesInDirectory( TArray<FString>& OutPackages, const 
 {
 	UE_CLOG(FIoDispatcher::IsInitialized(), LogPackageName, Error, TEXT("Can't search for packages using the filesystem when I/O dispatcher is enabled"));
 
+	FString LocalPathToRootDir;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(RootDir / TEXT(""), LocalPathToRootDir))
+	{
+		LocalPathToRootDir = RootDir;
+	}
+	LocalPathToRootDir = FPaths::ConvertRelativePathToFull(MoveTemp(LocalPathToRootDir));
+
 	// Find all files in RootDir, then filter by extension (we have two package extensions so they can't
 	// be included in the search wildcard.
 	TArray<FString> AllFiles;
-	IFileManager::Get().FindFilesRecursive(AllFiles, *RootDir, TEXT("*.*"), true, false);
+	IFileManager::Get().FindFilesRecursive(AllFiles, *LocalPathToRootDir, TEXT("*.*"), true, false);
 	// Keep track if any package has been found. Can't rely only on OutPackages.Num() > 0 as it may not be empty.
 	const int32 PreviousPackagesCount = OutPackages.Num();
 	for (int32 FileIndex = 0; FileIndex < AllFiles.Num(); FileIndex++)
 	{
-		FString& Filename = AllFiles[FileIndex];
+		const FString& Filename = AllFiles[FileIndex];
 		if (IsPackageFilename(Filename))
 		{
 			OutPackages.Add(Filename);
@@ -1392,6 +1433,28 @@ bool FPackageName::FindPackagesInDirectory( TArray<FString>& OutPackages, const 
 	}
 	return OutPackages.Num() > PreviousPackagesCount;
 }
+
+bool FPackageName::FindPackagesInDirectories(TArray<FString>& OutPackages, const TArrayView<const FString>& RootDirs)
+{
+	TSet<FString> Packages;
+	TArray<FString> DirPackages;
+	for (const FString& RootDir : RootDirs)
+	{
+		DirPackages.Reset();
+		FindPackagesInDirectory(DirPackages, RootDir);
+		for (FString& DirPackage : DirPackages)
+		{
+			Packages.Add(MoveTemp(DirPackage));
+		}
+	}
+	OutPackages.Reserve(Packages.Num() + OutPackages.Num());
+	for (FString& Package : Packages)
+	{
+		OutPackages.Add(MoveTemp(Package));
+	}
+	return Packages.Num() > 0;
+}
+
 
 void FPackageName::IteratePackagesInDirectory(const FString& RootDir, const FPackageNameVisitor& Callback)
 {
@@ -1443,11 +1506,26 @@ void FPackageName::IteratePackagesInDirectory(const FString& RootDir, const FPac
 	IFileManager::Get().IterateDirectoryStatRecursively(*RootDir, PackageVisitor);
 }
 
-void FPackageName::QueryRootContentPaths( TArray<FString>& OutRootContentPaths )
+void FPackageName::QueryRootContentPaths(TArray<FString>& OutRootContentPaths, bool bIncludeReadOnlyRoots, bool bWithoutLeadingSlashes, bool bWithoutTrailingSlashes)
 {
 	const FLongPackagePathsSingleton& Paths = FLongPackagePathsSingleton::Get();
-	const bool bIncludeReadOnlyRoots = false;	// Don't include Script or Temp paths
 	Paths.GetValidLongPackageRoots( OutRootContentPaths, bIncludeReadOnlyRoots );
+
+	if (bWithoutTrailingSlashes || bWithoutLeadingSlashes)
+	{
+		for (FString& It : OutRootContentPaths)
+		{
+			if (bWithoutTrailingSlashes && It.Len() > 1 && It[It.Len() - 1] == TEXT('/'))
+			{
+				It.RemoveAt(It.Len() - 1, /*Count*/ 1, /*bAllowShrinking*/ false);
+			}
+
+			if (bWithoutLeadingSlashes && It.Len() > 1 && It[0] == TEXT('/'))
+			{
+				It.RemoveAt(0, /*Count*/ 1, /*bAllowShrinking*/ false);
+			}
+		}
+	}
 }
 
 void FPackageName::EnsureContentPathsAreRegistered()
@@ -1475,7 +1553,8 @@ bool FPackageName::ParseExportTextPath(const FString& InExportTextPath, FString*
 	return false;
 }
 
-bool FPackageName::ParseExportTextPath(FStringView InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath)
+template<class T>
+bool ParseExportTextPathImpl(const T& InExportTextPath, T* OutClassName, T* OutObjectPath)
 {
 	int32 Index;
 	if (InExportTextPath.FindChar('\'', Index))
@@ -1497,14 +1576,25 @@ bool FPackageName::ParseExportTextPath(FStringView InExportTextPath, FStringView
 	return false;
 }
 
+bool FPackageName::ParseExportTextPath(FWideStringView InExportTextPath, FWideStringView* OutClassName, FWideStringView* OutObjectPath)
+{
+	return ParseExportTextPathImpl(InExportTextPath, OutClassName, OutObjectPath);
+}
+
+bool FPackageName::ParseExportTextPath(FAnsiStringView InExportTextPath, FAnsiStringView* OutClassName, FAnsiStringView* OutObjectPath)
+{
+	return ParseExportTextPathImpl(InExportTextPath, OutClassName, OutObjectPath);
+}
+
 bool FPackageName::ParseExportTextPath(const TCHAR* InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath)
 {
 	return ParseExportTextPath(FStringView(InExportTextPath), OutClassName, OutObjectPath);
 }
 
-FStringView FPackageName::ExportTextPathToObjectPath(FStringView InExportTextPath)
+template <class T>
+T ExportTextPathToObjectPathImpl(const T& InExportTextPath)
 {
-	FStringView ObjectPath;
+	T ObjectPath;
 	if (FPackageName::ParseExportTextPath(InExportTextPath, nullptr, &ObjectPath))
 	{
 		return ObjectPath;
@@ -1514,16 +1604,19 @@ FStringView FPackageName::ExportTextPathToObjectPath(FStringView InExportTextPat
 	return InExportTextPath;
 }
 
+FWideStringView FPackageName::ExportTextPathToObjectPath(FWideStringView InExportTextPath)
+{
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
+}
+
+FAnsiStringView FPackageName::ExportTextPathToObjectPath(FAnsiStringView InExportTextPath)
+{
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
+}
+
 FString FPackageName::ExportTextPathToObjectPath(const FString& InExportTextPath)
 {
-	FString ObjectPath;
-	if ( FPackageName::ParseExportTextPath(InExportTextPath, NULL, &ObjectPath) )
-	{
-		return ObjectPath;
-	}
-	
-	// Could not parse the export text path. Could already be an object path, just return it back.
-	return InExportTextPath;
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
 }
 
 FString FPackageName::ExportTextPathToObjectPath(const TCHAR* InExportTextPath)
@@ -1531,7 +1624,8 @@ FString FPackageName::ExportTextPathToObjectPath(const TCHAR* InExportTextPath)
 	return ExportTextPathToObjectPath(FString(InExportTextPath));
 }
 
-FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
+template<class T>
+T ObjectPathToPackageNameImpl(const T& InObjectPath)
 {
 	// Check for package delimiter
 	int32 ObjectDelimiterIdx;
@@ -1542,6 +1636,21 @@ FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
 
 	// No object delimiter. The path must refer to the package name directly.
 	return InObjectPath;
+}
+
+FWideStringView FPackageName::ObjectPathToPackageName(FWideStringView InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
+}
+
+FAnsiStringView FPackageName::ObjectPathToPackageName(FAnsiStringView InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
+}
+
+FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
 }
 
 template<class T>
@@ -1570,7 +1679,7 @@ FString FPackageName::ObjectPathToObjectName(const FString& InObjectPath)
 	return ObjectPathToObjectNameImpl(InObjectPath);
 }
 
-FStringView FPackageName::ObjectPathToObjectName(FStringView InObjectPath)
+FWideStringView FPackageName::ObjectPathToObjectName(FWideStringView InObjectPath)
 {
 	return ObjectPathToObjectNameImpl(InObjectPath);
 }

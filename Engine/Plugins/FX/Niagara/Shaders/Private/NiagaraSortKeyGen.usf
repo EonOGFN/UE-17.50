@@ -16,7 +16,7 @@
 
 #include "/Engine/Private/Common.ush"
 
-#define NIAGARA_KEY_GEN_MAX_CULL_PLANES 6 // must match the code
+#define NIAGARA_KEY_GEN_MAX_CULL_PLANES 10 // must match the code
 Buffer<float> NiagaraParticleDataFloat;
 Buffer<half> NiagaraParticleDataHalf;
 Buffer<int> NiagaraParticleDataInt;
@@ -48,6 +48,7 @@ int RendererVisibility;
 uint RendererVisTagAttributeOffset;
 float2 CullDistanceRangeSquared;
 float4 LocalBoundingSphere;
+float3 CullingWorldSpaceOffset;
 
 RWBuffer<uint> OutKeys;
 RWBuffer<int> OutParticleIndices;
@@ -155,7 +156,7 @@ bool CullParticle(in uint ParticleIndex)
 
 	// Transform the bounding sphere
 	float4 BSphere = LocalBoundingSphere;
-	BSphere.xyz = RotateVectorByQuat(BSphere.xyz * Scale, Quat) + Pos;
+	BSphere.xyz = RotateVectorByQuat(BSphere.xyz * Scale, Quat) + Pos + CullingWorldSpaceOffset;
 	BSphere.w *= max(abs(Scale.x), max(abs(Scale.y), abs(Scale.z)));
 
 	// Cull particles using distance ranges
@@ -250,9 +251,10 @@ void GenerateParticleSortKeys(uint ParticleIndex : SV_DispatchThreadID, uint Gro
 
 			// Clamp to max-1 to make sure that out-of-bound indices are at the end.
 			SortKey = min(SortKey , SortKeyMask - 1);
+			
+			bCulled = CullParticle(ParticleIndex);
 		}
 
-		bCulled = CullParticle(ParticleIndex);
 		if (bCulled)
 		{
 			SortKey = SortKeyMask;

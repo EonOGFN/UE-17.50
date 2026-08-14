@@ -30,7 +30,7 @@ void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const FPrimitiveScene
 			MeshEvent, 
 			TEXT("%s %s"), 
 			// Note: this is the parent's material name, not the material instance
-			*Mesh.MaterialRenderProxy->GetMaterial(PrimitiveSceneProxy ? PrimitiveSceneProxy->GetScene().GetFeatureLevel() : GMaxRHIFeatureLevel)->GetFriendlyName(),
+			*Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(PrimitiveSceneProxy ? PrimitiveSceneProxy->GetScene().GetFeatureLevel() : GMaxRHIFeatureLevel).GetFriendlyName(),
 			PrimitiveSceneProxy->GetResourceName().IsValid() ? *PrimitiveSceneProxy->GetResourceName().ToString() : TEXT(""));
 
 		bool bIssueAdditionalDrawEvents = false;
@@ -52,7 +52,7 @@ void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const FPrimitiveScene
 			MaterialEvent, 
 			MeshEvent, 
 			// Note: this is the parent's material name, not the material instance
-			*Mesh.MaterialRenderProxy->GetMaterial(GMaxRHIFeatureLevel)->GetFriendlyName());
+			*Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(GMaxRHIFeatureLevel).GetFriendlyName());
 	}
 }
 
@@ -1405,7 +1405,7 @@ void ApplyViewModeOverrides(
 		return;
 	}
 
-	const bool bMaterialModifiesMeshPosition = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->MaterialModifiesMeshPosition_RenderThread();
+	const bool bMaterialModifiesMeshPosition = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel).MaterialModifiesMeshPosition_RenderThread();
 
 	if (EngineShowFlags.Wireframe)
 	{
@@ -1448,11 +1448,12 @@ void ApplyViewModeOverrides(
 	else if (!EngineShowFlags.Materials)
 	{
 		// Don't render unlit translucency when in 'lighting only' viewmode.
-		if (Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().IsLit()
+		const FMaterial& Mat = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+		if (Mat.GetShadingModels().IsLit()
 			// Don't render translucency in 'lighting only', since the viewmode works by overriding with an opaque material
 			// This would cause a mismatch of the material's blend mode with the primitive's view relevance,
 			// And make faint particles block the view
-			&& !IsTranslucentBlendMode(Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetBlendMode()))
+			&& !IsTranslucentBlendMode(Mat.GetBlendMode()))
 		{
 			// When materials aren't shown, apply the same basic material to all meshes.
 			bool bTextureMapped = false;
@@ -1504,25 +1505,42 @@ void ApplyViewModeOverrides(
 	{	
 		if (EngineShowFlags.PropertyColoration)
 		{
-			// In property coloration mode, override the mesh's material with a color that was chosen based on property value.
-			const UMaterial* PropertyColorationMaterial = EngineShowFlags.Lighting ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
+			const FLinearColor SelectionColor = GetSelectionColor(PrimitiveSceneProxy->GetPropertyColor(), bSelected, PrimitiveSceneProxy->IsHovered());
+			FMaterialRenderProxy* PropertyColorationMaterialInstance = nullptr;
 
-			auto PropertyColorationMaterialInstance = new FColoredMaterialRenderProxy(
-				PropertyColorationMaterial->GetRenderProxy(),
-				GetSelectionColor(PrimitiveSceneProxy->GetPropertyColor(),bSelected,PrimitiveSceneProxy->IsHovered())
-				);
+			if (bMaterialModifiesMeshPosition)
+			{
+				// If the material is mesh-modifying, we cannot rely on substitution.
+				PropertyColorationMaterialInstance = new FOverrideSelectionColorMaterialRenderProxy(Mesh.MaterialRenderProxy, SelectionColor);
+			}
+			else
+			{
+				// In property coloration mode, override the mesh's material with a color that was chosen based on property value.
+				const UMaterial* PropertyColorationMaterial = EngineShowFlags.Lighting ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
+
+				PropertyColorationMaterialInstance = new FColoredMaterialRenderProxy(PropertyColorationMaterial->GetRenderProxy(), SelectionColor);
+			}
 
 			Mesh.MaterialRenderProxy = PropertyColorationMaterialInstance;
 			Collector.RegisterOneFrameMaterialProxy(PropertyColorationMaterialInstance);
 		}
 		else if (EngineShowFlags.LevelColoration)
 		{
-			const UMaterial* LevelColorationMaterial = EngineShowFlags.Lighting ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
-			// Draw the mesh with level coloration.
-			auto LevelColorationMaterialInstance = new FColoredMaterialRenderProxy(
-				LevelColorationMaterial->GetRenderProxy(),
-				GetSelectionColor(PrimitiveSceneProxy->GetLevelColor(),bSelected,PrimitiveSceneProxy->IsHovered())
-				);
+			const FLinearColor SelectionColor = GetSelectionColor(PrimitiveSceneProxy->GetLevelColor(), bSelected, PrimitiveSceneProxy->IsHovered());
+			FMaterialRenderProxy* LevelColorationMaterialInstance = nullptr;
+
+			if (bMaterialModifiesMeshPosition)
+			{
+				// If the material is mesh-modifying, we cannot rely on substitution.
+				LevelColorationMaterialInstance = new FOverrideSelectionColorMaterialRenderProxy(Mesh.MaterialRenderProxy, SelectionColor);
+			}
+			else
+			{
+				const UMaterial* LevelColorationMaterial = EngineShowFlags.Lighting ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
+				// Draw the mesh with level coloration.
+				LevelColorationMaterialInstance = new FColoredMaterialRenderProxy(LevelColorationMaterial->GetRenderProxy(), SelectionColor);
+			}
+
 			Mesh.MaterialRenderProxy = LevelColorationMaterialInstance;
 			Collector.RegisterOneFrameMaterialProxy(LevelColorationMaterialInstance);
 		}

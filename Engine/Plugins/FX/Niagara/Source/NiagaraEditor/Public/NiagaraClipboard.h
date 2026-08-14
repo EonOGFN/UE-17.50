@@ -11,6 +11,7 @@ class UNiagaraDataInterface;
 class UNiagaraScript;
 class UNiagaraRendererProperties;
 class UNiagaraNodeFunctionCall;
+class UNiagaraScriptVariable;
 
 UENUM()
 enum class ENiagaraClipboardFunctionInputValueMode
@@ -139,6 +140,9 @@ public:
 
 	UPROPERTY()
 	TArray<const UNiagaraScript*> Scripts;
+
+	UPROPERTY()
+	TArray<const UNiagaraScriptVariable*> ScriptVariables;
 };
 
 class NIAGARAEDITOR_API FNiagaraClipboard
@@ -183,12 +187,15 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Input")
 	static UNiagaraClipboardFunctionInput* CreateIntLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditConditionValue, int32 InLocalValue);
-
+	
+	UFUNCTION(BlueprintPure, Category = "Input")
+	static UNiagaraClipboardFunctionInput* CreateBoolLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditConditionValue, bool InBoolValue);
+	
 	UFUNCTION(BlueprintPure, Category = "Input")
 	static UNiagaraClipboardFunctionInput* CreateStructLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditConditionValue, UUserDefinedStruct* InStructValue);
 
 	UFUNCTION(BlueprintPure, Category = "Input")
-	static UNiagaraClipboardFunctionInput* CreateEnumLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditCoditionValue, UUserDefinedEnum* InEnumValue);
+	static UNiagaraClipboardFunctionInput* CreateEnumLocalValueInput(UObject* InOuter, FName InInputName, bool bInHasEditCondition, bool bInEditCoditionValue, UUserDefinedEnum* InEnumType, int32 InEnumValue);
 
 	UFUNCTION(BlueprintPure, Category = "Input")
 	static UNiagaraClipboardFunctionInput* CreateLinkedValueInput(UObject* InOuter, FName InInputName, FName InInputTypeName, bool bInHasEditCondition, bool bInEditConditionValue, FName InLinkedValue);

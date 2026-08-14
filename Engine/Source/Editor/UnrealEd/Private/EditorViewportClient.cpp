@@ -377,7 +377,6 @@ FEditorViewportClient::FEditorViewportClient(FEditorModeTools* InModeTools, FPre
 	, MovingPreviewLightTimer(0.0f)
 	, bLockFlightCamera(false)
 	, PreviewResolutionFraction(1.0f)
-	, bPreviewCustomTemporalUpscaler(false)
 	, SceneDPIMode(ESceneDPIMode::EditorDefault)
 	, PerspViewModeIndex(DefaultPerspectiveViewMode)
 	, OrthoViewModeIndex(DefaultOrthoViewMode)
@@ -837,6 +836,8 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 	const float ModifiedViewFOV = ModifiedViewInfo.FOV;
 	if (bUseControllingActorViewInfo)
 	{
+		ControllingActorViewInfo.Location = ModifiedViewInfo.Location;
+		ControllingActorViewInfo.Rotation = ModifiedViewInfo.Rotation;
 		ControllingActorViewInfo.FOV = ModifiedViewInfo.FOV;
 	}
 
@@ -888,7 +889,11 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 	TimeForForceRedraw = 0.0;
 
 	const bool bConstrainAspectRatio = bUseControllingActorViewInfo && ControllingActorViewInfo.bConstrainAspectRatio;
-	const EAspectRatioAxisConstraint AspectRatioAxisConstraint = GetDefault<ULevelEditorViewportSettings>()->AspectRatioAxisConstraint;
+	EAspectRatioAxisConstraint AspectRatioAxisConstraint = GetDefault<ULevelEditorViewportSettings>()->AspectRatioAxisConstraint;
+	if (bUseControllingActorViewInfo && ControllingActorAspectRatioAxisConstraint.IsSet())
+	{
+		AspectRatioAxisConstraint = ControllingActorAspectRatioAxisConstraint.GetValue();
+	}
 
 	AWorldSettings* WorldSettings = nullptr;
 	if( GetScene() != nullptr && GetScene()->GetWorld() != nullptr )
@@ -1040,7 +1045,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(1, 0, 0, 0),
 					FPlane(0, -1, 0, 0),
 					FPlane(0, 0, -1, 0),
-					FPlane(0, 0, -ViewInitOptions.ViewOrigin.Z, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoXZ)
 			{
@@ -1048,7 +1053,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(1, 0, 0, 0),
 					FPlane(0, 0, -1, 0),
 					FPlane(0, 1, 0, 0),
-					FPlane(0, 0, -ViewInitOptions.ViewOrigin.Y, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoYZ)
 			{
@@ -1056,7 +1061,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(0, 0, 1, 0),
 					FPlane(1, 0, 0, 0),
 					FPlane(0, 1, 0, 0),
-					FPlane(0, 0, ViewInitOptions.ViewOrigin.X, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoNegativeXY)
 			{
@@ -1064,7 +1069,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(-1, 0, 0, 0),
 					FPlane(0, -1, 0, 0),
 					FPlane(0, 0, 1, 0),
-					FPlane(0, 0, -ViewInitOptions.ViewOrigin.Z, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoNegativeXZ)
 			{
@@ -1072,7 +1077,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(-1, 0, 0, 0),
 					FPlane(0, 0, 1, 0),
 					FPlane(0, 1, 0, 0),
-					FPlane(0, 0, -ViewInitOptions.ViewOrigin.Y, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoNegativeYZ)
 			{
@@ -1080,7 +1085,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(0, 0, -1, 0),
 					FPlane(-1, 0, 0, 0),
 					FPlane(0, 1, 0, 0),
-					FPlane(0, 0, ViewInitOptions.ViewOrigin.X, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else if (EffectiveViewportType == LVT_OrthoFreelook)
 			{
@@ -1088,7 +1093,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 					FPlane(0, 0, 1, 0),
 					FPlane(1, 0, 0, 0),
 					FPlane(0, 1, 0, 0),
-					FPlane(0, 0, ViewInitOptions.ViewOrigin.X, 1));
+					FPlane(0, 0, 0, 1));
 			}
 			else
 			{
@@ -1587,7 +1592,8 @@ EMouseCursor::Type FEditorViewportClient::GetCursor(FViewport* InViewport,int32 
 	}
 
 	// Allow the viewport interaction to override any previously set mouse cursor
-	UViewportWorldInteraction* WorldInteraction = Cast<UViewportWorldInteraction>(GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions(GetWorld())->FindExtension(UViewportWorldInteraction::StaticClass()));
+	UWorld* World = GetWorld();
+	UViewportWorldInteraction* WorldInteraction = (World ? Cast<UViewportWorldInteraction>(GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions(World)->FindExtension(UViewportWorldInteraction::StaticClass())) : nullptr);
 	if (WorldInteraction != nullptr)
 	{
 		if (WorldInteraction->ShouldForceCursor())
@@ -2156,7 +2162,7 @@ void FEditorViewportClient::HandleViewportStatDisableAll(const bool bInAnyViewpo
 	{
 		SetShowStats(false);
 		SetStatEnabled(NULL, false, true);
-		RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Stats", "Stats Display"));
+		RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Stats", "Stats Display"), /*bCheckMissingOverride*/false);
 	}
 }
 
@@ -2678,16 +2684,6 @@ void FEditorViewportClient::SetPreviewScreenPercentage(int32 PreviewScreenPercen
 	PreviewResolutionFraction = PreviewScreenPercentage / 100.0f;
 }
 
-bool FEditorViewportClient::GetPreviewCustomTemporalUpscaler() const
-{
-	return bPreviewCustomTemporalUpscaler;
-}
-
-void FEditorViewportClient::SetPreviewCustomTemporalUpscaler(bool PreviewCustomTemporalUpscaler)
-{
-	bPreviewCustomTemporalUpscaler = PreviewCustomTemporalUpscaler;
-}
-
 bool FEditorViewportClient::SupportsLowDPIPreview() const
 {
 	return GetDPIDerivedResolutionFraction() < 1.0f;
@@ -2898,33 +2894,9 @@ void FEditorViewportClient::StopTracking()
 
 		// Force an immediate redraw of the viewport and hit proxy.
 		// The results are required straight away, so it is not sufficient to defer the redraw until the next tick.
-		if (Viewport)
-		{
-			Viewport->InvalidateHitProxy();
-			Viewport->Draw();
-
-			// If there are child viewports, force a redraw on those too
-			FSceneViewStateInterface* ParentView = ViewState.GetReference();
-			if (ParentView->IsViewParent())
-			{
-				for (FEditorViewportClient* ViewportClient : GEditor->GetAllViewportClients())
-				{
-					if (ViewportClient != nullptr)
-					{
-						FSceneViewStateInterface* ViewportParentView = ViewportClient->ViewState.GetReference();
-
-						if (ViewportParentView != nullptr &&
-							ViewportParentView->HasViewParent() &&
-							ViewportParentView->GetViewParent() == ParentView &&
-							!ViewportParentView->IsViewParent())
-						{
-							ViewportClient->Viewport->InvalidateHitProxy();
-							ViewportClient->Viewport->Draw();
-						}
-					}
-				}
-			}
-		}
+		constexpr bool bForceChildViewportRedraw = true;
+		constexpr bool bInvalidateHitProxies = true;
+		Invalidate(bForceChildViewportRedraw, bInvalidateHitProxies);
 
 		SetRequiredCursorOverride( false );
 
@@ -3809,8 +3781,6 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 
 	ViewFamily.bIsHDR = Viewport->IsHDRViewport();
 
-	UpdateDebugViewModeShaders();
-
 	if( ModeTools->GetActiveMode( FBuiltinEditorModes::EM_InterpEdit ) == 0 || !AllowsCinematicControl() )
 	{
 		if( !UseEngineShowFlags.Game )
@@ -3865,7 +3835,7 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 		// Setup custom upscaler and screen percentage.
 		if (GCustomEditorStaticScreenPercentage && ViewFamily.ViewMode == EViewModeIndex::VMI_Lit)
 		{
-			GCustomEditorStaticScreenPercentage->SetupEditorViewFamily(ViewFamily, PreviewResolutionFraction, bPreviewCustomTemporalUpscaler);
+			GCustomEditorStaticScreenPercentage->SetupEditorViewFamily(ViewFamily, this);
 		}
 
 		// If a screen percentage interface was not set by one of the view extension, then set the legacy one.

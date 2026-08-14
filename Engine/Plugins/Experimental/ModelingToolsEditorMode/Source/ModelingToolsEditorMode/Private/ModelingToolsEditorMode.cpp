@@ -8,6 +8,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EditorViewportClient.h"
+#include "EngineAnalytics.h"
 
 //#include "SingleClickTool.h"
 //#include "MeshSurfacePointTool.h"
@@ -16,6 +17,8 @@
 #include "MeshVertexSculptTool.h"
 #include "EditMeshPolygonsTool.h"
 #include "DeformMeshPolygonsTool.h"
+#include "GroupEdgeInsertionTool.h"
+#include "EdgeLoopInsertionTool.h"
 #include "ConvertToPolygonsTool.h"
 #include "AddPrimitiveTool.h"
 #include "AddPatchTool.h"
@@ -64,6 +67,17 @@
 #include "ParameterizeMeshTool.h"
 #include "MeshTangentsTool.h"
 #include "ProjectToTargetTool.h"
+#include "SeamSculptTool.h"
+
+#include "Physics/PhysicsInspectorTool.h"
+#include "Physics/SetCollisionGeometryTool.h"
+#include "Physics/ExtractCollisionGeometryTool.h"
+//#include "Physics/EditCollisionGeometryTool.h"
+
+// hair tools
+#include "Hair/GroomToMeshTool.h"
+#include "Hair/GroomCardsEditorTool.h"
+#include "GenerateLODMeshesTool.h"
 
 #include "EditorModeManager.h"
 
@@ -194,6 +208,15 @@ void FModelingToolsEditorMode::Render(const FSceneView* View, FViewport* Viewpor
 	if (ToolsContext != nullptr)
 	{
 		ToolsContext->Render(View, Viewport, PDI);
+	}
+}
+
+void FModelingToolsEditorMode::DrawHUD(FEditorViewportClient* ViewportClient,FViewport* Viewport,const FSceneView* View,FCanvas* Canvas)
+{
+	FEdMode::DrawHUD(ViewportClient, Viewport, View, Canvas);
+	if (ToolsContext != nullptr)
+	{
+		ToolsContext->DrawHUD(ViewportClient, Viewport, View, Canvas);
 	}
 }
 
@@ -601,6 +624,13 @@ void FModelingToolsEditorMode::Enter()
 	RegisterToolFunc(ToolManagerCommands.BeginProjectToTargetTool, TEXT("ProjectToTargetTool"), NewObject<UProjectToTargetToolBuilder>());
 	RegisterToolFunc(ToolManagerCommands.BeginSimplifyMeshTool, TEXT("SimplifyMeshTool"), NewObject<USimplifyMeshToolBuilder>());
 
+	auto GroupEdgeInsertionToolBuilder = NewObject<UGroupEdgeInsertionToolBuilder>();
+	GroupEdgeInsertionToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginGroupEdgeInsertionTool, TEXT("GroupEdgeInsertionTool"), GroupEdgeInsertionToolBuilder);
+
+	auto EdgeLoopInsertionToolBuilder = NewObject<UEdgeLoopInsertionToolBuilder>();
+	EdgeLoopInsertionToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginEdgeLoopInsertionTool, TEXT("EdgeLoopInsertionTool"), EdgeLoopInsertionToolBuilder);
 
 	auto EditNormalsToolBuilder = NewObject<UEditNormalsToolBuilder>();
 	EditNormalsToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
@@ -685,6 +715,8 @@ void FModelingToolsEditorMode::Enter()
 	GroupUVGenerateToolBuilder->bDoAutomaticGlobalUnwrap = false;
 	RegisterToolFunc(ToolManagerCommands.BeginGroupUVGenerateTool, TEXT("GroupParameterizeMeshTool"), GroupUVGenerateToolBuilder);
 
+	RegisterToolFunc(ToolManagerCommands.BeginUVSeamEditTool, TEXT("UVSeamSculptTool"), NewObject< USeamSculptToolBuilder>());
+
 	auto MeshSelectionToolBuilder = NewObject<UMeshSelectionToolBuilder>();
 	MeshSelectionToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
 	RegisterToolFunc(ToolManagerCommands.BeginMeshSelectionTool, TEXT("MeshSelectionTool"), MeshSelectionToolBuilder);
@@ -706,6 +738,33 @@ void FModelingToolsEditorMode::Enter()
 	RegisterToolFunc(ToolManagerCommands.BeginPolyGroupsTool, TEXT("ConvertToPolygonsTool"), NewObject<UConvertToPolygonsToolBuilder>());
 	RegisterToolFunc(ToolManagerCommands.BeginAttributeEditorTool, TEXT("AttributeEditorTool"), NewObject<UAttributeEditorToolBuilder>());
 
+
+	// Physics Tools
+
+	RegisterToolFunc(ToolManagerCommands.BeginPhysicsInspectorTool, TEXT("PhysicsInspectorTool"), NewObject<UPhysicsInspectorToolBuilder>());
+	RegisterToolFunc(ToolManagerCommands.BeginSetCollisionGeometryTool, TEXT("SetCollisionGeoTool"), NewObject<USetCollisionGeometryToolBuilder>());
+	//RegisterToolFunc(ToolManagerCommands.BeginEditCollisionGeometryTool, TEXT("EditCollisionGeoTool"), NewObject<UEditCollisionGeometryToolBuilder>());
+
+	auto ExtractCollisionGeoToolBuilder = NewObject<UExtractCollisionGeometryToolBuilder>();
+	ExtractCollisionGeoToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginExtractCollisionGeometryTool, TEXT("ExtractCollisionGeoTool"), ExtractCollisionGeoToolBuilder);
+
+
+
+	// (experimental) hair tools
+
+	UGroomToMeshToolBuilder* GroomToMeshToolBuilder = NewObject<UGroomToMeshToolBuilder>();
+	GroomToMeshToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginGroomToMeshTool, TEXT("GroomToMeshTool"), GroomToMeshToolBuilder);
+
+	RegisterToolFunc(ToolManagerCommands.BeginGroomCardsEditorTool, TEXT("GroomCardsEditorTool"), NewObject<UGroomCardsEditorToolBuilder>());
+
+	UGenerateLODMeshesToolBuilder* GenerateLODMeshesToolBuilder = NewObject<UGenerateLODMeshesToolBuilder>();
+	GenerateLODMeshesToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginGenerateLODMeshesTool, TEXT("GenerateLODMeshesTool"), GenerateLODMeshesToolBuilder);
+
+
+
 	ToolsContext->ToolManager->SelectActiveToolType(EToolSide::Left, TEXT("DynaSculptTool"));
 
 	// register modeling mode hotkeys
@@ -725,12 +784,48 @@ void FModelingToolsEditorMode::Enter()
 
 	// enable realtime viewport override
 	ConfigureRealTimeViewportsOverride(true);
+
+	//
+	// Engine Analytics
+	//
+	// Log Analytic of mode starting
+	if( FEngineAnalytics::IsAvailable() )
+	{
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.MeshModelingMode.Enter" ) );
+	}
+	ToolsContext->ToolManager->OnToolStarted.AddLambda([this](UInteractiveToolManager* Manager, UInteractiveTool* Tool)
+	{
+		if( FEngineAnalytics::IsAvailable() )
+		{
+			FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.MeshModelingMode.ToolStarted" ),
+														 TEXT( "DisplayName" ),
+														 Tool->GetToolInfo().ToolDisplayName.ToString() );
+		}
+	});
+	ToolsContext->ToolManager->OnToolEnded.AddLambda([this](UInteractiveToolManager* Manager, UInteractiveTool* Tool)
+	{
+		if( FEngineAnalytics::IsAvailable() )
+		{
+			FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.MeshModelingMode.ToolEnded" ),
+														 TEXT( "DisplayName" ),
+														 Tool->GetToolInfo().ToolDisplayName.ToString() );
+		}
+	});
 }
 
 
 
 void FModelingToolsEditorMode::Exit()
 {
+	//
+	// Engine Analytics
+	//
+	// Log Analytic of mode ending
+	if( FEngineAnalytics::IsAvailable() )
+	{
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.MeshModelingMode.Exit" ) );
+	}
+
 	OnToolNotificationMessage.Clear();
 	OnToolWarningMessage.Clear();
 
@@ -787,11 +882,8 @@ void FModelingToolsEditorMode::FocusCameraAtCursorHotkey()
 {
 	FRay Ray = ToolsContext->GetLastWorldRay();
 
-	FCollisionObjectQueryParams ObjectQueryParams(FCollisionObjectQueryParams::AllObjects);
-	FCollisionQueryParams QueryParams = FCollisionQueryParams::DefaultQueryParam;
-	QueryParams.bTraceComplex = true;
 	FHitResult HitResult;
-	bool bHitWorld = GetWorld()->LineTraceSingleByObjectType(HitResult, Ray.Origin, Ray.PointAt(HALF_WORLD_MAX), ObjectQueryParams, QueryParams);
+	bool bHitWorld = ToolSceneQueriesUtil::FindNearestVisibleObjectHit(GetWorld(), HitResult, Ray.Origin, Ray.PointAt(HALF_WORLD_MAX));
 	if (bHitWorld)
 	{
 		FVector HitPoint = HitResult.ImpactPoint;
@@ -834,7 +926,7 @@ void FModelingToolsEditorMode::ConfigureRealTimeViewportsOverride(bool bEnable)
 				}
 				else
 				{
-					Viewport.RemoveRealtimeOverride(SystemDisplayName);
+					Viewport.RemoveRealtimeOverride(SystemDisplayName, false);
 				}
 			}
 		}

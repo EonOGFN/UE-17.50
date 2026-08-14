@@ -7,6 +7,7 @@
 #include "Field/FieldSystemCoreAlgo.h"
 #include "Field/FieldSystemSceneProxy.h"
 #include "Field/FieldSystemNodes.h"
+#include "PhysicsField/PhysicsFieldComponent.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/CoreMiscDefines.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
@@ -18,6 +19,8 @@ DEFINE_LOG_CATEGORY_STATIC(FSC_Log, NoLogging, All);
 UFieldSystemComponent::UFieldSystemComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, FieldSystem(nullptr)
+	, IsGlobalField(false)
+	, IsChaosField(true)
 	, ChaosModule(nullptr)
 	, bHasPhysicsState(false)
 {
@@ -70,7 +73,7 @@ void UFieldSystemComponent::OnCreatePhysicsState()
 	if(bValidWorld)
 	{
 		// Check we can get a suitable dispatcher
-		ChaosModule = FModuleManager::Get().GetModulePtr<FChaosSolversModule>("ChaosSolvers");
+		ChaosModule = FChaosSolversModule::GetModule();
 		check(ChaosModule);
 
 		bHasPhysicsState = true;
@@ -91,8 +94,9 @@ void UFieldSystemComponent::OnDestroyPhysicsState()
 
 	ChaosModule = nullptr;
 
-
 	bHasPhysicsState = false;
+
+	RemovePersistentFields();
 }
 
 bool UFieldSystemComponent::ShouldCreatePhysicsState() const
@@ -110,39 +114,50 @@ void UFieldSystemComponent::DispatchCommand(const FFieldSystemCommand& InCommand
 	using namespace Chaos;
 	if (HasValidPhysicsState())
 	{
-		checkSlow(ChaosModule); // Should already be checked from OnCreatePhysicsState
-
-		// Assemble a list of compatible solvers
-		TArray<FPhysicsSolverBase*> SupportedSolverList;
-		if(SupportedSolvers.Num() > 0)
+		if (IsChaosField)
 		{
-			for(TSoftObjectPtr<AChaosSolverActor>& SolverActorPtr : SupportedSolvers)
+			checkSlow(ChaosModule); // Should already be checked from OnCreatePhysicsState
+
+			// Assemble a list of compatible solvers
+			TArray<FPhysicsSolverBase*> SupportedSolverList;
+			if(SupportedSolvers.Num() > 0)
 			{
-				if(AChaosSolverActor* CurrActor = SolverActorPtr.Get())
+				for(TSoftObjectPtr<AChaosSolverActor>& SolverActorPtr : SupportedSolvers)
 				{
-					SupportedSolverList.Add(CurrActor->GetSolver());
+					if(AChaosSolverActor* CurrActor = SolverActorPtr.Get())
+					{
+						SupportedSolverList.Add(CurrActor->GetSolver());
+					}
+				}
+			}
+
+			TArray<FPhysicsSolverBase*> WorldSolverList = ChaosModule->GetAllSolvers();
+			const int32 NumFilterSolvers = SupportedSolverList.Num();
+
+			for (FPhysicsSolverBase* Solver : WorldSolverList)
+			{
+				const bool bSolverValid = NumFilterSolvers == 0 || SupportedSolverList.Contains(Solver);
+				if (bSolverValid)
+				{
+					Solver->CastHelper([&InCommand](auto& Concrete)
+						{
+							Concrete.EnqueueCommandImmediate([ConcreteSolver = &Concrete, NewCommand = InCommand]()
+								{
+									if (ConcreteSolver->HasActiveParticles())
+									{
+										ConcreteSolver->GetPerSolverField().BufferCommand(NewCommand);
+									}
+								});
+						});
 				}
 			}
 		}
-
-		TArray<FPhysicsSolverBase*> WorldSolverList = ChaosModule->GetAllSolvers();
-		const int32 NumFilterSolvers = SupportedSolverList.Num();
-
-		for(FPhysicsSolverBase* Solver : WorldSolverList)
+		if (IsGlobalField)
 		{
-			const bool bSolverValid = NumFilterSolvers == 0 || SupportedSolverList.Contains(Solver);
-			if(bSolverValid)
+			UWorld* World = GetWorld();
+			if (World && World->PhysicsField)
 			{
-				Solver->CastHelper([&InCommand](auto& Concrete)
-				{
-					Concrete.EnqueueCommandImmediate([ConcreteSolver = &Concrete, NewCommand = InCommand]()
-					{
-						if(ConcreteSolver->Enabled() && ConcreteSolver->HasActiveParticles())
-						{
-							ConcreteSolver->GetPerSolverField().BufferCommand(NewCommand);
-						}
-					});
-				});
+				World->PhysicsField->AddTransientCommand(InCommand);
 			}
 		}
 	}
@@ -230,6 +245,59 @@ void UFieldSystemComponent::ApplyPhysicsField(bool Enabled, EFieldPhysicsType Ta
 	}
 }
 
+void UFieldSystemComponent::RemovePersistentFields()
+{
+	if (IsGlobalField)
+	{
+		UWorld* World = GetWorld();
+		if (World && World->PhysicsField)
+		{
+			for (auto& FieldCommand : PersistentFields)
+			{
+				World->PhysicsField->RemovePersistentCommand(FieldCommand);
+			}
+		}
+	}
+
+	PersistentFields.Reset();
+}
+
+void UFieldSystemComponent::AddPersistentField(bool Enabled, EFieldPhysicsType Target, UFieldSystemMetaData* MetaData, UFieldNodeBase* Field)
+{
+	if (Enabled && Field)
+	{
+		TArray<const UFieldNodeBase*> Nodes;
+		FFieldSystemCommand Command = { GetFieldPhysicsName(Target), Field->NewEvaluationGraph(Nodes) };
+		if (ensureMsgf(Command.RootNode,
+			TEXT("Failed to generate physics field command for target attribute.")))
+		{
+			if (MetaData)
+			{
+				switch (MetaData->Type())
+				{
+				case FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution:
+					Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution).Reset(new FFieldSystemMetaDataProcessingResolution(static_cast<UFieldSystemMetaDataProcessingResolution*>(MetaData)->ResolutionType));
+					break;
+				case FFieldSystemMetaData::EMetaType::ECommandData_Iteration:
+					Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Iteration).Reset(new FFieldSystemMetaDataIteration(static_cast<UFieldSystemMetaDataIteration*>(MetaData)->Iterations));
+					break;
+				}
+			}
+			ensure(!Command.TargetAttribute.IsEqual("None"));
+			PersistentFields.Add(Command);
+
+			if (IsGlobalField)
+			{
+				UWorld* World = GetWorld();
+				if (World && World->PhysicsField)
+				{
+					World->PhysicsField->AddPersistentCommand(Command);
+				}
+			}
+		}
+	}
+}
+
 void UFieldSystemComponent::ResetFieldSystem()
 {
 	if (FieldSystem)
@@ -240,7 +308,7 @@ void UFieldSystemComponent::ResetFieldSystem()
 
 void UFieldSystemComponent::AddFieldCommand(bool Enabled, EFieldPhysicsType Target, UFieldSystemMetaData* MetaData, UFieldNodeBase* Field)
 {
-	if (Field && FieldSystem)
+	if (Enabled && Field && FieldSystem)
 	{
 		TArray<const UFieldNodeBase*> Nodes;
 		FFieldSystemCommand Command = { GetFieldPhysicsName(Target), Field->NewEvaluationGraph(Nodes) };
@@ -264,6 +332,7 @@ void UFieldSystemComponent::AddFieldCommand(bool Enabled, EFieldPhysicsType Targ
 		}
 	}
 }
+
 
 
 

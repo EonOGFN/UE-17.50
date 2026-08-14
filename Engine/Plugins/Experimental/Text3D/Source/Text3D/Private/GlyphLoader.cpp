@@ -386,14 +386,24 @@ void FGlyphLoader::FixParityAndDivide(const TSharedContourNode Node, const bool 
 		while (bAddPoint)
 		{
 			AddPoint();
-			const int32 RepeatedJunctionIndex = Junctions.Find(VertexID);
-			if (RepeatedJunctionIndex == INDEX_NONE)
-			{
-				continue;
-			}
 
-			// If it is, we made a loop that should be separated
-			DetachFinishedContour(RepeatedJunctionIndex, InitialVertices, RootForDetaching);
+			if (VertexID == -1)
+			{
+				// This is bad contour (not a closed loop)
+				VertexID = Junctions.Last();
+				DetachBadContour();
+			}
+			else
+			{
+				const int32 RepeatedJunctionIndex = Junctions.Find(VertexID);
+				if (RepeatedJunctionIndex == INDEX_NONE)
+				{
+					continue;
+				}
+
+				// If it is, we made a loop that should be separated
+				DetachFinishedContour(RepeatedJunctionIndex, InitialVertices, RootForDetaching);
+			}
 
 			// If path contains no junctions and current vertex is not a junction
 			if (Junctions.Num() == 0 && !Arrangement->Graph.IsJunctionVertex(VertexID))
@@ -614,7 +624,7 @@ void FGlyphLoader::MakeArrangement(const TSharedPtr<const FPolygon2f> Contour)
 {
 	FAxisAlignedBox2f Box = FAxisAlignedBox2f::Empty();
 
-	for (const FVector2f Vertex : Contour->GetVertices())
+	for (const FVector2f& Vertex : Contour->GetVertices())
 	{
 		Box.Contain(Vertex);
 	}
@@ -677,12 +687,16 @@ TArray<FVector2f> FGlyphLoader::CopyVertices() const
 	return Vertices;
 }
 
+void FGlyphLoader::DetachBadContour()
+{
+	const int32 JunctionIndexInContour = FindStartOfDetachedContour(Junctions.Num() - 1);
+	RemoveDetachedContourFromPath(JunctionIndexInContour);
+}
+
 void FGlyphLoader::DetachFinishedContour(const int32 RepeatedJunctionIndex, const TArray<FVector2f>& InitialVertices, const TSharedContourNode RootForDetaching)
 {
-	// Remove from list of junctions all junctions that belong to detached loop
-	Junctions.SetNum(RepeatedJunctionIndex);
-	// Find index in path of fisrt (and last) vertex of loop
-	const int32 JunctionIndexInContour = DividedContourIDs.Find(VertexID);
+	const int32 JunctionIndexInContour = FindStartOfDetachedContour(RepeatedJunctionIndex);
+
 	// Create contour from copied vertices
 	TSharedPtr<FPolygon2f> FinishedContour = MakeShared<FPolygon2f>();
 
@@ -691,10 +705,24 @@ void FGlyphLoader::DetachFinishedContour(const int32 RepeatedJunctionIndex, cons
 		FinishedContour->AppendVertex(InitialVertices[DividedContourIDs[ID]]);
 	}
 
-	// Remove separated contour from path
-	DividedContourIDs.SetNum(JunctionIndexInContour);
+	RemoveDetachedContourFromPath(JunctionIndexInContour);
+
 	const TSharedContourNode FinishedContourNode = MakeShared<FContourNode>(FinishedContour, false, FinishedContour->IsClockwise());
 	Insert(FinishedContourNode, RootForDetaching);
+}
+
+int32 FGlyphLoader::FindStartOfDetachedContour(const int32 RepeatedJunctionIndex)
+{
+	// Remove from list of junctions all junctions that belong to detached loop
+	Junctions.SetNum(RepeatedJunctionIndex);
+	// Find index in path of first (and last) vertex of loop
+	const int32 JunctionIndexInContour = DividedContourIDs.Find(VertexID);
+	return JunctionIndexInContour;
+}
+
+void FGlyphLoader::RemoveDetachedContourFromPath(const int32 JunctionIndexInContour)
+{
+	DividedContourIDs.SetNum(JunctionIndexInContour);
 }
 
 void FGlyphLoader::AddPoint(const bool bForceJunction)
@@ -709,10 +737,16 @@ void FGlyphLoader::AddPoint(const bool bForceJunction)
 		// Select specific path direction
 		OutgoingEdge = FindOutgoing(Junctions.Last());
 	}
-	else
+	else if (Graph.IsVertex(VertexID))
 	{
 		// This should be the only possible direction
 		OutgoingEdge = *Graph.VtxEdgesItr(VertexID).begin();
+	}
+	else
+	{
+		// We have no possible directions, this contour is bad
+		VertexID = -1;
+		return;
 	}
 
 	// Move to next graph node
@@ -742,12 +776,12 @@ void FGlyphLoader::RemoveUnneededNodes(const TSharedContourNode Node) const
 
 void FGlyphLoader::MergeRootForDetaching(const TSharedContourNode RemovedNode, const TSharedContourNode RootForDetaching, const TSharedContourNode RemovedNodeParent) const
 {
-	for (const TSharedContourNode Child : RemovedNode->Children)
+	for (const TSharedContourNode& Child : RemovedNode->Children)
 		{
 		Insert(Child, RootForDetaching);
 		}
 
-	for (const TSharedContourNode Child : RootForDetaching->Children)
+	for (const TSharedContourNode& Child : RootForDetaching->Children)
 		{
 		RemovedNodeParent->Children.Add(Child);
 		}

@@ -2,6 +2,7 @@
 
 #include "SDataprepEditorViewport.h"
 
+#include "DataprepCorePrivateUtils.h"
 #include "DataprepCoreUtils.h"
 #include "DataprepEditor.h"
 #include "DataprepEditorUtils.h"
@@ -169,10 +170,6 @@ namespace DataprepEditor3DPreviewUtils
 	/** Build the render data based on the current geometry available in the static mesh */
 	void BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshes, TArray<UStaticMesh*>& BuiltMeshes);
 
-	/** Compile all materials included in the input array*/
-	// Copied from DatasmithImporterImpl::CompileMaterial
-	void CompileMaterials(const TArray< UMaterialInterface* >& Materials);
-
 	void FindMeshComponents(const AActor * InActor, TArray<UStaticMeshComponent*>& MeshComponents, bool bRecursive );
 
 	/** Returns array of static mesh components in world */
@@ -255,8 +252,8 @@ void SDataprepEditorViewport::Construct(const FArguments& InArgs, TSharedPtr<FDa
 		PreviewSceneWorld->ChangeFeatureLevel(NewFeatureLevel);
 	});
 
-	TFunctionRef<AActor*(USceneComponent*, const TCHAR*)> CreateActor =
-		[&PreviewSceneWorld](USceneComponent* ParentComponent, const TCHAR* ActorName)-> AActor*
+	TFunction<AActor* (USceneComponent*, const TCHAR*)> CreateActor;
+	CreateActor = [&PreviewSceneWorld](USceneComponent* ParentComponent, const TCHAR* ActorName)-> AActor*
 		{
 			AActor* Actor = PreviewSceneWorld->SpawnActor<AActor>( AActor::StaticClass(), FTransform::Identity );
 
@@ -348,7 +345,7 @@ void SDataprepEditorViewport::UpdateScene()
 		{
 			if( UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh() )
 			{
-				if( !StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized())
+				if( !StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized())
 				{
 					++InvalidStaticMeshesCount;
 					MeshComponent = nullptr;
@@ -379,7 +376,7 @@ void SDataprepEditorViewport::UpdateScene()
 				{
 					const UStaticMesh* StaticMesh = SceneMeshComponent->GetStaticMesh();
 					const FTransform& ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
-					SceneBounds += StaticMesh->ExtendedBounds.GetBox().TransformBy( ComponentToWorldTransform );
+					SceneBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
 				}
 			}
 
@@ -437,13 +434,13 @@ void SDataprepEditorViewport::UpdateScene()
 						PreviewMeshComponent->SetRelativeTransform( ComponentToWorldTransform );
 
 						// Apply preview material to preview static mesh component
-						for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+						for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 						{
 							UMaterialInterface* MaterialInterface = SceneMeshComponent->GetMaterial(Index);
 
 							if(MaterialInterface == nullptr)
 							{
-								MaterialInterface = StaticMesh->StaticMaterials[Index].MaterialInterface;
+								MaterialInterface = StaticMesh->GetStaticMaterials()[Index].MaterialInterface;
 							}
 
 							PreviewMeshComponent->SetMaterial( Index, MaterialInterface );
@@ -595,8 +592,8 @@ void SDataprepEditorViewport::UpdateOverlayText()
 		if(UStaticMeshComponent* MeshComponent = PreviewMeshComponent.Get())
 		{
 			UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh();
-			TrianglesCount += StaticMesh->RenderData->LODResources[0].GetNumTriangles();
-			VerticesCount += StaticMesh->RenderData->LODResources[0].GetNumVertices();
+			TrianglesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumTriangles();
+			VerticesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumVertices();
 			StaticMeshes.Add(StaticMesh);
 		}
 	}
@@ -743,7 +740,7 @@ void SDataprepEditorViewport::OnFocusViewportToSelection()
 		{
 			const UStaticMesh* StaticMesh = SelectedComponent->GetStaticMesh();
 			const FTransform& ComponentToWorldTransform = SelectedComponent->GetComponentTransform();
-			SelectionBounds += StaticMesh->ExtendedBounds.GetBox().TransformBy( ComponentToWorldTransform );
+			SelectionBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
 		}
 	}
 
@@ -771,20 +768,19 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 		return nullptr;
 	};
 
-	const int32 DefaultMaterialsCount = 4;
-
-	TArray< UMaterialInterface* > Materials;
-	Materials.Reserve( DefaultMaterialsCount );
-
 	if(!PreviewMaterial.IsValid())
 	{
 		PreviewMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("PreviewMaterial") );
-		Materials.Add( PreviewMaterial.Get() );
+		check( PreviewMaterial.IsValid() );
+
+		DataprepCorePrivateUtils::CompileMaterial(PreviewMaterial.Get());
 	}
 
 	if(!TransparentMaterial.IsValid())
 	{
 		TransparentMaterial = TWeakObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
+		check( TransparentMaterial.IsValid() );
+
 		TransparentMaterial->Parent = PreviewMaterial.Get();
 
 		TransparentMaterial->BasePropertyOverrides.bOverride_BlendMode = true;
@@ -793,27 +789,30 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 		TransparentMaterial->SetScalarParameterValueEditorOnly( TEXT("Transparency"), 0.75f );
 		TransparentMaterial->SetVectorParameterValueEditorOnly( TEXT( "DiffuseColor" ), FLinearColor::Gray );
 
-		check( TransparentMaterial.IsValid() );
-
-		Materials.Add( TransparentMaterial.Get() );
+		DataprepCorePrivateUtils::CompileMaterial(TransparentMaterial.Get());
 	}
 
 	if(!XRayMaterial.IsValid())
 	{
 		XRayMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("xray_master") );
-		Materials.Add( XRayMaterial.Get() );
+		check( XRayMaterial.IsValid() );
+
+		DataprepCorePrivateUtils::CompileMaterial(XRayMaterial.Get());
 	}
 
 	if(!BackFaceMaterial.IsValid())
 	{
 		BackFaceMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("BackFaceMaterial") );
-		Materials.Add( BackFaceMaterial.Get() );
+
+		DataprepCorePrivateUtils::CompileMaterial(BackFaceMaterial.Get());
 	}
 
 	if(!PerMeshMaterial.IsValid())
 	{
 		PerMeshMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("PerMeshMaterial") );
-		Materials.Add( PerMeshMaterial.Get() );
+		check( PerMeshMaterial.IsValid() );
+
+		DataprepCorePrivateUtils::CompileMaterial(PerMeshMaterial.Get());
 	}
 
 	if(PerMeshMaterialInstances.Num() == 0)
@@ -828,25 +827,24 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 		if(!PerMeshMaterialInstance.IsValid())
 		{
 			PerMeshMaterialInstance = TWeakObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
+			check( PerMeshMaterialInstance.IsValid() );
+
 			PerMeshMaterialInstance->Parent = PerMeshMaterial.Get();
 
 			check( PerMeshMaterialInstance.IsValid() );
 
 			PerMeshMaterialInstance->SetVectorParameterValueEditorOnly( TEXT( "Color" ), FLinearColor( PerMeshColor[Index] ) );
 
-			Materials.Add( PerMeshMaterialInstance.Get() );
+			DataprepCorePrivateUtils::CompileMaterial(PerMeshMaterialInstance.Get());
 		}
 	}
 
 	if(!ReflectionMaterial.IsValid())
 	{
 		ReflectionMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("ReflectionMaterial") );
-		Materials.Add( ReflectionMaterial.Get() );
-	}
+		check( ReflectionMaterial.IsValid() );
 
-	if(Materials.Num() > 0)
-	{
-		DataprepEditor3DPreviewUtils::CompileMaterials( Materials );
+		DataprepCorePrivateUtils::CompileMaterial(ReflectionMaterial.Get());
 	}
 }
 
@@ -1082,13 +1080,13 @@ void SDataprepEditorViewport::ApplyRenderingMaterial()
 
 		UStaticMesh* StaticMesh = SceneMeshComponent->GetStaticMesh();
 
-		for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+		for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 		{
 			UMaterialInterface* MaterialInterface = SceneMeshComponent->GetMaterial(Index);
 
 			if(MaterialInterface == nullptr)
 			{
-				MaterialInterface = StaticMesh->StaticMaterials[Index].MaterialInterface;
+				MaterialInterface = StaticMesh->GetStaticMaterials()[Index].MaterialInterface;
 			}
 
 			PreviewMeshComponent->SetMaterial( Index, RenderingMaterial ? RenderingMaterial : MaterialInterface );
@@ -1110,7 +1108,7 @@ void SDataprepEditorViewport::ApplyRenderingMaterial()
 					{
 						UStaticMesh* StaticMesh = PreviewMeshComponent->GetStaticMesh();
 
-						for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+						for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 						{
 							PreviewMeshComponent->SetMaterial( Index, TransparentMaterial.Get() );
 						}
@@ -1544,12 +1542,12 @@ void FDataprepEditorViewportCommands::RegisterCommands()
 // Copied from UStaticMeshComponent::CreateSceneProxy
 FPrimitiveSceneProxy* UCustomStaticMeshComponent::CreateSceneProxy()
 {
-	if (GetStaticMesh() == nullptr || GetStaticMesh()->RenderData == nullptr)
+	if (GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
 	{
 		return nullptr;
 	}
 
-	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->RenderData->LODResources;
+	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
 	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->MinLOD.Default, 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
 		return nullptr;
@@ -1577,7 +1575,7 @@ namespace DataprepEditor3DPreviewUtils
 
 		for(UStaticMesh* StaticMesh : StaticMeshes)
 		{
-			if(StaticMesh && (!StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized()))
+			if(StaticMesh && (!StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized()))
 			{
 				BuiltMeshes.Add( StaticMesh );
 			}
@@ -1647,50 +1645,9 @@ namespace DataprepEditor3DPreviewUtils
 					SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
 				}
 
-				for ( FStaticMeshLODResources& LODResources : StaticMesh->RenderData->LODResources )
+				for ( FStaticMeshLODResources& LODResources : StaticMesh->GetRenderData()->LODResources )
 				{
 					LODResources.bHasColorVertexData = true;
-				}
-			}
-		}
-	}
-
-	// Copied from DatasmithImporterImpl::CompileMaterial
-	void CompileMaterials(const TArray< UMaterialInterface* >& Materials)
-	{
-		if(Materials.Num() > 0)
-		{
-			FMaterialUpdateContext MaterialUpdateContext;
-
-			for(UMaterialInterface* MaterialInterface : Materials)
-			{
-				MaterialUpdateContext.AddMaterialInterface( MaterialInterface );
-
-				if(UMaterialInstanceConstant* ConstantMaterialInstance = Cast< UMaterialInstanceConstant >(MaterialInterface))
-				{
-					// If BlendMode override property has been changed, make sure this combination of the parent material is compiled
-					if ( ConstantMaterialInstance->BasePropertyOverrides.bOverride_BlendMode == true )
-					{
-						ConstantMaterialInstance->ForceRecompileForRendering();
-					}
-					else
-					{
-						// If a static switch is overridden, we need to recompile
-						FStaticParameterSet StaticParameters;
-						ConstantMaterialInstance->GetStaticParameterValues( StaticParameters );
-
-						for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
-						{
-							if ( Switch.bOverride )
-							{
-								ConstantMaterialInstance->ForceRecompileForRendering();
-								break;
-							}
-						}
-					}
-
-					ConstantMaterialInstance->PreEditChange( nullptr );
-					ConstantMaterialInstance->PostEditChange();
 				}
 			}
 		}

@@ -238,6 +238,11 @@ bool UChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseReason)
 		InPartialBunch = NULL;
 	}
 
+	if (ChIndex != INDEX_NONE && Connection->IsReservingDestroyedChannels())
+	{
+		Connection->AddReservedChannel(ChIndex);
+	}
+
 	// Remove from connection's channel table.
 	verifySlow(Connection->OpenChannels.Remove(this) == 1);
 	Connection->StopTickingChannel(this);
@@ -283,7 +288,7 @@ void UChannel::Serialize(FArchive& Ar)
 	}
 }
 
-void UChannel::ReceivedAcks()
+bool UChannel::ReceivedAcks(EChannelCloseReason& OutCloseReason)
 {
 	check(Connection->Channels[ChIndex]==this);
 
@@ -348,12 +353,33 @@ void UChannel::ReceivedAcks()
 		NumOutRec--;
 	}
 
-	// If a close has been acknowledged in sequence, we're done.
-	if( bCleanup || (OpenTemporary && OpenAcked) )
+	if (OpenTemporary && OpenAcked)
 	{
+		// If this was a temporary channel we can close it now as we do not expect the other side to immediately close the temporary channel
 		UE_LOG(LogNetDormancy, Verbose, TEXT("ReceivedAcks: Cleaning up after close acked. CloseReason: %s %s"), LexToString(CloseReason), *Describe());		
 
 		check(!OutRec);
+		ConditionalCleanUp(false, CloseReason);
+	}
+	else if (bCleanup)
+	{
+		// If a close has been acknowledged in sequence, we're done.
+		// We leave it to the caller to cleanup non-temporary channels since we want to process incoming data on the channel contained in the same packet.
+		UE_LOG(LogNetDormancy, Verbose, TEXT("ReceivedAcks: Channel queued for cleaning up after close acked. CloseReason: %s %s"), LexToString(CloseReason), *Describe());		
+
+		check(!OutRec);
+		OutCloseReason = CloseReason;
+		return true;
+	}
+
+	return false;
+}
+
+void UChannel::ReceivedAcks()
+{
+	EChannelCloseReason CloseReason;
+	if (ReceivedAcks(CloseReason))
+	{
 		ConditionalCleanUp(false, CloseReason);
 	}
 }
@@ -405,7 +431,7 @@ bool UChannel::ReceivedSequencedBunch( FInBunch& Bunch )
 			UE_LOG(LogNet, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. ChIndex == 0. Calling ConditionalCleanUp.") );
 		}
 
-		UE_LOG(LogNetTraffic, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. Calling ConditionalCleanUp. ChIndex: %i"), ChIndex );
+		UE_LOG(LogNetTraffic, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. Calling ConditionalCleanUp. ChIndex: %i Reason: %s"), ChIndex, LexToString(Bunch.CloseReason));
 
 		ConditionalCleanUp(false, Bunch.CloseReason);
 		return true;
@@ -987,7 +1013,7 @@ FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 
 	// Add any export bunches
 	// Replay connections will manage export bunches separately.
-	if (!Connection->IsReplay())
+	if (!Connection->IsInternalAck())
 	{
 		AppendExportBunches( OutgoingBunches );
 	}
@@ -1959,7 +1985,7 @@ int64 UActorChannel::Close(EChannelCloseReason Reason)
 						Actor->NetDormancy = DORM_DormantAll;
 					}
 
-					check( Actor->NetDormancy > DORM_Awake ); // Dormancy should have been canceled if game code changed NetDormancy
+					ensureMsgf(Actor->NetDormancy > DORM_Awake, TEXT("Dormancy should have been canceled if game code changed NetDormancy: %s [%s]"), *GetFullNameSafe(Actor), *UEnum::GetValueAsString(TEXT("/Script/Engine.ENetDormancy"), Actor->NetDormancy));
 					Connection->Driver->NotifyActorFullyDormantForConnection(Actor, Connection);
 				}
 
@@ -2079,12 +2105,6 @@ bool UActorChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseRea
 	checkf(Connection->Driver != nullptr, TEXT("UActorChannel::CleanUp: Connection->Driver is null!"));
 
 	Connection->Driver->NotifyActorChannelCleanedUp(this, CloseReason);
-
-	UReplicationConnectionDriver* const ConnectionDriver = Connection->GetReplicationConnectionDriver();
-	if (ConnectionDriver)
-	{
-		ConnectionDriver->NotifyActorChannelCleanedUp(this);
-	}
 
 	const bool bIsServer = Connection->Driver->IsServer();
 
@@ -2649,7 +2669,7 @@ void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 		{
 			if (Connection->KeepProcessingActorChannelBunchesMap.Contains(ActorNetGUID))
 			{
-				UE_LOG(LogNet, Log, TEXT("UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s"), *ActorNetGUID.ToString());
+				UE_LOG(LogNet, Verbose, TEXT("UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s"), *ActorNetGUID.ToString());
 			}
 
 			if (QueuedBunches.Num() == 0)

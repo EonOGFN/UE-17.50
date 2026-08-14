@@ -43,6 +43,8 @@ groupshared uint Bins[NUM_DIRECTION_BINS];
 uint2 RayTracingResolution;
 uint2 TileAlignedResolution;
 float ReflectionMaxNormalBias;
+float ReflectionSmoothBias;
+float ReflectionMaxRoughness;
 int   GlossyReflections;
 
 // Outputs
@@ -76,7 +78,7 @@ void GenerateReflectionRaysCS(
 	const uint2 TileBasePixelPos = uint2(TileIndex % NumTiles.x, TileIndex / NumTiles.x) * TileSize;
 	const uint2 PixelPos         = TileBasePixelPos + uint2(RayIndexInTile % TileSize.x, RayIndexInTile / TileSize.x);
 
-	FSortedReflectionRay Ray = GenerateDeferredReflectionRay(PixelPos, ReflectionMaxNormalBias, GlossyReflections==1);
+	FSortedReflectionRay Ray = GenerateDeferredReflectionRay(PixelPos, ReflectionMaxNormalBias, ReflectionSmoothBias, GlossyReflections==1);
 
 	uint Bin = RayDirectionToBin(Ray.Direction, uint2(NUM_DIRECTION_BINS_X,NUM_DIRECTION_BINS_Y));
 	if (any(PixelPos >= RayTracingResolution))
@@ -128,8 +130,6 @@ void GenerateReflectionRaysCS(
 #endif // DIM_WAVE_OPS
 
 	GroupMemoryBarrierWithGroupSync();
-
-	Ray.DebugSortKey = Bin;
 
 	uint StoreIndex = GroupId * (TileSize.x*TileSize.y) + Bins[Bin] + SlotForThisThread;
 

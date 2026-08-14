@@ -237,6 +237,7 @@ namespace AutomationTool
 			this.MapsToCook = InParams.MapsToCook;
 			this.MapIniSectionsToCook = InParams.MapIniSectionsToCook;
 			this.DirectoriesToCook = InParams.DirectoriesToCook;
+            this.DDCGraph = InParams.DDCGraph;
             this.InternationalizationPreset = InParams.InternationalizationPreset;
             this.CulturesToCook = InParams.CulturesToCook;
             this.BasedOnReleaseVersion = InParams.BasedOnReleaseVersion;
@@ -347,6 +348,7 @@ namespace AutomationTool
 			this.NumClients = InParams.NumClients;
             this.Compressed = InParams.Compressed;
 			this.AdditionalPakOptions = InParams.AdditionalPakOptions;
+			this.AdditionalIoStoreOptions = InParams.AdditionalIoStoreOptions;
 			this.Archive = InParams.Archive;
 			this.ArchiveDirectoryParam = InParams.ArchiveDirectoryParam;
 			this.ArchiveMetaData = InParams.ArchiveMetaData;
@@ -390,6 +392,7 @@ namespace AutomationTool
 			ParamList<string> MapsToCook = null,
 			ParamList<string> MapIniSectionsToCook = null,
 			ParamList<string> DirectoriesToCook = null,
+            string DDCGraph = null,
             string InternationalizationPreset = null,
             ParamList<string> CulturesToCook = null,
 			ParamList<string> ClientCookedTargets = null,
@@ -408,6 +411,7 @@ namespace AutomationTool
 			bool? Clean = null,
             bool? Compressed = null,
 			string AdditionalPakOptions = null,
+			string AdditionalIoStoreOptions = null,
             bool? IterativeCooking = null,
 			string IterateSharedCookedBuild = null,
 			bool? IterateSharedBuildUsePrecompiledExe = null,
@@ -520,6 +524,7 @@ namespace AutomationTool
 			{
 				this.DirectoriesToCook = DirectoriesToCook;
 			}
+			this.DDCGraph = ParseParamValueIfNotSpecified(Command, DDCGraph, "ddc");
             this.InternationalizationPreset = ParseParamValueIfNotSpecified(Command, InternationalizationPreset, "i18npreset");
 
             // If not specified in parameters, check commandline.
@@ -666,6 +671,7 @@ namespace AutomationTool
             }
             this.Compressed = GetParamValueIfNotSpecified(Command, Compressed, this.Compressed, "compressed");
 			this.AdditionalPakOptions = ParseParamValueIfNotSpecified(Command, AdditionalPakOptions, "AdditionalPakOptions");
+			this.AdditionalIoStoreOptions = ParseParamValueIfNotSpecified(Command, AdditionalIoStoreOptions, "AdditionalIoStoreOptions");
 			this.IterativeCooking = GetParamValueIfNotSpecified(Command, IterativeCooking, this.IterativeCooking, new string[] { "iterativecooking", "iterate" });
 			this.IterateSharedCookedBuild = GetParamValueIfNotSpecified(Command, false, false, "iteratesharedcookedbuild") ? "usesyncedbuild" : null;
 			this.IterateSharedCookedBuild = ParseParamValueIfNotSpecified(Command, IterateSharedCookedBuild, "IterateSharedCookedBuild", String.Empty);
@@ -1505,6 +1511,11 @@ namespace AutomationTool
 		public ParamList<string> DirectoriesToCook = new ParamList<string>();
 
         /// <summary>
+        /// Cook: Which ddc graph to use when cooking.
+        /// </summary>
+        public string DDCGraph;
+
+        /// <summary>
         /// Cook: Internationalization preset to cook.
         /// </summary>
         public string InternationalizationPreset;
@@ -1620,6 +1631,11 @@ namespace AutomationTool
 		/// </summary>
 		public string AdditionalPakOptions;
 
+		/// <summary>
+		/// Additional parameters when generating iostore container files
+		/// </summary>
+		public string AdditionalIoStoreOptions;
+
         /// <summary>
         /// Cook: Do not include a version number in the cooked content
         /// </summary>
@@ -1725,10 +1741,15 @@ namespace AutomationTool
 		/// </summary>
 		public ParamList<string> ExtraTargetsToStageWithClient = new ParamList<string>();
 
-        /// <summary>
-        /// Stage: Optional callback that a build script can use to modify a deployment context before it is applied
-        /// </summary>
-        public Action<ProjectParams, DeploymentContext> ModifyDeploymentContextCallback = null;
+		/// <summary>
+		/// Stage: Optional callback that a build script can use to modify a deployment context immediately after it is created
+		/// </summary>
+		public Action<ProjectParams, DeploymentContext> PreModifyDeploymentContextCallback = null;
+
+		/// <summary>
+		/// Stage: Optional callback that a build script can use to modify a deployment context before it is applied
+		/// </summary>
+		public Action<ProjectParams, DeploymentContext> ModifyDeploymentContextCallback = null;
 
         /// <summary>
         /// On Windows, adds an executable to the root of the staging directory which checks for prerequisites being 
@@ -2351,6 +2372,11 @@ namespace AutomationTool
 			get { return !String.IsNullOrEmpty(IterateSharedCookedBuild);  }
 		}
 
+        public bool HasDDCGraph
+        {
+            get { return !String.IsNullOrEmpty(DDCGraph); }
+        }
+
         public bool HasInternationalizationPreset
         {
             get { return !String.IsNullOrEmpty(InternationalizationPreset); }
@@ -2455,10 +2481,20 @@ namespace AutomationTool
 		private Dictionary<UnrealTargetPlatform, FileReference> ProjectExePaths;
 
 		/// <summary>
+		/// Override for the computed based on release version path
+		/// </summary>
+		public string BasedOnReleaseVersionPathOverride = null;
+
+		/// <summary>
 		/// Get the path to the directory of the version we are basing a diff or a patch on.  
 		/// </summary>				
 		public String GetBasedOnReleaseVersionPath(DeploymentContext SC, bool bIsClientOnly)
 		{
+			if (!string.IsNullOrEmpty(BasedOnReleaseVersionPathOverride))
+			{
+				return BasedOnReleaseVersionPathOverride;
+			}
+
 			String BasePath = BasedOnReleaseVersionBasePath;
 			String Platform = SC.StageTargetPlatform.GetCookPlatform(SC.DedicatedServer, bIsClientOnly);
 			if (String.IsNullOrEmpty(BasePath))
@@ -2786,6 +2822,7 @@ namespace AutomationTool
 				CommandUtils.LogLog("ClientTargetPlatform={0}", string.Join(",", ClientTargetPlatforms));
 				CommandUtils.LogLog("Compressed={0}", Compressed);
 				CommandUtils.LogLog("AdditionalPakOptions={0}", AdditionalPakOptions);
+				CommandUtils.LogLog("AdditionalIoStoreOptions={0}", AdditionalIoStoreOptions);
 				CommandUtils.LogLog("CookOnTheFly={0}", CookOnTheFly);
 				CommandUtils.LogLog("CookOnTheFlyStreaming={0}", CookOnTheFlyStreaming);
 				CommandUtils.LogLog("UnversionedCookedContent={0}", UnversionedCookedContent);
@@ -2805,6 +2842,7 @@ namespace AutomationTool
                 CommandUtils.LogLog("AdditionalCookerOptions={0}", AdditionalCookerOptions);
 				CommandUtils.LogLog("DedicatedServer={0}", DedicatedServer);
 				CommandUtils.LogLog("DirectoriesToCook={0}", DirectoriesToCook.ToString());
+                CommandUtils.LogLog("DDCGraph={0}", DDCGraph);
                 CommandUtils.LogLog("CulturesToCook={0}", CommandUtils.IsNullOrEmpty(CulturesToCook) ? "<Not Specified> (Use Defaults)" : CulturesToCook.ToString());
 				CommandUtils.LogLog("EditorTargets={0}", EditorTargets.ToString());
 				CommandUtils.LogLog("Foreign={0}", Foreign);

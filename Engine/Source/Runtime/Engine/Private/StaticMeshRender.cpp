@@ -140,8 +140,8 @@ static TAutoConsoleVariable<float> CVarRayTracingStaticMeshesWPOCullingRadius(
 /** Initialization constructor. */
 FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, bool bForceLODsShareStaticLighting)
 	: FPrimitiveSceneProxy(InComponent, InComponent->GetStaticMesh()->GetFName())
-	, RenderData(InComponent->GetStaticMesh()->RenderData.Get())
-	, OccluderData(InComponent->GetStaticMesh()->OccluderData.Get())
+	, RenderData(InComponent->GetStaticMesh()->GetRenderData())
+	, OccluderData(InComponent->GetStaticMesh()->GetOccluderData())
 	, ForcedLodModel(InComponent->ForcedLodModel)
 	, bCastShadow(InComponent->CastShadow)
 	, bReverseCulling(InComponent->bReverseCulling)
@@ -532,8 +532,8 @@ bool FStaticMeshSceneProxy::GetMeshElement(
 	const FLODInfo& ProxyLODInfo = LODs[LODIndex];
 
 	UMaterialInterface* MaterialInterface = ProxyLODInfo.Sections[SectionIndex].Material;
-	FMaterialRenderProxy* MaterialRenderProxy = MaterialInterface->GetRenderProxy();
-	const FMaterial* Material = MaterialRenderProxy->GetMaterial(FeatureLevel);
+	const FMaterialRenderProxy* MaterialRenderProxy = MaterialInterface->GetRenderProxy();
+	const FMaterial& Material = MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
 
 	const FVertexFactory* VertexFactory = nullptr;
 
@@ -580,10 +580,10 @@ bool FStaticMeshSceneProxy::GetMeshElement(
 	const bool bRequiresAdjacencyInformation = !bUseSelectionOutline && RequiresAdjacencyInformation(MaterialInterface, VertexFactory->GetType(), FeatureLevel);
 
 	// Two sided material use bIsFrontFace which is wrong with Reversed Indices. AdjacencyInformation use another index buffer.
-	const bool bUseReversedIndices = GUseReversedIndexBuffer && IsLocalToWorldDeterminantNegative() && (LOD.bHasReversedIndices != 0) && !bRequiresAdjacencyInformation && !Material->IsTwoSided();
+	const bool bUseReversedIndices = GUseReversedIndexBuffer && IsLocalToWorldDeterminantNegative() && (LOD.bHasReversedIndices != 0) && !bRequiresAdjacencyInformation && !Material.IsTwoSided();
 
 	// No support for stateless dithered LOD transitions for movable meshes
-	const bool bDitheredLODTransition = !IsMovable() && Material->IsDitheredLODTransition();
+	const bool bDitheredLODTransition = !IsMovable() && Material.IsDitheredLODTransition();
 
 	const uint32 NumPrimitives = SetMeshElementGeometrySource(LODIndex, SectionIndex, bWireframe, bRequiresAdjacencyInformation, bUseReversedIndices, bAllowPreCulledIndices, VertexFactory, OutMeshBatch);
 
@@ -1150,21 +1150,21 @@ void FStaticMeshSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PD
 
 					for (int32 SectionIndex = 0; bSafeToUseUnifiedMesh && SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 					{
-						const FMaterial* Material = ProxyLODInfo.Sections[SectionIndex].Material->GetRenderProxy()->GetMaterial(FeatureLevel);
+						const FMaterial& Material = ProxyLODInfo.Sections[SectionIndex].Material->GetRenderProxy()->GetIncompleteMaterialWithFallback(FeatureLevel);
 						// no support for stateless dithered LOD transitions for movable meshes
-						bAnySectionUsesDitheredLODTransition = bAnySectionUsesDitheredLODTransition || (!bIsMovable && Material->IsDitheredLODTransition());
-						bAllSectionsUseDitheredLODTransition = bAllSectionsUseDitheredLODTransition && (!bIsMovable && Material->IsDitheredLODTransition());
+						bAnySectionUsesDitheredLODTransition = bAnySectionUsesDitheredLODTransition || (!bIsMovable && Material.IsDitheredLODTransition());
+						bAllSectionsUseDitheredLODTransition = bAllSectionsUseDitheredLODTransition && (!bIsMovable && Material.IsDitheredLODTransition());
 						const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
 
 						bSafeToUseUnifiedMesh =
 							!(bAnySectionUsesDitheredLODTransition && !bAllSectionsUseDitheredLODTransition) // can't use a single section if they are not homogeneous
-							&& Material->WritesEveryPixel()
-							&& !Material->IsTwoSided()
-							&& !IsTranslucentBlendMode(Material->GetBlendMode())
-							&& !Material->MaterialModifiesMeshPosition_RenderThread()
-							&& Material->GetMaterialDomain() == MD_Surface
-							&& !Material->IsSky()
-							&& !Material->GetShadingModels().HasShadingModel(MSM_SingleLayerWater);
+							&& Material.WritesEveryPixel()
+							&& !Material.IsTwoSided()
+							&& !IsTranslucentBlendMode(Material.GetBlendMode())
+							&& !Material.MaterialModifiesMeshPosition_RenderThread()
+							&& Material.GetMaterialDomain() == MD_Surface
+							&& !Material.IsSky()
+							&& !Material.GetShadingModels().HasShadingModel(MSM_SingleLayerWater);
 
 						bAllSectionsCastShadow &= Section.bCastShadow;
 					}
@@ -1322,8 +1322,7 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 		|| EngineShowFlags.Bounds
 		|| bProxyIsSelected 
 		|| IsHovered()
-		|| bIsLightmapSettingError 
-		|| !IsStaticPathAvailable() );
+		|| bIsLightmapSettingError);
 
 	// Draw polygon mesh if we are either not in a collision view, or are drawing it as collision.
 	if (EngineShowFlags.StaticMeshes && bDrawMesh)
@@ -1635,12 +1634,12 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 
 
 					// The simple nav geometry is only used by dynamic obstacles for now
-					if (StaticMesh->NavCollision && StaticMesh->NavCollision->IsDynamicObstacle())
+					if (StaticMesh->GetNavCollision() && StaticMesh->GetNavCollision()->IsDynamicObstacle())
 					{
 						// Draw the static mesh's body setup (simple collision)
 						FTransform GeomTransform(GetLocalToWorld());
 						FColor NavCollisionColor = FColor(118,84,255,255);
-						StaticMesh->NavCollision->DrawSimpleGeom(Collector.GetPDI(ViewIndex), GeomTransform, GetSelectionColor(NavCollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true));
+						StaticMesh->GetNavCollision()->DrawSimpleGeom(Collector.GetPDI(ViewIndex), GeomTransform, GetSelectionColor(NavCollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true));
 					}
 				}
 			}
@@ -1693,16 +1692,16 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 
 	FRayTracingGeometry& Geometry = bEvaluateWPO? DynamicRayTracingGeometries[LODIndex] : RenderData->LODResources[LODIndex].RayTracingGeometry;
 	{
-		FRayTracingInstance RayTracingInstance;
+		FRayTracingInstance &RayTracingInstance = OutRayTracingInstances.AddDefaulted_GetRef();
 	
 		const int32 NumBatches = GetNumMeshBatches();
 
+		RayTracingInstance.Materials.Reserve(LODModel.Sections.Num() * NumBatches);
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
 		{
-			RayTracingInstance.Materials.Reserve(LODModel.Sections.Num());
 			for(int SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 			{
-				FMeshBatch Mesh;
+				FMeshBatch &Mesh = RayTracingInstance.Materials.AddDefaulted_GetRef();
 	
 				bool bResult = GetMeshElement(LODIndex, BatchIndex, SectionIndex, PrimitiveDPG, false, false, Mesh);
 				if (!bResult)
@@ -1712,7 +1711,6 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 					Mesh.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
 				}
 				Mesh.SegmentIndex = SectionIndex;
-				RayTracingInstance.Materials.Add(Mesh);
 			}
 		}
 
@@ -1754,8 +1752,6 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			RayTracingInstance.Geometry->Initializer.Segments.Num(), 
 			RayTracingInstance.Materials.Num(), 
 			LODIndex);
-
-		OutRayTracingInstances.Add(RayTracingInstance);
 	}
 }
 #endif
@@ -1815,8 +1811,7 @@ FPrimitiveViewRelevance FStaticMeshSceneProxy::GetViewRelevance(const FSceneView
 #endif
 		// Force down dynamic rendering path if invalid lightmap settings, so we can apply an error material in DrawRichMesh
 		(bAllowStaticLighting && HasStaticLighting() && !HasValidSettingsForStaticLighting()) ||
-		HasViewDependentDPG() ||
-		 !IsStaticPathAvailable()
+		HasViewDependentDPG()
 		)
 	{
 		Result.bDynamicRelevance = true;
@@ -1959,7 +1954,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 {
 	const auto FeatureLevel = InComponent->GetWorld()->FeatureLevel;
 
-	FStaticMeshRenderData* MeshRenderData = InComponent->GetStaticMesh()->RenderData.Get();
+	FStaticMeshRenderData* MeshRenderData = InComponent->GetStaticMesh()->GetRenderData();
 	FStaticMeshLODResources& LODModel = MeshRenderData->LODResources[LODIndex];
 	const FStaticMeshVertexFactories& VFs = InLODVertexFactories[LODIndex];
 
@@ -2259,8 +2254,8 @@ FLODMask FStaticMeshSceneProxy::GetLODMask(const FSceneView* View) const
 				// Draw the static mesh elements.
 				for(int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 				{
-					const FMaterial* Material = ProxyLODInfo.Sections[SectionIndex].Material->GetRenderProxy()->GetMaterial(FeatureLevel);
-					if (Material->IsDitheredLODTransition())
+					const FMaterial& Material = ProxyLODInfo.Sections[SectionIndex].Material->GetRenderProxy()->GetIncompleteMaterialWithFallback(FeatureLevel);
+					if (Material.IsDitheredLODTransition())
 					{
 						bUseDithered = true;
 						break;
@@ -2271,18 +2266,18 @@ FLODMask FStaticMeshSceneProxy::GetLODMask(const FSceneView* View) const
 
 			FCachedSystemScalabilityCVars CachedSystemScalabilityCVars = GetCachedScalabilityCVars();
 
-			float InvScreenSizeScale = (CachedSystemScalabilityCVars.StaticMeshLODDistanceScale != 0.f) ? (1.0f / CachedSystemScalabilityCVars.StaticMeshLODDistanceScale) : 1.0f;
+			const float LODScale = CachedSystemScalabilityCVars.StaticMeshLODDistanceScale;
 
 			if (bUseDithered)
 			{
 				for (int32 Sample = 0; Sample < 2; Sample++)
 				{
-					Result.SetLODSample(ComputeTemporalStaticMeshLOD(RenderData, ProxyBounds.Origin, ProxyBounds.SphereRadius, *View, ClampedMinLOD, InvScreenSizeScale, Sample), Sample);
+					Result.SetLODSample(ComputeTemporalStaticMeshLOD(RenderData, ProxyBounds.Origin, ProxyBounds.SphereRadius, *View, ClampedMinLOD, LODScale, Sample), Sample);
 				}
 			}
 			else
 			{
-				Result.SetLOD(ComputeStaticMeshLOD(RenderData, ProxyBounds.Origin, ProxyBounds.SphereRadius, *View, ClampedMinLOD, InvScreenSizeScale));
+				Result.SetLOD(ComputeStaticMeshLOD(RenderData, ProxyBounds.Origin, ProxyBounds.SphereRadius, *View, ClampedMinLOD, LODScale));
 			}
 		}
 	}
@@ -2296,12 +2291,12 @@ FLODMask FStaticMeshSceneProxy::GetLODMask(const FSceneView* View) const
 
 FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 {
-	if (GetStaticMesh() == nullptr || GetStaticMesh()->RenderData == nullptr)
+	if (GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
 	{
 		return nullptr;
 	}
 
-	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->RenderData->LODResources;
+	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
 	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->MinLOD.Default, 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
 		return nullptr;

@@ -467,7 +467,7 @@ void UParticleLODLevel::UpdateModuleLists()
 			UParticleSpriteEmitter* SpriteEmitter = Cast<UParticleSpriteEmitter>(GetOuter());
 			if (SpriteEmitter && (MeshTD->bOverrideMaterial == false))
 			{
-				FStaticMeshSection& Section = MeshTD->Mesh->RenderData->LODResources[0].Sections[0];
+				FStaticMeshSection& Section = MeshTD->Mesh->GetRenderData()->LODResources[0].Sections[0];
 				UMaterialInterface* Material = MeshTD->Mesh->GetMaterial(Section.MaterialIndex);
 				if (Material)
 				{
@@ -3592,7 +3592,7 @@ bool UParticleSystemComponent::CanConsiderInvisible()const
 		const float ClampedMaxSecondsBeforeInactive = MaxSecondsBeforeInactive > 0 ? FMath::Max(MaxSecondsBeforeInactive, 0.1f) : 0.0f;
 		if (ClampedMaxSecondsBeforeInactive > 0.0f && AccumTickTime > ClampedMaxSecondsBeforeInactive && World->IsGameWorld())
 		{
-			return World->GetTimeSeconds() > (GetLastRenderTime() + ClampedMaxSecondsBeforeInactive);
+			return (GetLastRenderTime() > 0.0f) && (World->GetTimeSeconds() > (GetLastRenderTime() + ClampedMaxSecondsBeforeInactive));
 		}
 	}
 	return false;
@@ -4791,7 +4791,6 @@ public:
 				Prereqs.Add(FinalizePrereq);
 			}
 			FGraphEventRef Finalize = TGraphTask<FParticleFinalizeTask>::CreateTask(&Prereqs, CurrentThread).ConstructAndDispatchWhenReady(Target);
-			MyCompletionGraphEvent->SetGatherThreadForDontCompleteUntil(ENamedThreads::GameThread);
 			MyCompletionGraphEvent->DontCompleteUntil(Finalize);
 			if (FinalizeDispatchCounter)
 			{
@@ -5254,7 +5253,6 @@ void UParticleSystemComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 				FGraphEventArray* Prereqs = FXAsyncBatcher.GetAsyncPrereq(OutFinalizeBatchEvent, FinalizeDispatchCounter);
 				AsyncWork = TGraphTask<FParticleAsyncTask>::CreateTask(Prereqs, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(this, OutFinalizeBatchEvent, FinalizeDispatchCounter);
 #if !WITH_EDITOR  // we need to not complete until this is done because the game thread finalize task has not beed queued yet
-				ThisTickFunction->GetCompletionHandle()->SetGatherThreadForDontCompleteUntil(ENamedThreads::GameThread);
 				ThisTickFunction->GetCompletionHandle()->DontCompleteUntil(AsyncWork);
 #endif
 			}
@@ -5264,7 +5262,6 @@ void UParticleSystemComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 				FGraphEventArray Prereqs;
 				Prereqs.Add(AsyncWork);
 				FGraphEventRef Finalize = TGraphTask<FParticleFinalizeTask>::CreateTask(&Prereqs, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(this);
-				ThisTickFunction->GetCompletionHandle()->SetGatherThreadForDontCompleteUntil(ENamedThreads::GameThread);
 				ThisTickFunction->GetCompletionHandle()->DontCompleteUntil(Finalize);
 			}
 #endif
@@ -7564,7 +7561,7 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 
 		if (MeshTypeData && MeshTypeData->Mesh)
 		{
-			const FStaticMeshLODResources& LODModel = MeshTypeData->Mesh->RenderData->LODResources[0];
+			const FStaticMeshLODResources& LODModel = MeshTypeData->Mesh->GetRenderData()->LODResources[0];
 
 			// Gather the materials applied to the LOD.
 			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)

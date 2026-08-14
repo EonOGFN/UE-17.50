@@ -8,6 +8,7 @@
 #include "ChaosVehicleMovementComponent.h"
 #include "Curves/CurveFloat.h"
 #include "VehicleUtility.h"
+#include "Chaos/PBDSuspensionConstraints.h"
 #include "ChaosWheeledVehicleMovementComponent.generated.h"
 
 #if VEHICLE_DEBUGGING_ENABLED
@@ -21,6 +22,7 @@ struct FWheeledVehicleDebugParams
 	bool ShowSuspensionLimits = false;
 	bool ShowWheelForces = false;
 	bool ShowSuspensionForces = false;
+	bool ShowBatchQueryExtents = false;
 
 	bool DisableSuspensionForces = false;
 	bool DisableFrictionForces = false;
@@ -30,6 +32,8 @@ struct FWheeledVehicleDebugParams
 	float SteeringOverride = 0.f;
 
 	bool ResetPerformanceMeasurements = false;
+
+	bool DisableSuspensionConstraint = false;
 };
 
 /**
@@ -118,8 +122,8 @@ struct FVehicleEngineConfig
 	UPROPERTY(EditAnywhere, Category = Setup, meta = (ClampMin = "0.01", UIMin = "0.01"))
 	float EngineIdleRPM;
 
-	/** Maximum revolutions per minute of the engine */
-	UPROPERTY(EditAnywhere, Category = Setup, meta = (ClampMin = "0.001", UIMin = "0.001"))
+	/** Braking effect from engine, when throttle released */
+	UPROPERTY(EditAnywhere, Category = Setup)
 	float EngineBrakeEffect;
 
 	/** Affects how fast the engine RPM speed up */
@@ -141,8 +145,7 @@ struct FVehicleEngineConfig
 		MaxTorque = 300.0f;
 		MaxRPM = 4500.0f;
 		EngineIdleRPM = 1200.0f;
-		EngineBrakeEffect = 0.001f;
-
+		EngineBrakeEffect = 0.05f;
 		EngineRevUpMOI = 5.0f;
 		EngineRevDownRate = 600.0f;
 	}
@@ -330,7 +333,7 @@ private:
 	void FillSteeringSetup(FVector2D WheelTrackDimensions)
 	{
 
-		PSteeringConfig.SteeringType = (ESteerType)this->SteeringType;
+		PSteeringConfig.SteeringType = (Chaos::ESteerType)this->SteeringType;
 		PSteeringConfig.AngleRatio = AngleRatio;
 
 		float MinValue = 0.f, MaxValue = 1.f;
@@ -363,8 +366,8 @@ struct CHAOSVEHICLES_API FChaosWheelSetup
 	TSubclassOf<UChaosVehicleWheel> WheelClass;
 
 	// Bone name on mesh to create wheel at
-	UPROPERTY(EditAnywhere, Category = WheelSetup)
-	FName SteeringBoneName;
+	//UPROPERTY(EditAnywhere, Category = WheelSetup)
+	//FName SteeringBoneName;
 
 	// Bone name on mesh to create wheel at
 	UPROPERTY(EditAnywhere, Category = WheelSetup)
@@ -394,7 +397,7 @@ struct FWheelState
 	TArray<FVector> WheelWorldLocation;	/** Current Location Of Wheels In World Coordinates */
 	TArray<FVector> WorldWheelVelocity; /** Current velocity at wheel location In World Coordinates - combined linear and angular */
 	TArray<FVector> LocalWheelVelocity; /** Local velocity of Wheel */
-	TArray<FSuspensionTrace> Trace;
+	TArray<Chaos::FSuspensionTrace> Trace;
 };
 
 UCLASS(ClassGroup = (Physics), meta = (BlueprintSpawnableComponent), hidecategories = (PlanarMovement, "Components|Movement|Planar", Activation, "Components|Activation"))
@@ -532,7 +535,7 @@ protected:
 	virtual void UpdateSimulation(float DeltaTime) override;
 
 	/** Perform suspension ray/shape traces */
-	virtual void PerformSuspensionTraces(const TArray<FSuspensionTrace>& SuspensionTrace);
+	virtual void PerformSuspensionTraces(const TArray<Chaos::FSuspensionTrace>& SuspensionTrace);
 
 	/** Pass control Input to the vehicle systems */
 	virtual void ApplyInput(float DeltaTime);
@@ -580,8 +583,9 @@ protected:
 	FWheelState WheelState;	/** Cached state that hold wheel data for this frame */
 	FVector2D WheelTrackDimensions;	// Wheelbase (X) and track (Y) dimensions
 	TMap<UChaosVehicleWheel*, TArray<int>> AxleToWheelMap;
+	TArray<FPhysicsConstraintHandle> ConstraintHandles;
 
-	FPerformanceMeasure PerformanceMeasure;
+	Chaos::FPerformanceMeasure PerformanceMeasure;
 };
 
 #if VEHICLE_DEBUGGING_ENABLED

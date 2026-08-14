@@ -9,7 +9,8 @@
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "PBDRigidsSolver.h"
 #include "ChaosSolversModule.h"
-#include "ChaosSolvers/Public/RewindData.h"
+#include "RewindData.h"
+#include "NetworkPredictionReplicatedManager.h"
 
 // Do extra checks to make sure Physics and GameThread (PrimitiveComponent) are in sync at verious points in the rollback process
 #define NP_ENSURE_PHYSICS_GT_SYNC !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -82,6 +83,13 @@ void UNetworkPredictionWorldManager::OnWorldPreTick(UWorld* InWorld, ELevelTick 
 	FixedTickState.FixedStepMS = (int32)FixedTickState.FixedStepRealTimeMS;
 
 	ActiveInstance = this;
+
+	// Instantiate replicated manager on server
+	if (!ReplicatedManager && InWorld->GetNetMode() != NM_Client)
+	{
+		UClass* ReplicatedManagerClass = GetDefault<UNetworkPredictionSettingsObject>()->Settings.ReplicatedManagerClassOverride.Get();
+		ReplicatedManager = ReplicatedManagerClass ? InWorld->SpawnActor<ANetworkPredictionReplicatedManager>(ReplicatedManagerClass) : InWorld->SpawnActor<ANetworkPredictionReplicatedManager>();
+	}
 }
 
 void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
@@ -95,6 +103,12 @@ void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
 	}
 
 	ActiveInstance = this;
+
+	// Trace Local->Server offset. We need to trace this so that we can flag reconciles that happened
+	// due to this (usually caused by server being starved for input)
+	const bool OffsetChanged = (LastFixedTickOffset != FixedTickState.Offset);
+	UE_NP_TRACE_FIXED_TICK_OFFSET(FixedTickState.Offset, OffsetChanged);
+	LastFixedTickOffset = FixedTickState.Offset;
 
 	// -------------------------------------------------------------------------
 	//	Non-rollback reconcile services
@@ -522,8 +536,6 @@ void UNetworkPredictionWorldManager::InitPhysicsCapture()
 void UNetworkPredictionWorldManager::AdvancePhysicsResimFrame(int32& PhysicsFrame)
 {
 	Physics.Solver->AdvanceAndDispatch_External(FixedTickState.PhysicsRewindData->GetDeltaTimeForFrame(PhysicsFrame));
-	Physics.Solver->BufferPhysicsResults();
-	Physics.Solver->FlipBuffers();
 	Physics.Solver->UpdateGameThreadStructures();
 	PhysicsFrame++;
 }
@@ -540,6 +552,7 @@ void UNetworkPredictionWorldManager::SetUsingPhysics()
 	{
 		npCheckSlow(Physics.Solver == nullptr);
 		Physics.bUsingPhysics = true;
+#if WITH_CHAOS
 		Physics.Module = FChaosSolversModule::GetModule();
 		Physics.Solver = GetWorld()->GetPhysicsScene()->GetSolver();
 
@@ -561,6 +574,7 @@ void UNetworkPredictionWorldManager::SetUsingPhysics()
 			GEngine->bUseFixedFrameRate = true;
 			GEngine->FixedFrameRate = Settings.FixedTickFrameRate;
 		}
+#endif // WITH_CHAOS
 	}
 }
 

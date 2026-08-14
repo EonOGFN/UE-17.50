@@ -74,6 +74,7 @@ public:
 	void SetEmitterEnable(FName EmitterName, bool bNewEnableState) override;
 	void ReleaseToPool() override;
 	uint32 GetApproxMemoryUsage() const override;
+	virtual void ActivateSystem(bool bFlagAsJustAttached = false) override;
 	/********* UFXSystemComponent *********/
 
 private:
@@ -107,6 +108,10 @@ private:
 	*/
 	UPROPERTY(EditAnywhere, Category = Parameters)
 	uint32 bForceSolo : 1;
+
+	/** When true the GPU simulation debug display will enabled, allowing information used during simulation to be visualized. */
+	UPROPERTY(EditAnywhere, Category = Parameters)
+	uint32 bEnableGpuComputeDebug : 1;
 
 	TUniquePtr<FNiagaraSystemInstance> SystemInstance;
 
@@ -148,7 +153,8 @@ protected:
 	virtual void BeginDestroy() override;
 	//virtual void OnAttachmentChanged() override;
 
-	void UpdateEmitterMaterials();
+	void UpdateEmitterMaterials(bool bForceUpdateEmitterMaterials = false);
+
 public:
 	/**
 	* True if we should automatically attach to AutoAttachParent when activated, and detach from our parent when completed.
@@ -204,6 +210,7 @@ public:
 	void UnregisterWithScalabilityManager();
 
 	void PostSystemTick_GameThread();
+	void OnSystemComplete(bool bExternalCompletion);
 
 	public:
 
@@ -231,8 +238,7 @@ public:
 
 	TSharedPtr<FNiagaraSystemSimulation, ESPMode::ThreadSafe> GetSystemSimulation();
 
-	bool InitializeSystem();
-	void OnSystemComplete();
+	bool InitializeSystem();	
 	void DestroyInstance();
 
 	void OnPooledReuse(UWorld* NewWorld);
@@ -248,6 +254,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Is In Forced Solo Mode"))
 	bool GetForceSolo()const { return bForceSolo; }
+
+	UFUNCTION(BlueprintCallable, Category = Niagara)
+	void SetGpuComputeDebug(bool bEnableDebug);
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Age Update Mode"))
 	ENiagaraAgeUpdateMode GetAgeUpdateMode() const;
@@ -385,6 +394,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Material)"))
 	void SetVariableMaterial(FName InVariableName, UMaterialInterface* Object);
 
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (TextureRenderTarget)"))
+	void SetVariableTextureRenderTarget(FName InVariableName, class UTextureRenderTarget* TextureRenderTarget);
+
 	/** Debug accessors for getting positions in blueprints. */
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Niagara Emitter Positions", DeprecatedFunction, DeprecationMessage = "Get Niagara Emitter Positions is deprecated, use the particle export DI inside your emitter instead."))
 	TArray<FVector> GetNiagaraParticlePositions_DebugOnly(const FString& InEmitterName);
@@ -428,6 +440,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	UNiagaraDataInterface* GetDataInterface(const FString &Name);
+
+	/** 
+		The significant index for this component. i.e. this is the Nth most significant instance of it's system in the scene. 
+		Passed to the script to allow us to scale down internally for less significant systems instances.
+	*/
+	FORCEINLINE void SetSystemSignificanceIndex(int32 InIndex) 	{ if(SystemInstance) SystemInstance->SetSystemSignificanceIndex(InIndex); }
 
 	//~ Begin UObject Interface.
 	virtual void PostLoad() override;
@@ -598,6 +616,12 @@ private:
 	/** True if we're currently inside an update context reset. This will prevent us from doing some completion work such as releaseing to the pool or auto destroy etc during a reset. */
 	uint32 bDuringUpdateContextReset : 1;
 
+	/** True if UpdateEmitterMaterials needs to be called*/
+	uint32 bNeedsUpdateEmitterMaterials : 1;
+
+	/** True if we need to force our materials to recache */
+	uint32 bNeedsMaterialRecache : 1;
+
 	/** Restore relative transform from auto attachment and optionally detach from parent (regardless of whether it was an auto attachment). */
 	void CancelAutoAttachment(bool bDetachFromParent);
 
@@ -671,12 +695,13 @@ private:
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
-	/*
+	
 	virtual bool CanBeOccluded() const override
 	{
-	return !MaterialRelevance.bDisableDepthTest;
+		// TODO account for MaterialRelevance.bDisableDepthTest as well
+		return !ShouldRenderCustomDepth();
 	}
-	*/
+	
 
 	/** Callback from the renderer to gather simple lights that this proxy wants renderered. */
 	virtual void GatherSimpleLights(const FSceneViewFamily& ViewFamily, FSimpleLightArray& OutParticleLights) const override;

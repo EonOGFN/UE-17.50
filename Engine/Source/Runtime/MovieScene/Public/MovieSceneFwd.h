@@ -25,7 +25,7 @@ namespace EMovieScenePlayerStatus
 	};
 }
 
-UENUM()
+UENUM(BlueprintType)
 enum class EMovieSceneEvaluationType : uint8
 {
 	/** Play the sequence frame-locked to its playback rate (snapped to the tick resolution - no sub-frames) */
@@ -38,7 +38,7 @@ enum class EMovieSceneEvaluationType : uint8
 /**
  * Enum used to define how to update to a particular time
  */
-UENUM()
+UENUM(BlueprintType)
 enum class EUpdateClockSource : uint8
 {
 	/** Use the default world tick delta for timing. Honors world and actor pause state, but is susceptible to accumulation errors */
@@ -85,8 +85,22 @@ enum class EMovieSceneSequenceFlags : uint8
 	/** Symbolic entry for all flags that should be inherited by parent sequences when present on a sub sequence */
 	InheritedFlags = Volatile UMETA(Hidden),
 };
-ENUM_CLASS_FLAGS(EMovieSceneSequenceFlags)
+ENUM_CLASS_FLAGS(EMovieSceneSequenceFlags);
 
+
+/**
+ * 
+ */
+UENUM(meta=(Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
+enum class EMovieSceneServerClientMask : uint8
+{
+	None           = 0 UMETA(Hidden),
+	Server         = 1 << 0,
+	Client         = 1 << 1,
+
+	All            = Server | Client UMETA(Hidden)
+};
+ENUM_CLASS_FLAGS(EMovieSceneServerClientMask)
 
 MOVIESCENE_API DECLARE_LOG_CATEGORY_EXTERN(LogMovieScene, Log, All);
 DECLARE_STATS_GROUP(TEXT("Movie Scene Evaluation"), STATGROUP_MovieSceneEval, STATCAT_Advanced);

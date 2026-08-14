@@ -4,7 +4,7 @@
 
 #include "RemoteSessionRole.h"
 
-class IBackChannelConnection;
+class IBackChannelSocketConnection;
 class FRecordingMessageHandler;
 class FFrameGrabber;
 class IImageWrapper;
@@ -28,14 +28,18 @@ public:
 
 protected:
 
-	virtual void	OnBindEndpoints() override;
-	virtual void	OnCreateChannels() override;
+	bool 			ProcessStateChange(const ConnectionState NewState, const ConnectionState OldState) override;
+
+
+	virtual void 	BindEndpoints(TBackChannelSharedPtr<IBackChannelConnection> InConnection) override;
+
+	void			SendChannelListToConnection();
 	
-	bool			ProcessIncomingConnection(TSharedRef<IBackChannelConnection> NewConnection);
+	bool			ProcessIncomingConnection(TSharedRef<IBackChannelSocketConnection> NewConnection);
 
-	TSharedPtr<IBackChannelConnection> Listener;
 
-	TArray<FRemoteSessionChannelInfo> SupportedChannels;
+
+	TSharedPtr<IBackChannelSocketConnection> Listener;
 
 	/** Saved information about the editor and viewport we possessed, so we can restore it after exiting VR mode */
 	float SavedEditorDragTriggerDistance;

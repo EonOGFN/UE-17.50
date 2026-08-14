@@ -48,6 +48,7 @@ public class LevelEditor : ModuleRules
 				"SourceControlWindows",
 				"StatsViewer",
 				"UnrealEd", 
+				"DeveloperSettings",
 				"RenderCore",
 				"DeviceProfileServices",
 				"ContentBrowser",
@@ -69,6 +70,7 @@ public class LevelEditor : ModuleRules
 				"CommonMenuExtensions",
 				"ToolMenus",
 				"EnvironmentLightingViewer",
+				"DesktopPlatform",
 			}
 		);
 

@@ -32,6 +32,8 @@ namespace UnrealBuildTool
 		/// The target being built
 		/// </summary>
 		protected ReadOnlyTargetRules Target;
+		
+		private readonly string CodeAnalysisExtension = ".nativecodeanalysis.xml";
 
 		public HoloLensToolChain(ReadOnlyTargetRules Target)
 		{
@@ -251,6 +253,19 @@ namespace UnrealBuildTool
 			// we've hit problems where types are somehow in windows.winmd on some installations but not others, leading to either
 			// missing or duplicated type references.
 			Arguments.Add("/ZW:nostdlib");
+
+			if (CompileEnvironment.CppStandard >= CppStandardVersion.Latest)
+			{
+				Arguments.Add("/std:c++latest");
+			}
+			else if (CompileEnvironment.CppStandard >= CppStandardVersion.Cpp17)
+			{
+				Arguments.Add("/std:c++17");
+			}
+			else if (CompileEnvironment.CppStandard >= CppStandardVersion.Cpp14)
+			{
+				Arguments.Add("/std:c++14");
+			}
 
 			// Explicitly compile the file as C++.
 			Arguments.Add("/TP");
@@ -614,6 +629,33 @@ namespace UnrealBuildTool
 					}
 				}
 
+				if (Target.HoloLensPlatform.bRunNativeCodeAnalysis)
+				{
+					// Add the analysis log to the produced item list.
+					FileItem AnalysisLogFile = FileItem.GetItemByFileReference(
+						FileReference.Combine(
+							OutputDir,
+							Path.GetFileName(SourceFile.AbsolutePath) + CodeAnalysisExtension
+							)
+						);
+					CompileAction.ProducedItems.Add(AnalysisLogFile);
+					Result.DebugDataFiles.Add(AnalysisLogFile);
+					// Peform code analysis with results in a log file
+					FileArguments.AddFormat(" /analyze:log \"{0}\"", AnalysisLogFile.AbsolutePath);
+					// Suppress code analysis output
+					FileArguments.Add(" /analyze:quiet");
+					string rulesetFile = Target.HoloLensPlatform.NativeCodeAnalysisRuleset;
+					if (!String.IsNullOrEmpty(rulesetFile))
+					{
+						if (!Path.IsPathRooted(rulesetFile))
+						{
+							rulesetFile = FileReference.Combine(Target.ProjectFile.Directory, rulesetFile).FullName;
+						}
+						// A non default ruleset was specified
+						FileArguments.AddFormat(" /analyze:ruleset \"{0}\"", rulesetFile);
+					}
+				}
+				
 				// Add C or C++ specific compiler arguments.
 				if (bIsPlainCFile)
 				{

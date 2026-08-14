@@ -5,6 +5,8 @@
 #include "Chaos/ParticleDirtyFlags.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
+#include "Chaos/PBDConstraintBaseData.h"
+
 
 namespace Chaos
 {
@@ -26,43 +28,35 @@ namespace Chaos
 		DummyFlag
 	};
 
-#define CONSTRAINT_JOINT_PROPERPETY_IMPL(TYPE, FNAME, ENAME, VNAME)\
-	void Set##FNAME(TYPE InValue){if (InValue != VNAME){VNAME = InValue;MDirtyFlags.MarkDirty(ENAME);SetProxy(Proxy);}}\
-	TYPE Get##FNAME() const{return VNAME;}\
-
 
 	using FJointConstraintDirtyFlags = TDirtyFlags<EJointConstraintFlags>;
 
-	class CHAOS_API FJointConstraint
+	class CHAOS_API FJointConstraint : public FConstraintBase
 	{
 	public:
 		typedef FPBDJointSettings FData;
 		typedef FPBDJointConstraintHandle FHandle;
 		typedef TVector<FTransform, 2> FTransformPair;
-		typedef TVector<TGeometryParticle<FReal, 3>*, 2> FParticlePair;
-		typedef TVector<TGeometryParticleHandle<FReal, 3>*, 2> FParticleHandlePair;
 		friend FData;
 
+		template <typename Traits>
+		friend class TPBDRigidsSolver; // friend so we can call ReleaseKinematicEndPoint when unregistering joint.
+
 		FJointConstraint();
+		virtual ~FJointConstraint() override {}
 
-		template<typename T = IPhysicsProxyBase> T* GetProxy() { return static_cast<T*>(Proxy); }
-
-		void SetProxy(IPhysicsProxyBase* InProxy);
-
-		bool IsValid() const;
 		bool IsDirty() const { return MDirtyFlags.IsDirty(); }
 		bool IsDirty(const EJointConstraintFlags CheckBits) const { return MDirtyFlags.IsDirty(CheckBits); }
 		void ClearDirtyFlags() { MDirtyFlags.Clear(); }
 
-		void SetJointParticles(const Chaos::FJointConstraint::FParticlePair& InJointParticles);
-		const FParticlePair GetJointParticles() const;
-		FParticlePair GetJointParticles();
-
-		void SetJointTransforms(const Chaos::FJointConstraint::FTransformPair& InJointParticles);
+		void SetJointTransforms(const Chaos::FJointConstraint::FTransformPair& InJoinTransforms);
 		const FTransformPair GetJointTransforms() const;
 		FTransformPair GetJointTransforms();
 
 		const FData& GetJointSettings()const { return JointSettings; }
+
+		// If we created particle to serve as kinematic endpoint, track so we can release later. This will add particle to solver.
+		void SetKinematicEndPoint(TGeometryParticle<FReal, 3>* InParticle, FPBDRigidsSolver* Solver);
 
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, CollisionEnabled, EJointConstraintFlags::CollisionEnabled, JointSettings.bCollisionEnabled);
 		//void SetCollisionEnabled(bool InValue);
@@ -96,6 +90,8 @@ namespace Chaos
 		//void SetUserData(void* InUserData);
 		//void* GetUserData() const
 
+		void SetLinearPositionDriveEnabled( TVector<bool,3> Enabled);
+		
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, LinearPositionDriveXEnabled, EJointConstraintFlags::LinearDrive, JointSettings.bLinearPositionDriveEnabled[0]);
 		//void SetLinearPositionDriveXEnabled(bool InLinearPositionDriveXEnabled);
 		//bool GetLinearPositionDriveXEnabled() const
@@ -111,6 +107,8 @@ namespace Chaos
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(FVec3, LinearDrivePositionTarget, EJointConstraintFlags::LinearDrive, JointSettings.LinearDrivePositionTarget);
 		//void SetLinearDrivePositionTarget(FVec3 InLinearDrivePositionTarget);
 		//FVec3 GetLinearDrivePositionTarget() const
+
+		void SetLinearVelocityDriveEnabled(TVector<bool,3> Enabled);
 
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, LinearVelocityDriveXEnabled, EJointConstraintFlags::LinearDrive, JointSettings.bLinearVelocityDriveEnabled[0]);
 		//void SetLinearVelocityDriveXEnabled(bool InLinearVelocityDriveXEnabled);
@@ -300,22 +298,31 @@ namespace Chaos
 		FOutputData& GetOutputData() { return Output; }
 
 	protected:
-		class IPhysicsProxyBase* Proxy;
 
+		template <typename Traits>
+		void ReleaseKinematicEndPoint(TPBDRigidsSolver<Traits>* Solver)
+		{
+			if (KinematicEndPoint)
+			{
+				Solver->UnregisterObject(KinematicEndPoint);
+				KinematicEndPoint = nullptr;
+			}
+		}
 
 		FJointConstraintDirtyFlags MDirtyFlags;
 		FData JointSettings;
 
-		FParticlePair JointParticles;
 		FTransformPair JointTransforms;
 		void* UserData;
 		FOutputData Output;
 
+	private:
+		// TODO: When we build constraint with only one actor, we spawn this particle to serve as kinematic endpoint
+		// to attach to, as Chaos requires two particles currently. This tracks particle that will need to be released with joint.
+		TGeometryParticle<FReal, 3>* KinematicEndPoint;
 	};
 
-
-
-
-
-
 } // Chaos
+
+
+

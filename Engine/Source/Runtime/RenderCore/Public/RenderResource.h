@@ -566,6 +566,42 @@ public:
 /** The global null color vertex buffer, which is set with a stride of 0 on meshes without a color component. */
 extern RENDERCORE_API TGlobalResource<FNullColorVertexBuffer> GNullColorVertexBuffer;
 
+/**
+* A vertex buffer with a single zero float3 component.
+*/
+class FNullVertexBuffer : public FVertexBuffer
+{
+public:
+	/**
+	* Initialize the RHI for this rendering resource
+	*/
+	virtual void InitRHI() override
+	{
+		// create a static vertex buffer
+		FRHIResourceCreateInfo CreateInfo;
+
+		void* LockedData = nullptr;
+		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(float) * 3, BUF_Static | BUF_ZeroStride | BUF_ShaderResource, CreateInfo, LockedData);
+
+		*reinterpret_cast<FVector*>(LockedData) = FVector(0.0f);
+
+		RHIUnlockVertexBuffer(VertexBufferRHI);
+
+		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FColor), PF_R8G8B8A8);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		VertexBufferSRV.SafeRelease();
+		FVertexBuffer::ReleaseRHI();
+	}
+
+	FShaderResourceViewRHIRef VertexBufferSRV;
+};
+
+/** The global null vertex buffer, which is set with a stride of 0 on meshes */
+extern RENDERCORE_API TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
+
 /** An index buffer resource. */
 class FIndexBuffer : public FRenderResource
 {
@@ -666,7 +702,14 @@ public:
 			RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
 			if (Initializer.OfflineData == nullptr)
 			{
+				// If offline data is not available, then acceleration structure must be built at run-time.
 				FRHICommandListExecutor::GetImmediateCommandList().BuildAccelerationStructure(RayTracingGeometryRHI);
+			}
+			else
+			{
+				// Offline data ownership is transferred to the RHI, which discards it after use.
+				// It is no longer valid to use it after this point.
+				Initializer.OfflineData = nullptr;
 			}
 		}
 	}

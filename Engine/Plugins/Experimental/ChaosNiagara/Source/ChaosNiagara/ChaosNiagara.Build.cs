@@ -27,11 +27,8 @@ public class ChaosNiagara : ModuleRules
 				"RHI",
 				"ChaosSolverEngine",
                 "Chaos",
-                "ChaosSolvers",
                 "GeometryCollectionEngine",
-                "GeometryCollectionCore",
 				"PhysicsCore",
-				"FieldSystemCore",
 				"FieldSystemEngine",
 			}
         );
@@ -49,8 +46,6 @@ public class ChaosNiagara : ModuleRules
 				"NiagaraVertexFactories",
                 "ChaosSolverEngine",
                 "GeometryCollectionEngine",
-                "GeometryCollectionCore",
-				"FieldSystemCore",
 				"FieldSystemEngine"
             }
         );

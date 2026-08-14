@@ -451,7 +451,7 @@ private:
 	UPROPERTY()
 	TArray<UObject*> CachedReferencedTextures;
 
-#ifdef WITH_EDITOR
+#if WITH_EDITOR
 	mutable TOptional<FStaticParameterSet> CachedStaticParameterValues;
 	mutable uint8 AllowCachingStaticParameterValuesCounter = 0;
 #endif // WITH_EDITOR
@@ -516,6 +516,7 @@ public:
 	virtual ENGINE_API bool GetTerrainLayerWeightParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, int32& OutWeightmapIndex, FGuid &OutExpressionGuid) const override;
 			ENGINE_API bool UpdateMaterialLayersParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, const FMaterialLayersFunctions& LayersValue, const bool bOverridden, const FGuid& GUID);
 	virtual ENGINE_API bool IsDependent(UMaterialInterface* TestDependency) override;
+	virtual ENGINE_API bool IsDependent_Concurrent(UMaterialInterface* TestDependency, TMicRecursionGuard RecursionGuard) override;
 	virtual ENGINE_API FMaterialRenderProxy* GetRenderProxy() const override;
 	virtual ENGINE_API UPhysicalMaterial* GetPhysicalMaterial() const override;
 	virtual ENGINE_API UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
@@ -590,7 +591,7 @@ public:
 	*/
 	ENGINE_API void UpdateStaticPermutation(const FStaticParameterSet& NewParameters, FMaterialUpdateContext* MaterialUpdateContext = nullptr);
 	/** Ensure's static permutations for current parameters and overrides are upto date. */
-	ENGINE_API void UpdateStaticPermutation();
+	ENGINE_API void UpdateStaticPermutation(FMaterialUpdateContext* MaterialUpdateContext = nullptr);
 
 	ENGINE_API void SwapLayerParameterIndices(int32 OriginalIndex, int32 NewIndex);
 
@@ -602,7 +603,7 @@ public:
 	 * Recompiles static permutations if necessary.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	ENGINE_API void InitStaticPermutation();
+	ENGINE_API void InitStaticPermutation(EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default);
 
 	ENGINE_API void UpdateOverridableBaseProperties();
 
@@ -612,7 +613,7 @@ public:
 	 * The results will be applied to this FMaterial in the renderer when they are finished compiling.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	void CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, TArray<FMaterialResource*>& OutCachedMaterialResources, const ITargetPlatform* TargetPlatform = nullptr);
+	void CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, TArray<FMaterialResource*>& OutCachedMaterialResources, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default, const ITargetPlatform* TargetPlatform = nullptr);
 
 	/** 
 	 * Gathers actively used shader maps from all material resources used by this material instance
@@ -671,6 +672,9 @@ public:
 	ENGINE_API virtual TArrayView<UObject* const> GetReferencedTextures() const override final { return CachedReferencedTextures; }
 
 #if WITH_EDITOR
+	/** Add to the set any texture referenced by expressions, including nested functions, as well as any overrides from parameters. */
+	ENGINE_API virtual void GetReferencedTexturesAndOverrides(TSet<const UTexture*>& InOutTextures) const;
+
 	ENGINE_API void UpdateCachedLayerParameters();
 #endif
 
@@ -708,7 +712,7 @@ public:
 	 */
 	ENGINE_API virtual void GetLightingGuidChain(bool bIncludeTextures, TArray<FGuid>& OutGuids) const override;
 
-	void DumpDebugInfo();
+	void DumpDebugInfo() const;
 	void SaveShaderStableKeys(const class ITargetPlatform* TP);
 	ENGINE_API virtual void SaveShaderStableKeysInner(const class ITargetPlatform* TP, const struct FStableShaderKeyAndValue& SaveKeyVal) override;
 
@@ -771,13 +775,11 @@ protected:
 	 * The results will be applied to this FMaterial in the renderer when they are finished compiling.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	void CacheResourceShadersForRendering();
-	void CacheResourceShadersForRendering(FMaterialResourceDeferredDeletionArray& OutResourcesToFree);
-
-	void DeleteDeferredResources(FMaterialResourceDeferredDeletionArray& ResourcesToFree);
+	void CacheResourceShadersForRendering(EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default);
+	void CacheResourceShadersForRendering(EMaterialShaderPrecompileMode PrecompileMode, FMaterialResourceDeferredDeletionArray& OutResourcesToFree);
 
 	/** Caches shader maps for an array of material resources. */
-	void CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, const ITargetPlatform* TargetPlatform = nullptr);
+	void CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default, const ITargetPlatform* TargetPlatform = nullptr);
 
 	/** 
 	 * Copies over material instance parameters from the base material given a material interface.

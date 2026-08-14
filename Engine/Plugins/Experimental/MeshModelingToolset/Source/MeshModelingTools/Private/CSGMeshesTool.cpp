@@ -21,6 +21,11 @@ void UCSGMeshesTool::SetupProperties()
 	CSGProperties = NewObject<UCSGMeshesToolProperties>(this);
 	CSGProperties->RestoreProperties(this);
 	AddToolPropertySource(CSGProperties);
+
+	SetToolDisplayName(LOCTEXT("CSGMeshesToolName", "Mesh Boolean Tool"));
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Compute CSG Booleans on the input meshes. Use the transform gizmos to tweak the positions of the input objects (can help to resolve errors/failures)"),
+		EToolMessageLevel::UserNotification);
 }
 
 void UCSGMeshesTool::SaveProperties()
@@ -151,7 +156,9 @@ TUniquePtr<FDynamicMeshOperator> UCSGMeshesTool::MakeNewOperator()
 	for (int Idx = 0; Idx < 2; Idx++)
 	{
 		BooleanOp->Meshes[Idx] = OriginalDynamicMeshes[Idx];
-		BooleanOp->Transforms[Idx] = TransformProxies[Idx]->GetTransform();
+		FTransform UseTransform = TransformProxies[Idx]->GetTransform();
+		UseTransform.MultiplyScale3D(TransformInitialScales[Idx]);
+		BooleanOp->Transforms[Idx] = UseTransform;
 	}
 
 	return BooleanOp;
@@ -163,6 +170,11 @@ void UCSGMeshesTool::OnPropertyModified(UObject* PropertySet, FProperty* Propert
 {
 	if (Property && (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UCSGMeshesToolProperties, bOnlyUseFirstMeshMaterials)))
 	{
+		if (!AreAllTargetsValid())
+		{
+			GetToolManager()->DisplayMessage(LOCTEXT("InvalidTargets", "Target meshes are no longer valid"), EToolMessageLevel::UserWarning);
+			return;
+		}
 		ConvertInputsAndSetPreviewMaterials(false);
 		Preview->InvalidateResult();
 	}

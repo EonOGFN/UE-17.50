@@ -512,7 +512,7 @@ protected:
 	class UPhysicalMaterial* PhysMaterialOverride;
 
 public:
-	/** The maximum angular velocity for this instance */
+	/** The maximum angular velocity for this instance [degrees/s]*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Physics, meta = (editcondition = "bOverrideMaxAngularVelocity"))
 	float MaxAngularVelocity;
 
@@ -737,6 +737,9 @@ public:
 	void AddForceAtPosition(const FVector& Force, const FVector& Position, bool bAllowSubstepping = true, bool bIsLocalForce = false);
 	/** Clear accumulated forces on this body */
 	void ClearForces(bool bAllowSubstepping = true);
+
+	/** If set to true, this body will treat bodies that do not have the flag set as having infinite mass */
+	void SetOneWayInteraction(bool InOneWayInteraction = true);
 
 	/** Add a torque to this body */
 	void AddTorqueInRadians(const FVector& Torque, bool bAllowSubstepping = true, bool bAccelChange = false);
@@ -1014,6 +1017,18 @@ public:
 	 *  @return true if the geometry associated with this body instance overlaps the query shape at the specified location/rotation
 	 */
 	bool OverlapTest(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr) const;
+
+	/**
+	 *  Test if the bodyinstance overlaps with the specified shape at the specified position/rotation
+	 *  Note: This function is not thread safe. Make sure you obtain the physics scene read lock before calling it
+	 *
+	 *  @param  Position		Position to place the shape at before testing
+	 *  @param  Rotation		Rotation to apply to the shape before testing
+	 *	@param	CollisionShape	Shape to test against
+	 *  @param  OutMTD			The minimum translation direction needed to push the shape out of this BodyInstance. (Optional)
+	 *  @return true if the geometry associated with this body instance overlaps the query shape at the specified location/rotation
+	 */
+	bool OverlapTest_AssumesLocked(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr) const;
 
 	/**
 	 *  Test if the bodyinstance overlaps with the specified body instances

@@ -40,10 +40,13 @@ void UMeshSculptToolBase::Setup()
 	BrushProperties = NewObject<USculptBrushProperties>(this);
 	BrushProperties->RestoreProperties(this);
 	BrushProperties->bShowStrength = false;
-
+	// Note that brush properties includes BrushRadius, which, when not used as a constant,
+	// serves as an output property based on target size and brush size, and so it would need
+	// updating after the RestoreProperties() call. But deriving classes will call 
+	// InitializeBrushSizeRange after this Setup() call to finish the brush setup, which will
+	// update the output property if necessary.
 
 	// work plane
-
 	GizmoProperties = NewObject<UWorkPlaneProperties>();
 	GizmoProperties->RestoreProperties(this);
 
@@ -95,6 +98,12 @@ void UMeshSculptToolBase::OnCompleteSetup()
 
 void UMeshSculptToolBase::Shutdown(EToolShutdownType ShutdownType)
 {
+	if (ShutdownType == EToolShutdownType::Accept && AreAllTargetsValid() == false)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Tool Target has become Invalid (possibly it has been Force Deleted). Aborting Tool."));
+		ShutdownType = EToolShutdownType::Cancel;
+	}
+
 	UMeshSurfacePointTool::Shutdown(ShutdownType);
 
 	BrushIndicatorMesh->Disconnect();
@@ -838,7 +847,6 @@ void UMeshSculptToolBase::InitializeIndicator()
 	BrushIndicator->LineThickness = 1.0;
 	BrushIndicator->bDrawIndicatorLines = true;
 	BrushIndicator->bDrawRadiusCircle = false;
-	BrushIndicator->bDrawFalloffCircle = true;
 	BrushIndicator->LineColor = FLinearColor(0.9f, 0.4f, 0.4f);
 }
 
@@ -951,7 +959,7 @@ void UMeshSculptToolBase::UpdateFixedPlaneGizmoVisibility(bool bVisible)
 			PlaneTransformGizmo->bUseContextCoordinateSystem = false;
 			PlaneTransformGizmo->CurrentCoordinateSystem = EToolContextCoordinateSystem::Local;
 			PlaneTransformGizmo->SetActiveTarget(PlaneTransformProxy, GetToolManager());
-			PlaneTransformGizmo->SetNewGizmoTransform(FTransform(GizmoProperties->Rotation, GizmoProperties->Position));
+			PlaneTransformGizmo->ReinitializeGizmoTransform(FTransform(GizmoProperties->Rotation, GizmoProperties->Position));
 		}
 
 		PlaneTransformGizmo->bSnapToWorldGrid = GizmoProperties->bSnapToGrid;

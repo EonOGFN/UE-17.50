@@ -22,6 +22,8 @@
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Channels/MovieSceneChannelEditorData.h"
 #include "Channels/FloatChannelCurveModel.h"
+#include "Channels/IntegerChannelCurveModel.h"
+#include "Channels/BoolChannelCurveModel.h"
 #include "EventChannelCurveModel.h"
 #include "PropertyCustomizationHelpers.h"
 #include "MovieSceneObjectBindingIDCustomization.h"
@@ -32,8 +34,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Editor/SceneOutliner/Private/SSocketChooser.h"
 #include "SComponentChooser.h"
-#include "Interrogation/SequencerInterrogationLinker.h"
-#include "Interrogation/SequencerInterrogatedPropertyInstantiator.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 #include "Systems/MovieScenePropertyInstantiator.h"
 #include "ISequencerModule.h"
 #include "MovieSceneTracksComponentTypes.h"
@@ -74,6 +76,8 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 	// what the current object value.
 	float NewValue = Channel->GetDefault().Get(0.f);
 
+	const bool bWasEvaluated = Channel->Evaluate(InTime, NewValue);
+
 	if (CurrentBoundObjectValue.IsSet() && SectionToKey)
 	{
 		if (ExternalValue.OnGetCurrentValueAndWeight)
@@ -84,7 +88,6 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 			FMovieSceneRootEvaluationTemplateInstance& EvaluationTemplate = Sequencer.GetEvaluationTemplate();
 			ExternalValue.OnGetCurrentValueAndWeight(FirstBoundObject, SectionToKey, InTime, Sequencer.GetFocusedTickResolution(), EvaluationTemplate, CurrentValue, CurrentWeight);
 
-			bool bWasEvaluated = Channel->Evaluate(InTime, NewValue);
 			if (CurrentBoundObjectValue.IsSet()) //need to get the diff between Value(Global) and CurrentValue and apply that to the local
 			{
 				if (bWasEvaluated)
@@ -101,20 +104,20 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 		else
 		{
 			// No custom callback... we need to run the blender system on our property.
-			USequencerInterrogationLinker* Interrogator = NewObject<USequencerInterrogationLinker>(GetTransientPackage());
+			FSystemInterrogator Interrogator;
+			Interrogator.TrackImportedEntities(true);
 
-			TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Interrogator->EntityManager);
+			TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Interrogator.GetLinker()->EntityManager);
 
 			UMovieSceneTrack* TrackToKey = SectionToKey->GetTypedOuter<UMovieSceneTrack>();
-			Interrogator->ImportTrack(TrackToKey);
 
-			const FInterrogationChannel InterrogationChannel = Interrogator->AddInterrogation(InTime);
+			Interrogator.ImportTrack(TrackToKey, FInterrogationChannel::Default());
+			Interrogator.AddInterrogation(InTime);
+			Interrogator.Update();
 
-			Interrogator->Update();
+			const FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(FInterrogationKey::Default(), SectionToKey, 0);
 
-			const FMovieSceneEntityID EntityID = Interrogator->FindEntityFromOwner(InterrogationChannel, SectionToKey, 0);
-
-			USequencerInterrogatedPropertyInstantiatorSystem* System = Interrogator->FindSystem<USequencerInterrogatedPropertyInstantiatorSystem>();
+			UMovieSceneInterrogatedPropertyInstantiatorSystem* System = Interrogator.GetLinker()->FindSystem<UMovieSceneInterrogatedPropertyInstantiatorSystem>();
 
 			if (ensure(System) && EntityID)  // EntityID can be invalid here if we are keying a section that is currently empty
 			{
@@ -130,7 +133,7 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 				for (int32 Index = 0; Index < PropertyDefinitions.Num(); ++Index)
 				{
 					const FPropertyDefinition& PropertyDefinition = PropertyDefinitions[Index];
-					if (Interrogator->EntityManager.HasComponent(EntityID, PropertyDefinition.PropertyType))
+					if (Interrogator.GetLinker()->EntityManager.HasComponent(EntityID, PropertyDefinition.PropertyType))
 					{
 						BoundPropertyDefinitionIndex = Index;
 						break;
@@ -142,7 +145,7 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 					const FPropertyDefinition& BoundPropertyDefinition = PropertyDefinitions[BoundPropertyDefinitionIndex];
 
 					check(FirstBoundObject != nullptr);
-					if (Interrogator->EntityManager.HasComponent(EntityID, BuiltInComponents->SceneComponentBinding))
+					if (Interrogator.GetLinker()->EntityManager.HasComponent(EntityID, BuiltInComponents->SceneComponentBinding))
 					{
 						FirstBoundObject = MovieSceneHelpers::SceneComponentFromRuntimeObject(FirstBoundObject);
 						check(FirstBoundObject != nullptr);
@@ -1165,6 +1168,16 @@ void ExtendKeyMenu(FMenuBuilder& OuterMenuBuilder, TArray<TExtendKeyMenuParams<F
 TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneFloatChannel>& FloatChannel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)
 {
 	return MakeUnique<FFloatChannelCurveModel>(FloatChannel, OwningSection, InSequencer);
+}
+
+TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneIntegerChannel>& IntegerChannel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)
+{
+	return MakeUnique<FIntegerChannelCurveModel>(IntegerChannel, OwningSection, InSequencer);
+}
+
+TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneBoolChannel>& BoolChannel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)
+{
+	return MakeUnique<FBoolChannelCurveModel>(BoolChannel, OwningSection, InSequencer);
 }
 
 TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneEventChannel>& EventChannel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)

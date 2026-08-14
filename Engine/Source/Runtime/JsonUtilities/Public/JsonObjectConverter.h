@@ -71,7 +71,7 @@ public: // UStruct -> JSON
 	 *
 	 * @return False if any properties failed to write
 	 */
-	static bool UStructToJsonObject(const UStruct* StructDefinition, const void* Struct, TSharedRef<FJsonObject> OutJsonObject, int64 CheckFlags, int64 SkipFlags, const CustomExportCallback* ExportCb = nullptr);
+	static bool UStructToJsonObject(const UStruct* StructDefinition, const void* Struct, TSharedRef<FJsonObject> OutJsonObject, int64 CheckFlags = 0, int64 SkipFlags = 0, const CustomExportCallback* ExportCb = nullptr);
 
 	/**
 	 * Converts from a UStruct to a json string containing an object, using exportText
@@ -87,7 +87,7 @@ public: // UStruct -> JSON
 	 *
 	 * @return False if any properties failed to write
 	 */
-	static bool UStructToJsonObjectString(const UStruct* StructDefinition, const void* Struct, FString& OutJsonString, int64 CheckFlags, int64 SkipFlags, int32 Indent = 0, const CustomExportCallback* ExportCb = nullptr, bool bPrettyPrint = true);
+	static bool UStructToJsonObjectString(const UStruct* StructDefinition, const void* Struct, FString& OutJsonString, int64 CheckFlags = 0, int64 SkipFlags = 0, int32 Indent = 0, const CustomExportCallback* ExportCb = nullptr, bool bPrettyPrint = true);
 
 	/**
 	 * Templated version; Converts from a UStruct to a json string containing an object, using exportText
@@ -112,7 +112,7 @@ public: // UStruct -> JSON
 	 * Wrapper to UStructToJsonObjectString that allows a print policy to be specified.
 	 */
 	template<typename CharType, template<typename> class PrintPolicy>
-	static bool UStructToFormattedJsonObjectString(const UStruct* StructDefinition, const void* Struct, FString& OutJsonString, int64 CheckFlags, int64 SkipFlags, int32 Indent = 0, const CustomExportCallback* ExportCb = nullptr)
+	static bool UStructToFormattedJsonObjectString(const UStruct* StructDefinition, const void* Struct, FString& OutJsonString, int64 CheckFlags = 0, int64 SkipFlags = 0, int32 Indent = 0, const CustomExportCallback* ExportCb = nullptr)
 	{
 		TSharedRef<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
 		if (UStructToJsonObject(StructDefinition, Struct, JsonObject, CheckFlags, SkipFlags, ExportCb))
@@ -146,7 +146,7 @@ public: // UStruct -> JSON
 	 *
 	 * @return False if any properties failed to write
 	 */
-	static bool UStructToJsonAttributes(const UStruct* StructDefinition, const void* Struct, TMap< FString, TSharedPtr<FJsonValue> >& OutJsonAttributes, int64 CheckFlags, int64 SkipFlags, const CustomExportCallback* ExportCb = nullptr);
+	static bool UStructToJsonAttributes(const UStruct* StructDefinition, const void* Struct, TMap< FString, TSharedPtr<FJsonValue> >& OutJsonAttributes, int64 CheckFlags = 0, int64 SkipFlags = 0, const CustomExportCallback* ExportCb = nullptr);
 
 	/* * Converts from a FProperty to a Json Value using exportText
 	 *
@@ -155,10 +155,11 @@ public: // UStruct -> JSON
 	 * @param CheckFlags		Only convert properties that match at least one of these flags. If 0 check all properties.
 	 * @param SkipFlags			Skip properties that match any of these flags
 	 * @param ExportCb Optional callback to override export behavior, if this returns null it will fallback to the default
+	 * @param OuterProperty		If applicable, the Array/Set/Map Property that contains this property
 	 *
 	 * @return					The constructed JsonValue from the property
 	 */
-	static TSharedPtr<FJsonValue> UPropertyToJsonValue(FProperty* Property, const void* Value, int64 CheckFlags, int64 SkipFlags, const CustomExportCallback* ExportCb = nullptr);
+	static TSharedPtr<FJsonValue> UPropertyToJsonValue(FProperty* Property, const void* Value, int64 CheckFlags = 0, int64 SkipFlags = 0, const CustomExportCallback* ExportCb = nullptr, FProperty* OuterProperty = nullptr);
 
 public: // JSON -> UStruct
 
@@ -202,7 +203,7 @@ public: // JSON -> UStruct
 	 *
 	 * @return False if any properties matched but failed to deserialize
 	 */
-	static bool JsonAttributesToUStruct(const TMap< FString, TSharedPtr<FJsonValue> >& JsonAttributes, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags, int64 SkipFlags);
+	static bool JsonAttributesToUStruct(const TMap< FString, TSharedPtr<FJsonValue> >& JsonAttributes, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0);
 
 	/**
 	 * Converts a single JsonValue to the corresponding FProperty (this may recurse if the property is a UStruct for instance).
@@ -215,7 +216,7 @@ public: // JSON -> UStruct
 	 *
 	 * @return False if the property failed to serialize
 	 */
-	static bool JsonValueToUProperty(const TSharedPtr<FJsonValue>& JsonValue, FProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
+	static bool JsonValueToUProperty(const TSharedPtr<FJsonValue>& JsonValue, FProperty* Property, void* OutValue, int64 CheckFlags = 0, int64 SkipFlags = 0);
 
 	/**
 	 * Converts from a json string containing an object to a UStruct
@@ -228,7 +229,7 @@ public: // JSON -> UStruct
 	 * @return False if any properties matched but failed to deserialize
 	 */
 	template<typename OutStructType>
-	static bool JsonObjectStringToUStruct(const FString& JsonString, OutStructType* OutStruct, int64 CheckFlags, int64 SkipFlags)
+	static bool JsonObjectStringToUStruct(const FString& JsonString, OutStructType* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0)
 	{
 		TSharedPtr<FJsonObject> JsonObject;
 		TSharedRef<TJsonReader<> > JsonReader = TJsonReaderFactory<>::Create(JsonString);
@@ -256,7 +257,7 @@ public: // JSON -> UStruct
 	* @return False if any properties matched but failed to deserialize.
 	*/
 	template<typename OutStructType>
-	static bool JsonArrayStringToUStruct(const FString& JsonString, TArray<OutStructType>* OutStructArray, int64 CheckFlags, int64 SkipFlags)
+	static bool JsonArrayStringToUStruct(const FString& JsonString, TArray<OutStructType>* OutStructArray, int64 CheckFlags = 0, int64 SkipFlags = 0)
 	{
 		TArray<TSharedPtr<FJsonValue> > JsonArray;
 		TSharedRef<TJsonReader<> > JsonReader = TJsonReaderFactory<>::Create(JsonString);
@@ -284,7 +285,7 @@ public: // JSON -> UStruct
 	* @return False if any of the matching elements are not an object, or if one of the matching elements could not be converted to the specified UStruct type.
 	*/
 	template<typename OutStructType>
-	static bool JsonArrayToUStruct(const TArray<TSharedPtr<FJsonValue>>& JsonArray, TArray<OutStructType>* OutStructArray, int64 CheckFlags, int64 SkipFlags)
+	static bool JsonArrayToUStruct(const TArray<TSharedPtr<FJsonValue>>& JsonArray, TArray<OutStructType>* OutStructArray, int64 CheckFlags = 0, int64 SkipFlags = 0)
 	{
 		OutStructArray->SetNum(JsonArray.Num());
 		for (int32 i = 0; i < JsonArray.Num(); ++i)

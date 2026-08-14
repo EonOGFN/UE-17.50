@@ -114,6 +114,9 @@ void UUVLayoutTool::Setup()
 	}
 
 	UpdateVisualization();
+
+	GetToolManager()->DisplayMessage(LOCTEXT("OnStartUVLayoutTool", "Transform/Rotate/Scale existing UV Islands/Shells/Charts using various strategies"),
+		EToolMessageLevel::UserNotification);
 }
 
 
@@ -306,11 +309,6 @@ void UUVLayoutTool::UpdateVisualization()
 	}
 }
 
-bool UUVLayoutTool::HasAccept() const
-{
-	return true;
-}
-
 bool UUVLayoutTool::CanAccept() const
 {
 	for (UMeshOpPreviewWithBackgroundCompute* Preview : Previews)
@@ -320,7 +318,7 @@ bool UUVLayoutTool::CanAccept() const
 			return false;
 		}
 	}
-	return true;
+	return Super::CanAccept();
 }
 
 

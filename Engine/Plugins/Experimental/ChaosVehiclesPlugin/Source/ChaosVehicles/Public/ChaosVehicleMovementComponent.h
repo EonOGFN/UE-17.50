@@ -17,7 +17,6 @@
 
 #include "ChaosVehicleMovementComponent.generated.h"
 
-using namespace Chaos;
 class CHAOSVEHICLES_API UChaosVehicleMovementComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVehicle, Log, All);
@@ -36,9 +35,10 @@ struct FVehicleDebugParams
 	bool DisableAerodynamics = false;
 	bool DisableAerofoils = false;
 	bool DisableThrusters = false;
-	bool BatchQueries = true;
+	bool BatchQueries = false;	// Turned off due to Issue with Overlap Queries on scaled terrain
 	float ForceDebugScaling = 0.0006f;
 	float SleepCounterThreshold = 15;
+	bool DisableVehicleSleep = true;
 };
 
 struct FBodyInstance;
@@ -693,8 +693,7 @@ public:
 		StabilizeControl.Enabled = InState;
 	}
 
-
-	/** location local coordinates of named bone in skeletion, apply additional offset or just use offset if no bone located */
+	/** location local coordinates of named bone in skeleton, apply additional offset or just use offset if no bone located */
 	FVector LocateBoneOffset(const FName InBoneName, const FVector& InExtraOffset) const;
 
 	TUniquePtr<Chaos::FSimpleWheeledVehicle>& PhysicsVehicle()
@@ -896,6 +895,8 @@ protected:
 	/** Create and setup the Chaos vehicle */
 	virtual void CreateVehicle();
 
+	virtual void CreatePhysicsVehicle();
+
 	/** Skeletal mesh needs some special handling in the vehicle case */
 	virtual void FixupSkeletalMesh() {}
 
@@ -967,7 +968,7 @@ private:
 	{
 		PAerodynamicsSetup.DragCoefficient = this->DragCoefficient;
 		PAerodynamicsSetup.DownforceCoefficient = this->DownforceCoefficient;
-		PAerodynamicsSetup.AreaMetresSquared = Cm2ToM2(this->DragArea);
+		PAerodynamicsSetup.AreaMetresSquared = Chaos::Cm2ToM2(this->DragArea);
 	}
 	Chaos::FSimpleAerodynamicsConfig PAerodynamicsSetup;
 

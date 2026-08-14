@@ -65,6 +65,12 @@ TAutoConsoleVariable<float> CVarPixelStreamingEncoderMinFPS(
 	TEXT("Minimal FPS for Quality Prioritization framerate reduction"),
 	ECVF_Cheat);
 
+TAutoConsoleVariable<int32> CVarPixelStreamingEncoderFillerDataHack(
+	TEXT("PixelStreaming.Encoder.FillerDataHack"),
+	1,
+	TEXT("Enables/disables the filler data hack (For NvEnc only)"),
+	ECVF_Cheat);
+
 //////////////////////////////////////////////////////////////////////////
 
 
@@ -238,7 +244,7 @@ int32 FVideoEncoder::Encode(const webrtc::VideoFrame& Frame, const webrtc::Codec
 
 		if (HWEncoderDetails.LastFramerate != int(Fps))
 		{
-			if (FMath::Abs(HWEncoderDetails.LastFramerate - Fps) > 5 || PixelStreamer.GetVerbosity() >= ELogVerbosity::Verbose)
+			if (FMath::Abs(HWEncoderDetails.LastFramerate - Fps) > 5 || UE_GET_LOG_VERBOSITY(PixelStreamer) >= ELogVerbosity::Verbose)
 			{
 				UE_LOG(PixelStreamer, Log, TEXT("Quality prioritization: QP %d, FPS %.0f"), HWEncoderDetails.LastAvgQP, Fps);
 			}
@@ -249,6 +255,9 @@ int32 FVideoEncoder::Encode(const webrtc::VideoFrame& Frame, const webrtc::Codec
 			HWEncoderDetails.Encoder->SetFramerate(HWEncoderDetails.LastFramerate);
 		}
 	}
+
+	// Filler data hack (for NvEnc)
+	HWEncoderDetails.Encoder->SetParameter( TEXT("fillerdata"), CVarPixelStreamingEncoderFillerDataHack.GetValueOnAnyThread() == 0 ? TEXT("0") : TEXT("1"));
 
 	// Adjust RcMode
 	{

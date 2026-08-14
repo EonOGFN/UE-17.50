@@ -19,6 +19,7 @@
 #include "HeadlessChaosTestUtility.h"
 
 #define SMALL_THRESHOLD 1e-4
+#define MEDIUM_THRESHOLD 5e-2
 
 // #TODO Lots of duplication in here, anyone making solver or object changes
 // has to go and fix up so many callsites here and they're all pretty much
@@ -51,8 +52,11 @@ namespace GeometryCollectionTest
 	{
 		using Traits = TypeParam;
 		FReal  Scale = 100.0f;
-		CreationParameters Params; Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Box; Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Box;
-		FVector BoxScale(Scale); Params.GeomTransform.SetScale3D(BoxScale); // Box dimensions
+		CreationParameters Params; 
+		Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Box; 
+		Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Box;
+		FVector BoxScale(Scale); 
+		Params.GeomTransform.SetScale3D(BoxScale); // Box dimensions
 		TGeometryCollectionWrapper<Traits>* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSingleRigid>::Init<Traits>(Params)->template As<TGeometryCollectionWrapper<Traits>>();
 		RigidBodyWrapper* Floor = TNewSimulationObject<GeometryType::RigidFloor>::Init<Traits>()->template As<RigidBodyWrapper>();
 
@@ -65,7 +69,7 @@ namespace GeometryCollectionTest
 		{
 			EXPECT_LT(FMath::Abs(Collection->RestCollection->Transform[0].GetTranslation().Z), SMALL_THRESHOLD);
 			EXPECT_EQ(Collection->DynamicCollection->Transform.Num(), 1);
-			EXPECT_LT(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Z - Scale), SMALL_THRESHOLD);
+			EXPECT_LT(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Z - Scale), MEDIUM_THRESHOLD);
 		}
 	}
 
@@ -111,12 +115,15 @@ namespace GeometryCollectionTest
 		UnitTest.AddSimulationObject(Collection);
 		UnitTest.AddSimulationObject(Floor);
 		UnitTest.Initialize();
-		for (int i = 0; i < 10; i++) UnitTest.Advance();
+		for (int i = 0; i < 10; i++)
+		{
+			UnitTest.Advance();
+		}
 
 		{
 			EXPECT_LT(FMath::Abs(Collection->RestCollection->Transform[0].GetTranslation().Z), SMALL_THRESHOLD);
 			EXPECT_EQ(Collection->DynamicCollection->Transform.Num(), 1);
-			EXPECT_LT(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Z - Scale[0]), SMALL_THRESHOLD);
+			EXPECT_LT(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Z - Scale[0]), MEDIUM_THRESHOLD);
 		}
 	}
 

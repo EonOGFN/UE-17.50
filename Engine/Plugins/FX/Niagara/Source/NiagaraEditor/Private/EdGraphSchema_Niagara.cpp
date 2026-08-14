@@ -178,6 +178,9 @@ UEdGraphNode* FNiagaraSchemaAction_NewComment::PerformAction(class UEdGraph* Par
 		SpawnLocation.X = CommentTemplate->NodePosX;
 		SpawnLocation.Y = CommentTemplate->NodePosY;
 	}
+	CommentTemplate->bCommentBubbleVisible_InDetailsPanel = false;
+	CommentTemplate->bCommentBubbleVisible = false; 
+	CommentTemplate->bCommentBubblePinned = false;
 
 	UEdGraphNode* NewNode = FNiagaraSchemaAction_NewNode::SpawnNodeFromTemplate<UEdGraphNode_Comment>(ParentGraph, CommentTemplate, SpawnLocation, bSelectNewNode);
 	return NewNode;
@@ -653,6 +656,8 @@ TArray<TSharedPtr<FNiagaraSchemaAction_NewNode> > UEdGraphSchema_Niagara::GetGra
 				DataInterface->GetFunctions(Functions);
 				for (FNiagaraFunctionSignature& Sig : Functions)
 				{
+					if (Sig.bSoftDeprecatedFunction)
+						continue;
 					TSharedPtr<FNiagaraSchemaAction_NewNode> Action = AddNewNodeAction(NewActions, MenuCat, FText::FromString(Sig.GetName()), *Sig.GetName(), FText::GetEmpty());
 					UNiagaraNodeFunctionCall* FuncNode = NewObject<UNiagaraNodeFunctionCall>(OwnerOfTemporaries);
 					Action->NodeTemplate = FuncNode;
@@ -1258,7 +1263,7 @@ FNiagaraVariable UEdGraphSchema_Niagara::PinToNiagaraVariable(const UEdGraphPin*
 			if (bHasValue == false)
 			{
 				FString OwningNodePath = Pin->GetOwningNode() != nullptr ? Pin->GetOwningNode()->GetPathName() : TEXT("Unknown");
-				UE_LOG(LogNiagaraEditor, Error, TEXT("PinToNiagaraVariable: Failed to convert default value '%s' to type %s. Owning node path: %s"), *Pin->DefaultValue, *Var.GetType().GetName(), *OwningNodePath);
+				UE_LOG(LogNiagaraEditor, Warning, TEXT("PinToNiagaraVariable: Failed to convert default value '%s' to type %s. Owning node path: %s"), *Pin->DefaultValue, *Var.GetType().GetName(), *OwningNodePath);
 			}
 		}
 		else
@@ -1266,7 +1271,7 @@ FNiagaraVariable UEdGraphSchema_Niagara::PinToNiagaraVariable(const UEdGraphPin*
 			if (Pin->GetOwningNode() != nullptr && nullptr == Cast<UNiagaraNodeOp>(Pin->GetOwningNode()))
 			{
 				FString OwningNodePath = Pin->GetOwningNode() != nullptr ? Pin->GetOwningNode()->GetPathName() : TEXT("Unknown");
-				UE_LOG(LogNiagaraEditor, Error, TEXT("Pin had default value string, but default values aren't supported for variables of type {%s}. Owning node path: %s"), *Var.GetType().GetName(), *OwningNodePath);
+				UE_LOG(LogNiagaraEditor, Warning, TEXT("Pin had default value string, but default values aren't supported for variables of type {%s}. Owning node path: %s"), *Var.GetType().GetName(), *OwningNodePath);
 			}
 		}
 	}
@@ -1276,7 +1281,7 @@ FNiagaraVariable UEdGraphSchema_Niagara::PinToNiagaraVariable(const UEdGraphPin*
 		FNiagaraEditorUtilities::ResetVariableToDefaultValue(Var);
 		if (Var.GetData() == nullptr)
 		{
-			UE_LOG(LogNiagaraEditor, Error, TEXT("ResetVariableToDefaultValue called, but failed on var %s type %s. "), *Var.GetName().ToString(), *Var.GetType().GetName());
+			UE_LOG(LogNiagaraEditor, Warning, TEXT("ResetVariableToDefaultValue called, but failed on var %s type %s. "), *Var.GetName().ToString(), *Var.GetType().GetName());
 		}
 	}
 
@@ -1327,8 +1332,8 @@ FNiagaraTypeDefinition UEdGraphSchema_Niagara::PinToTypeDefinition(const UEdGrap
 		UClass* Class = Cast<UClass>(Pin->PinType.PinSubCategoryObject.Get());
 		if (Class == nullptr)
 		{
-			UE_LOG(LogNiagaraEditor, Error, TEXT("Pin states that it is of class type, but is missing its class object. This is usually the result of a registered type going away. Pin Name '%s' Owning Node '%s'."),
-				*Pin->PinName.ToString(), OwningNode ? *OwningNode->GetName() : TEXT("Invalid"));
+			UE_LOG(LogNiagaraEditor, Warning, TEXT("Pin states that it is of class type, but is missing its class object. This is usually the result of a registered type going away. Pin Name '%s' Owning Node '%s'."),
+				*Pin->PinName.ToString(), OwningNode ? *OwningNode->GetFullName() : TEXT("Invalid"));
 			return FNiagaraTypeDefinition();
 		}
 		return FNiagaraTypeDefinition(Class);
@@ -1338,8 +1343,8 @@ FNiagaraTypeDefinition UEdGraphSchema_Niagara::PinToTypeDefinition(const UEdGrap
 		UEnum* Enum = Cast<UEnum>(Pin->PinType.PinSubCategoryObject.Get());
 		if (Enum == nullptr)
 		{
-			UE_LOG(LogNiagaraEditor, Error, TEXT("Pin states that it is of Enum type, but is missing its Enum! Pin Name '%s' Owning Node '%s'. Turning into standard int definition!"), *Pin->PinName.ToString(),
-				OwningNode ? *OwningNode->GetName() : TEXT("Invalid"));
+			UE_LOG(LogNiagaraEditor, Warning, TEXT("Pin states that it is of Enum type, but is missing its Enum! Pin Name '%s' Owning Node '%s'. Turning into standard int definition!"), *Pin->PinName.ToString(),
+				OwningNode ? *OwningNode->GetFullName() : TEXT("Invalid"));
 			return FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetIntDef());
 		}
 		return FNiagaraTypeDefinition(Enum);

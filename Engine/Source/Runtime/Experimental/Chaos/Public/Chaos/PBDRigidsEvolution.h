@@ -11,6 +11,7 @@
 #include "Chaos/Transform.h"
 #include "Chaos/Framework/DebugSubstep.h"
 #include "HAL/Event.h"
+#include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDRigidsSOAs.h"
 #include "Chaos/SpatialAccelerationCollection.h"
 #include "Chaos/EvolutionTraits.h"
@@ -327,7 +328,7 @@ public:
 		RemoveParticleFromAccelerationStructure(*Particle);
 		Particles.DisableParticle(Particle);
 		ConstraintGraph.DisableParticle(Particle);
-		RemoveConstraints(TSet<TGeometryParticleHandle<FReal, 3>*>({ Particle }));
+		DisableConstraints(TSet<TGeometryParticleHandle<FReal, 3>*>({ Particle }));
 	}
 
 	CHAOS_API void FlushExternalAccelerationQueue(FAccelerationStructure& Acceleration,FPendingSpatialDataQueue& ExternalQueue);
@@ -340,7 +341,7 @@ public:
 			Particles.DisableParticle(Particle);
 			ConstraintGraph.DisableParticle(Particle);
 		}
-		RemoveConstraints(ParticlesIn);
+		DisableConstraints(ParticlesIn);
 	}
 
 	template <bool bPersistent>
@@ -389,8 +390,9 @@ public:
 	CHAOS_API void DestroyParticle(TGeometryParticleHandle<FReal, 3>* Particle)
 	{
 		RemoveParticleFromAccelerationStructure(*Particle);
+		UniqueIndicesPendingRelease.Add(Particle->UniqueIdx());
+		DisableConstraints(TSet<TGeometryParticleHandle<FReal, 3>*>({ Particle }));
 		ConstraintGraph.RemoveParticle(Particle);
-		RemoveConstraints(TSet<TGeometryParticleHandle<FReal, 3>*>({ Particle }));
 		Particles.DestroyParticle(Particle);
 	}
 
@@ -427,7 +429,7 @@ public:
 		}
 
 		ConstraintGraph.DisableParticles(InParticles);
-		RemoveConstraints(InParticles);
+		DisableConstraints(InParticles);
 	}
 
 	CHAOS_API void WakeIsland(const int32 Island)
@@ -440,16 +442,31 @@ public:
 		}*/
 	}
 
-	// @todo(ccaulfield): Remove the uint version
-	CHAOS_API void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
+	CHAOS_API void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
 	{
-		// Only remove constraints if we have the possibility of rewinding state. Otherwise they will be rebuilt next frame
-		if(ChaosClusteringChildrenInheritVelocity < 1.0f)
+		for (TGeometryParticleHandle<FReal, 3>* ParticleHandle : RemovedParticles)
 		{
-			for(FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+			for (FConstraintHandle* BaseConstraintHandle : ParticleHandle->ParticleConstraints())
 			{
-				ConstraintRule->RemoveConstraints(RemovedParticles);
+				if (FPBDJointConstraintHandle* ConstraintHandle = BaseConstraintHandle->As<FPBDJointConstraintHandle>())
+				{
+					ConstraintGraph.RemoveConstraint(ConstraintHandle->GetConstraintIndex(), ConstraintHandle, ConstraintHandle->GetConstrainedParticles());
+				}
 			}
+		}
+
+
+		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+		{
+			ConstraintRule->DisableConstraints(RemovedParticles);
+		}
+	}
+
+	CHAOS_API void ResetConstraints()
+	{
+		for(FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+		{
+			ConstraintRule->ResetConstraints();
 		}
 	}
 
@@ -622,15 +639,18 @@ public:
 
 	/** Make a copy of the acceleration structure to allow for external modification.
 	    This is needed for supporting sync operations on SQ structure from game thread. You probably want to go through solver which maintains PendingExternal */
-	CHAOS_API void UpdateExternalAccelerationStructure_External(TUniquePtr<ISpatialAccelerationCollection<TAccelerationStructureHandle<FReal, 3>, FReal, 3>>& ExternalStructure, FPendingSpatialDataQueue& PendingExternal);
+	CHAOS_API void UpdateExternalAccelerationStructure_External(ISpatialAccelerationCollection<TAccelerationStructureHandle<FReal, 3>, FReal, 3>*& ExternalStructure, FPendingSpatialDataQueue& PendingExternal);
 
-	ISpatialAccelerationCollection<TAccelerationStructureHandle<FReal, 3>, FReal, 3>* GetSpatialAcceleration() { return InternalAcceleration.Get(); }
+	ISpatialAccelerationCollection<TAccelerationStructureHandle<FReal, 3>, FReal, 3>* GetSpatialAcceleration() { return InternalAcceleration; }
 
 	/** Perform a blocking flush of the spatial acceleration structure for situations where we aren't simulating but must have an up to date structure */
 	CHAOS_API void FlushSpatialAcceleration();
 
 	/** Rebuilds the spatial acceleration from scratch. This should only be used for perf testing */
 	CHAOS_API void RebuildSpatialAccelerationForPerfTest();
+
+	/* Ticks computation of acceleration structures. Normally handled by Advance, but if not advancing can be called to incrementally build structures.*/
+	CHAOS_API void ComputeIntermediateSpatialAcceleration(bool bBlock = false);
 
 	CHAOS_API const FPBDConstraintGraph& GetConstraintGraph() const { return ConstraintGraph; }
 	CHAOS_API FPBDConstraintGraph& GetConstraintGraph() { return ConstraintGraph; }
@@ -641,6 +661,16 @@ public:
 	{
 		//NOTE: this should be thread safe since evolution has already been initialized on GT
 		return Particles.GetUniqueIndices().GenerateUniqueIdx();
+	}
+
+	bool AreAnyTasksPending() const
+	{
+		return (AccelerationStructureTaskComplete.GetReference() && !AccelerationStructureTaskComplete->IsComplete());
+	}
+
+	void SetCanStartAsyncTasks(bool bInCanStartAsyncTasks)
+	{
+		bCanStartAsyncTasks = bInCanStartAsyncTasks;
 	}
 
 protected:
@@ -731,7 +761,6 @@ protected:
 		}
 	}
 
-	void ComputeIntermediateSpatialAcceleration(bool bBlock = false);
 	void FlushInternalAccelerationQueue();
 	void FlushAsyncAccelerationQueue();
 	void WaitOnAccelerationStructure();
@@ -752,15 +781,28 @@ protected:
 
 	TPBDRigidsSOAs<FReal, 3>& Particles;
 	THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials;
-	TUniquePtr<FAccelerationStructure> InternalAcceleration;
-	TUniquePtr<FAccelerationStructure> AsyncInternalAcceleration;
-	TUniquePtr<FAccelerationStructure> AsyncExternalAcceleration;
-	TUniquePtr<FAccelerationStructure> ScratchExternalAcceleration;
-	bool bExternalReady;
+	FAccelerationStructure* InternalAcceleration;
+	FAccelerationStructure* AsyncInternalAcceleration;
+	FAccelerationStructure* AsyncExternalAcceleration;
+
+	//internal thread will push into this and external thread will consume
+	TQueue<FAccelerationStructure*,EQueueMode::Spsc> ExternalStructuresQueue;
+
+	//external thread will push into this when done with structure
+	//internal thread will pop from this to generate new structure
+	TQueue<FAccelerationStructure*,EQueueMode::Spsc> ExternalStructuresPool;
+
+	//the backing buffer for all acceleration structures
+	TArray<TUniquePtr<FAccelerationStructure>> AccelerationBackingBuffer;
 	bool bIsSingleThreaded;
 
+	// Allows us to tell evolution to stop starting async tasks if we are trying to cleanup solver/evo.
+	bool bCanStartAsyncTasks;
+
+	TArray<FUniqueIdx> UniqueIndicesPendingRelease;
 public:
-	FReal LatestExternalTimeConsumed;	//The latest external time we consumed inputs from. Needed for synchronizing different DTs
+	//The latest external timestamp we consumed inputs from, assigned to evolution when solver task executes, is used to stamp output data.
+	int32 LatestExternalTimestampConsumed_Internal;	
 
 protected:
 
@@ -798,8 +840,8 @@ protected:
 	public:
 		FChaosAccelerationStructureTask(ISpatialAccelerationCollectionFactory& InSpatialCollectionFactory
 			, const TMap<FSpatialAccelerationIdx, TUniquePtr<FSpatialAccelerationCache>>& InSpatialAccelerationCache
-			, TUniquePtr<FAccelerationStructure>& InInternalAccelerationStructure
-			, TUniquePtr<FAccelerationStructure>& InExternalAccelerationStructure
+			, FAccelerationStructure* InInternalAccelerationStructure
+			, FAccelerationStructure* InExternalAccelerationStructure
 			, bool InForceFullBuild
 			, bool InIsSingleThreaded);
 		static FORCEINLINE TStatId GetStatId();
@@ -809,8 +851,8 @@ protected:
 
 		ISpatialAccelerationCollectionFactory& SpatialCollectionFactory;
 		const TMap<FSpatialAccelerationIdx, TUniquePtr<FSpatialAccelerationCache>>& SpatialAccelerationCache;
-		TUniquePtr<FAccelerationStructure>& InternalStructure;
-		TUniquePtr<FAccelerationStructure>& ExternalStructure;
+		FAccelerationStructure* InternalStructure;
+		FAccelerationStructure* ExternalStructure;
 		bool IsForceFullBuild;
 		bool bIsSingleThreaded;
 
@@ -822,6 +864,14 @@ protected:
 	int32 NumIterations;
 	int32 NumPushOutIterations;
 	TUniquePtr<ISpatialAccelerationCollectionFactory> SpatialCollectionFactory;
+
+	FAccelerationStructure* GetFreeSpatialAcceleration_Internal();
+	void FreeSpatialAcceleration_External(FAccelerationStructure* Structure);
+
+	void ReleaseIdx(FUniqueIdx Idx);
+	void ReleasePendingIndices();
+
+	TArray<FUniqueIdx> PendingReleaseIndices;	//for now just assume a one frame delay, but may need something more general
 };
 
 #define EVOLUTION_TRAIT(Trait) extern template class CHAOS_TEMPLATE_API TPBDRigidsEvolutionBase<Trait>;

@@ -39,7 +39,6 @@ protected:
 	int32 GetLODIndex() const;
 
 private:
-	mutable TArray<class FNiagaraMeshVertexFactory*, TInlineAllocator<2>> VertexFactories;
 	/** Render data of the static mesh we use. */
 	FStaticMeshRenderData* MeshRenderData;
 
@@ -52,8 +51,12 @@ private:
 	uint32 bEnableCulling : 1;
 	uint32 bEnableFrustumCulling : 1;
 
+
 	uint32 bSubImageBlend : 1;
 	FVector2D SubImageSize;
+
+	FVector PivotOffset;
+	ENiagaraMeshPivotOffsetSpace PivotOffsetSpace;
 
 	FVector LockedAxis;
 	ENiagaraMeshLockedAxisSpace LockedAxisSpace;

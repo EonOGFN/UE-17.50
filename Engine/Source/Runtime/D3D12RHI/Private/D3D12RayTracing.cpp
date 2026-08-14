@@ -517,7 +517,7 @@ public:
 			, CacheKey(InCacheKey)
 			, RayTracingDevice(InRayTracingDevice)
 			, CollectionType(InCollectionType)
-		{
+			{
 		}
 
 		static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
@@ -1680,7 +1680,7 @@ public:
 			? Initializer.GetHitGroupTable()
 			: DefaultHitGroupTable;
 
-		FRHIRayTracingShader* DefaultMissShader = GetBuildInRayTracingShader<FDefaultMainMS>();
+		FRHIRayTracingShader* DefaultMissShader = GetBuildInRayTracingShader<FDefaultPayloadMS>();
 		FRHIRayTracingShader* DefaultMissTable[] = { DefaultMissShader };
 
 		TArrayView<FRHIRayTracingShader*> InitializerMissShaders = (Initializer.GetMissTable().Num() || Initializer.bPartial)
@@ -1716,6 +1716,7 @@ public:
 		CompileCompletionList.Reserve(MaxTotalShaders);
 
 		// Helper function to acquire a D3D12_EXISTING_COLLECTION_DESC for a compiled shader via cache
+
 		auto AddShaderCollection = [Device, RayTracingDevice, GlobalRootSignature = this->GlobalRootSignature, PipelineCache,
 										&UniqueShaderHashes = this->PipelineShaderHashes, &UniqueShaderCollections, &Initializer, &NumCacheHits, &CompileTime,
 										&CompileCompletionList]
@@ -1856,8 +1857,7 @@ public:
 
 		CompileTime -= FPlatformTime::Cycles64();
 
-		FGraphEventRef CompileCompletionFence = FFunctionGraphTask::CreateAndDispatchWhenReady([]() {}, TStatId(), &CompileCompletionList, ENamedThreads::AnyHiPriThreadHiPriTask);
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompileCompletionFence);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(CompileCompletionList);
 
 		CompileTime += FPlatformTime::Cycles64();
 
@@ -2065,6 +2065,7 @@ public:
 	uint32 MaxHitGroupViewDescriptors = 0;
 
 	TSet<uint64> PipelineShaderHashes;
+
 	uint32 PipelineStackSize = 0;
 
 #if !NO_LOGGING
@@ -2094,7 +2095,7 @@ public:
 			FRHIRayTracingShader* OcclusionRGSTable[] = { GetBuildInRayTracingShader<FOcclusionMainRG>() };
 			OcclusionInitializer.SetRayGenShaderTable(OcclusionRGSTable);
 
-			FRHIRayTracingShader* OcclusionMSTable[] = { GetBuildInRayTracingShader<FDefaultMainMS>() };
+			FRHIRayTracingShader* OcclusionMSTable[] = { GetBuildInRayTracingShader<FDefaultPayloadMS>() };
 			OcclusionInitializer.SetMissShaderTable(OcclusionMSTable);
 
 			OcclusionInitializer.bAllowHitGroupIndexing = false;
@@ -2109,7 +2110,7 @@ public:
 			FRHIRayTracingShader* IntersectionRGSTable[] = { GetBuildInRayTracingShader<FIntersectionMainRG>() };
 			IntersectionInitializer.SetRayGenShaderTable(IntersectionRGSTable);
 
-			FRHIRayTracingShader* IntersectionMSTable[] = { GetBuildInRayTracingShader<FDefaultMainMS>() };
+			FRHIRayTracingShader* IntersectionMSTable[] = { GetBuildInRayTracingShader<FDefaultPayloadMS>() };
 			IntersectionInitializer.SetMissShaderTable(IntersectionMSTable);
 
 			FRHIRayTracingShader* IntersectionHitTable[] = { GetBuildInRayTracingShader<FIntersectionMainCHS>() };
@@ -2754,6 +2755,9 @@ FD3D12RayTracingScene::FD3D12RayTracingScene(FD3D12Adapter* Adapter, const FRayT
 		}
 	}
 
+	// Reserve space for all segments
+	HitGroupSystemParametersCache.Reserve(NumTotalSegments);
+
 	NumCallableShaderSlots = Initializer.NumCallableShaderSlots;
 	NumMissShaderSlots = FMath::Max<uint32>(1, Initializer.NumMissShaderSlots);
 };
@@ -2928,6 +2932,10 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 			const FRayTracingGeometryInstance& Instance = Instances[InstanceIndex];
 			FD3D12RayTracingGeometry* Geometry = FD3D12DynamicRHI::ResourceCast(Instance.GeometryRHI);
 
+			// make a copy of system parameters to they can optimized fetch during SBT building (only done for GPU0)
+			check(Geometry->HitGroupSystemParameters[0].Num() > 0);
+			HitGroupSystemParametersCache.Append(Geometry->HitGroupSystemParameters[0]);
+
 			D3D12_RAYTRACING_INSTANCE_DESC InstanceDesc = {};
 
 			InstanceDesc.InstanceMask = Instance.Mask;
@@ -2993,7 +3001,7 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 
 			FD3D12DynamicRHI::TransitionResource(CommandContext.CommandListHandle, InstanceBuffer.GetReference()->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
 
-			RHICmdList.BeginUAVOverlap();
+			RHICmdList.BeginUAVOverlap(InstancesDescUAV);
 
 			uint32 DescOffset = 0;
 			for (uint32 InstanceIndex = 0; InstanceIndex < NumSceneInstances; ++InstanceIndex)
@@ -3013,7 +3021,7 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 				DescOffset += NumTransforms;
 			}
 
-			RHICmdList.EndUAVOverlap();	
+			RHICmdList.EndUAVOverlap(InstancesDescUAV);
 		}
 
 		FD3D12DynamicRHI::TransitionResource(CommandContext.CommandListHandle, InstanceBuffer.GetReference()->GetResource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0);
@@ -3322,7 +3330,7 @@ struct FD3D12RayTracingLocalResourceBinder
 
 	void AddResourceTransition(FD3D12ShaderResourceView* SRV)
 	{
-		if (SRV->GetResource()->RequiresResourceStateTracking())
+		if (SRV->RequiresResourceStateTracking())
 		{
 			ShaderTable.AddResourceTransition(SRV, WorkerIndex);
 		}
@@ -3386,10 +3394,12 @@ static bool SetRayTracingShaderResources(
 		if (Resource)
 		{
 			FD3D12TextureBase* Texture = FD3D12CommandContext::RetrieveTextureBase(Resource, GPUIndex);
-			LocalSRVs[SRVIndex] = Texture->GetShaderResourceView()->GetView();
+			FD3D12ShaderResourceView* SRV = Texture->GetShaderResourceView();
+			LocalSRVs[SRVIndex] = SRV->GetView();
 			BoundSRVMask |= 1ull << SRVIndex;
 
 			ReferencedResources.Add({ Texture->GetResource(), Resource });
+			Binder.AddResourceTransition(SRV);
 		}
 	}
 
@@ -3403,6 +3413,7 @@ static bool SetRayTracingShaderResources(
 			BoundSRVMask |= 1ull << SRVIndex;
 
 			ReferencedResources.Add({ SRV->GetResource(), Resource });
+			Binder.AddResourceTransition(SRV);
 		}
 	}
 
@@ -3927,13 +3938,23 @@ static void SetRayTracingHitGroup(
 	checkf(ShaderSlot < Scene->ShaderSlotsPerGeometrySegment, TEXT("Shader slot is invalid. Make sure that ShaderSlotsPerGeometrySegment is correct on FRayTracingSceneInitializer."));
 
 	const uint32 RecordIndex = Scene->GetHitRecordBaseIndex(InstanceIndex, SegmentIndex) + ShaderSlot;
-
 	const uint32 GPUIndex = Device->GetGPUIndex();
-	const FRayTracingGeometryInstance& Instance = Scene->Instances[InstanceIndex];
-	const FD3D12RayTracingGeometry* Geometry = FD3D12DynamicRHI::ResourceCast(Instance.GeometryRHI);
-	const TArray<FHitGroupSystemParameters>& HitGroupSystemParametersForThisGPU = Geometry->HitGroupSystemParameters[GPUIndex];
 
-	FHitGroupSystemParameters SystemParameters = HitGroupSystemParametersForThisGPU[SegmentIndex];
+	FHitGroupSystemParameters SystemParameters;
+	if (GPUIndex == 0)
+	{
+		uint32 PrefixedSegmentIndex = Scene->SegmentPrefixSum[InstanceIndex];
+		SystemParameters = Scene->HitGroupSystemParametersCache[PrefixedSegmentIndex + SegmentIndex];
+	}
+	else
+	{
+		const FRayTracingGeometryInstance& Instance = Scene->Instances[InstanceIndex];
+		const FD3D12RayTracingGeometry* Geometry = FD3D12DynamicRHI::ResourceCast(Instance.GeometryRHI);
+		const TArray<FHitGroupSystemParameters>& HitGroupSystemParametersForThisGPU = Geometry->HitGroupSystemParameters[GPUIndex];
+
+		SystemParameters = HitGroupSystemParametersForThisGPU[SegmentIndex];
+	}
+
 	SystemParameters.RootConstants.BaseInstanceIndex = Scene->BaseInstancePrefixSum[InstanceIndex];
 	SystemParameters.RootConstants.UserData = UserData;
 	ShaderTable->SetHitGroupSystemParameters(RecordIndex, SystemParameters);

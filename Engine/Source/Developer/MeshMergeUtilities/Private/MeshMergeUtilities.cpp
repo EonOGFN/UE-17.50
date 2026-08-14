@@ -1646,47 +1646,57 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 		}
 	}
 
-	// Populate landscape clipping geometry
-	for (FMeshDescription* RawMesh : CullingRawMeshes)
+	if (MergeDataEntries.Num() != 0)
 	{
-		FMeshMergeData ClipData;
-		ClipData.bIsClippingMesh = true;
-		ClipData.RawMesh = RawMesh;
-		MergeDataEntries.Add(ClipData);
-	}
-
-	SlowTask.EnterProgressFrame(50.0f, LOCTEXT("CreateProxyMesh_GenerateProxy", "Generating Proxy Mesh"));
-
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ProxyGeneration)
-
-		// Choose Simplygon Swarm (if available) or local proxy lod method
-		if (ReductionModule.GetDistributedMeshMergingInterface() != nullptr && GetDefault<UEditorPerProjectUserSettings>()->bUseSimplygonSwarm && bAllowAsync)
+		// Populate landscape clipping geometry
+		for (FMeshDescription* RawMesh : CullingRawMeshes)
 		{
-			MaterialFlattenLambda(FlattenedMaterials);
-
-			ReductionModule.GetDistributedMeshMergingInterface()->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
+			FMeshMergeData ClipData;
+			ClipData.bIsClippingMesh = true;
+			ClipData.RawMesh = RawMesh;
+			MergeDataEntries.Add(ClipData);
 		}
-		else
+
+		SlowTask.EnterProgressFrame(50.0f, LOCTEXT("CreateProxyMesh_GenerateProxy", "Generating Proxy Mesh"));
+
 		{
-			IMeshMerging* MeshMerging = ReductionModule.GetMeshMergingInterface();
+			TRACE_CPUPROFILER_EVENT_SCOPE(ProxyGeneration)
 
-			// Register the Material Flattening code if parallel execution is supported, otherwise directly run it.
-
-			if (MeshMerging->bSupportsParallelMaterialBake())
+			// Choose Simplygon Swarm (if available) or local proxy lod method
+			if (ReductionModule.GetDistributedMeshMergingInterface() != nullptr && GetDefault<UEditorPerProjectUserSettings>()->bUseSimplygonSwarm && bAllowAsync)
 			{
-				MeshMerging->BakeMaterialsDelegate.BindLambda(MaterialFlattenLambda);
+				MaterialFlattenLambda(FlattenedMaterials);
+
+				ReductionModule.GetDistributedMeshMergingInterface()->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
 			}
 			else
 			{
-				MaterialFlattenLambda(FlattenedMaterials);
+				IMeshMerging* MeshMerging = ReductionModule.GetMeshMergingInterface();
+
+				// Register the Material Flattening code if parallel execution is supported, otherwise directly run it.
+
+				if (MeshMerging->bSupportsParallelMaterialBake())
+				{
+					MeshMerging->BakeMaterialsDelegate.BindLambda(MaterialFlattenLambda);
+				}
+				else
+				{
+					MaterialFlattenLambda(FlattenedMaterials);
+				}
+
+				MeshMerging->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
+
+
+				Processor->Tick(0); // make sure caller gets merging results
 			}
-
-			MeshMerging->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
-
-
-			Processor->Tick(0); // make sure caller gets merging results
 		}
+	}
+	else
+	{
+		FMeshDescription MeshDescription;
+		FStaticMeshAttributes(MeshDescription).Register();
+		FFlattenMaterial FlattenMaterial;
+		Processor->ProxyGenerationComplete(MeshDescription, FlattenMaterial, InGuid);
 	}
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(Cleanup)
@@ -2634,7 +2644,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		UPackage* Package = InOuter;
 		if (Package == nullptr)
 		{
-			Package = CreatePackage(NULL, *PackageName);
+			Package = CreatePackage( *PackageName);
 			check(Package);
 			Package->FullyLoad();
 			Package->Modify();
@@ -2646,11 +2656,11 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			if(ExistingObject && !ExistingObject->GetClass()->IsChildOf(UStaticMesh::StaticClass()))
 			{
 				// Change name of merged static mesh to avoid name collision
-				UPackage* ParentPackage = CreatePackage(nullptr, *FPaths::GetPath(Package->GetPathName()));
+				UPackage* ParentPackage = CreatePackage( *FPaths::GetPath(Package->GetPathName()));
 				ParentPackage->FullyLoad();
 
 				AssetName = MakeUniqueObjectName( ParentPackage, UStaticMesh::StaticClass(), *AssetName).ToString();
-				Package = CreatePackage(NULL, *(ParentPackage->GetPathName() / AssetName ));
+				Package = CreatePackage( *(ParentPackage->GetPathName() / AssetName ));
 				check(Package);
 				Package->FullyLoad();
 				Package->Modify();
@@ -2674,7 +2684,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		FString OutputPath = StaticMesh->GetPathName();
 
 		// make sure it has a new lighting guid
-		StaticMesh->LightingGuid = FGuid::NewGuid();
+		StaticMesh->SetLightingGuid();
 		if (InSettings.bGenerateLightMapUV)
 		{
 			StaticMesh->LightMapResolution = InSettings.TargetLightMapResolution;
@@ -2728,7 +2738,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		
 		auto IsMaterialImportedNameUnique = [&StaticMesh](FName ImportedMaterialSlotName)
 		{
-			for (const FStaticMaterial& StaticMaterial : StaticMesh->StaticMaterials)
+			for (const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
 			{
 #if WITH_EDITOR
 				if (StaticMaterial.ImportedMaterialSlotName == ImportedMaterialSlotName)
@@ -2757,7 +2767,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 				MaterialSlotName = *(DataTracker.GetMaterialSlotName(Material).ToString() + TEXT("_") + FString::FromInt(Counter++));
 			}
 
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(Material, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(Material, MaterialSlotName));
 		}
 
 		for(UMaterialInterface* ImposterMaterial : ImposterMaterials)
@@ -2769,7 +2779,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			{
 				MaterialSlotName = *(ImposterMaterial->GetName() + TEXT("_") + FString::FromInt(Counter++));
 			}
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(ImposterMaterial, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(ImposterMaterial, MaterialSlotName));
 		}
 
 		if (InSettings.bMergePhysicsData)
@@ -2777,18 +2787,18 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			StaticMesh->CreateBodySetup();
 			if (BodySetupSource)
 			{
-				StaticMesh->BodySetup->CopyBodyPropertiesFrom(BodySetupSource);
+				StaticMesh->GetBodySetup()->CopyBodyPropertiesFrom(BodySetupSource);
 			}
 
-			StaticMesh->BodySetup->AggGeom = FKAggregateGeom();
+			StaticMesh->GetBodySetup()->AggGeom = FKAggregateGeom();
 			// Copy collision from the source meshes
 			for (const FKAggregateGeom& Geom : PhysicsGeometry)
 			{
-				StaticMesh->BodySetup->AddCollisionFrom(Geom);
+				StaticMesh->GetBodySetup()->AddCollisionFrom(Geom);
 			}
 
 			// Bake rotation into verts of convex hulls, so they scale correctly after rotation
-			for (FKConvexElem& ConvexElem : StaticMesh->BodySetup->AggGeom.ConvexElems)
+			for (FKConvexElem& ConvexElem : StaticMesh->GetBodySetup()->AggGeom.ConvexElems)
 			{
 				ConvexElem.BakeTransformToVerts();
 			}
@@ -2830,7 +2840,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			{
 				MaterialSlotName = *(MergedMaterial->GetName() + TEXT("_") + FString::FromInt(Counter++));
 			}
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(MergedMaterial, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(MergedMaterial, MaterialSlotName));
 			StaticMesh->UpdateUVChannelData(false);
 		}
 
@@ -3348,7 +3358,7 @@ UMaterialInterface* FMeshMergeUtilities::CreateProxyMaterial(const FString &InBa
 	UPackage* MaterialPackage = InOuter;
 	if (MaterialPackage == nullptr)
 	{
-		MaterialPackage = CreatePackage(nullptr, *(MaterialPackageName + MaterialAssetName));
+		MaterialPackage = CreatePackage( *(MaterialPackageName + MaterialAssetName));
 		check(MaterialPackage);
 		MaterialPackage->FullyLoad();
 		MaterialPackage->Modify();
@@ -3380,7 +3390,7 @@ void FMeshMergeUtilities::ExtractPhysicsDataFromComponents(const TArray<UPrimiti
 			UStaticMesh* SrcMesh = StaticMeshComp->GetStaticMesh();
 			if (SrcMesh)
 			{
-				BodySetup = SrcMesh->BodySetup;
+				BodySetup = SrcMesh->GetBodySetup();
 			}
 			ComponentToWorld = StaticMeshComp->GetComponentToWorld();
 		}

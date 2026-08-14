@@ -26,7 +26,6 @@ UE_TRACE_EVENT_BEGIN(CpuProfiler, EndCapture, Important)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(CpuProfiler, EndThread, NoSync)
-	UE_TRACE_EVENT_FIELD(uint32, ThreadId)
 UE_TRACE_EVENT_END()
 
 struct FCpuProfilerTraceInternal
@@ -73,8 +72,7 @@ struct FCpuProfilerTraceInternal
 
 		virtual ~FThreadBuffer()
 		{
-			UE_TRACE_LOG(CpuProfiler, EndThread, CpuChannel)
-				<< EndThread.ThreadId(FPlatformTLS::GetCurrentThreadId());
+			UE_TRACE_LOG(CpuProfiler, EndThread, CpuChannel);
 		}
 
 		uint64 LastCycle = 0;
@@ -226,10 +224,6 @@ uint32 FCpuProfilerTrace::OutputEventType(const ANSICHAR* Name)
 		<< EventSpec.CharSize(uint8(1))
 		<< EventSpec.Attachment(Name, NameSize);
 	return SpecId;
-}
-
-void FCpuProfilerTrace::Init(const TCHAR* CmdLine)
-{
 }
 
 void FCpuProfilerTrace::Shutdown()

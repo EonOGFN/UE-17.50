@@ -23,6 +23,7 @@
 
 class FMenuBuilder;
 class FTimingGraphTrack;
+class FUICommandList;
 
 namespace Trace
 {
@@ -34,27 +35,10 @@ namespace Insights
 	class FTable;
 	class FTableColumn;
 	class ITableCellValueSorter;
+
+	class FCounterAggregator;
+	class SAggregatorStatus;
 }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template<typename Type>
-struct TAggregatedStatsEx
-{
-	static constexpr int32 HistogramLen = 100; // number of buckets per histogram
-
-	TAggregatedStats<Type> BaseStats;
-
-	// Histogram for computing median and lower/upper quartiles.
-	int32 Histogram[HistogramLen];
-	Type DT; // bucket size
-
-	TAggregatedStatsEx()
-	{
-		FMemory::Memzero(Histogram, sizeof(int32) * HistogramLen);
-		DT = Type(1);
-	}
-};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -104,12 +88,16 @@ public:
 	FStatsNodePtr GetCounterNode(uint32 CounterId) const;
 	void SelectCounterNode(uint32 CounterId);
 
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
 private:
-	void UpdateNode(FStatsNodePtr NodePtr);
+	void InitCommandList();
 
 	void UpdateTree();
 
-	void UpdateStatsInternal();
+	void UpdateNode(FStatsNodePtr NodePtr);
+
+	void FinishAggregation();
 
 	/** Called when the analysis session has changed. */
 	void InsightsManager_OnSessionChanged();
@@ -129,6 +117,9 @@ private:
 	TSharedPtr<SWidget> TreeView_GetMenuContent();
 	void TreeView_BuildSortByMenu(FMenuBuilder& MenuBuilder);
 	void TreeView_BuildViewColumnMenu(FMenuBuilder& MenuBuilder);
+
+	bool ContextMenu_CopySelectedToClipboard_CanExecute() const;
+	void ContextMenu_CopySelectedToClipboard_Execute();
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Tree View - Columns' Header
@@ -180,9 +171,13 @@ private:
 	void FilterOutZeroCountStats_OnCheckStateChanged(ECheckBoxState NewRadioState);
 	ECheckBoxState FilterOutZeroCountStats_IsChecked() const;
 
-	TSharedRef<SWidget> GetToggleButtonForStatsType(const EStatsNodeType InNodeType);
+	TSharedRef<SWidget> GetToggleButtonForNodeType(const EStatsNodeType InNodeType);
 	void FilterByStatsType_OnCheckStateChanged(ECheckBoxState NewRadioState, const EStatsNodeType InNodeType);
 	ECheckBoxState FilterByStatsType_IsChecked(const EStatsNodeType InNodeType) const;
+
+	TSharedRef<SWidget> GetToggleButtonForDataType(const EStatsNodeDataType InDataType);
+	void FilterByStatsDataType_OnCheckStateChanged(ECheckBoxState NewRadioState, const EStatsNodeDataType InDataType);
+	ECheckBoxState FilterByStatsDataType_IsChecked(const EStatsNodeDataType InDataType) const;
 
 	bool SearchBox_IsEnabled() const;
 	void SearchBox_OnTextChanged(const FText& InFilterText);
@@ -281,6 +276,8 @@ private:
 	/** A weak pointer to the profiler session used to populate this widget. */
 	TSharedPtr<const Trace::IAnalysisSession>/*Weak*/ Session;
 
+	TSharedPtr<FUICommandList> CommandList;
+
 	//////////////////////////////////////////////////
 	// Tree View, Columns
 
@@ -338,8 +335,11 @@ private:
 	/** The filter collection. */
 	TSharedPtr<FStatsNodeFilterCollection> Filters;
 
-	/** Holds the visibility of each counter type. */
-	bool bStatsNodeIsVisible[static_cast<int>(EStatsNodeType::InvalidOrMax)];
+	/** The on/off filter flag for each node type. */
+	bool FilterByNodeType[static_cast<int>(EStatsNodeType::InvalidOrMax)];
+
+	/** The on/off filter flag for each data type. */
+	bool FilterByDataType[static_cast<int>(EStatsNodeDataType::InvalidOrMax)];
 
 	/** Filter out the counters having zero total instance count (aggregated stats). */
 	bool bFilterOutZeroCountStats;
@@ -363,7 +363,7 @@ private:
 	/** Current sorter. It is nullptr if sorting is disabled. */
 	TSharedPtr<Insights::ITableCellValueSorter> CurrentSorter;
 
-	/** Name of the column currently being sorted, NAME_None if sorting is disabled. */
+	/** Name of the column currently being sorted. Can be NAME_None if sorting is disabled (CurrentSorting == nullptr) or if a complex sorting is used (CurrentSorting != nullptr). */
 	FName ColumnBeingSorted;
 
 	/** How we sort the nodes? Ascending or Descending. */
@@ -371,8 +371,8 @@ private:
 
 	//////////////////////////////////////////////////
 
-	double StatsStartTime;
-	double StatsEndTime;
+	TSharedRef<Insights::FCounterAggregator> Aggregator;
+	TSharedPtr<Insights::SAggregatorStatus> AggregatorStatus;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

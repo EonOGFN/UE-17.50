@@ -109,7 +109,15 @@
 		#define CONFIG_INPUT_TEXTURE_COUNT CONFIG_SIGNAL_BATCH_SIZE
 		#define CONFIG_OUTPUT_TEXTURE_COUNT CONFIG_SIGNAL_BATCH_SIZE
 
-		#define CONFIG_SAMPLE_SET           SAMPLE_SET_1X1
+		#define CONFIG_MAX_WITH_REF_DISTANCE 1
+		#define CONFIG_BILATERAL_DISTANCE_COMPUTATION SIGNAL_WORLD_FREQUENCY_PRECOMPUTED_BLURING_RADIUS
+
+		#if CONFIG_SIGNAL_BATCH_SIZE == 1
+			#define CONFIG_NORMALIZE_INPUT 1
+			#define CONFIG_SAMPLE_SET           SAMPLE_SET_DIRECTIONAL_ELLIPSE
+		#else
+			#define CONFIG_SAMPLE_SET           SAMPLE_SET_1X1
+		#endif
 
 	#else
 		#error Unexpected stage.
@@ -188,7 +196,7 @@
 	// Denoise only AO.
 	#define MAX_SIGNAL_BATCH_SIZE 1
 
-	#define CONFIG_BILATERAL_PRESET BILATERAL_PRESET_DIFFUSE
+	#define CONFIG_BILATERAL_DISTANCE_COMPUTATION SIGNAL_WORLD_FREQUENCY_PRECOMPUTED_BLURING_RADIUS
 
 	#if DIM_STAGE == STAGE_RECONSTRUCTION
 		#define SIGNAL_ARRAY_SIZE 1
@@ -201,8 +209,27 @@
 		#define CONFIG_OUTPUT_TEXTURE_COUNT 1
 
 		#define CONFIG_SAMPLE_SET           SAMPLE_SET_STACKOWIAK_4_SETS
-		#define CONFIG_BILATERAL_DISTANCE_COMPUTATION SIGNAL_WORLD_FREQUENCY_HIT_DISTANCE
 		#define CONFIG_OUTPUT_MODE          OUTPUT_MODE_DRB
+
+		#define CONFIG_BILATERAL_PRESET BILATERAL_PRESET_AO
+
+	#elif DIM_STAGE == STAGE_PRE_CONVOLUTION
+		#define SIGNAL_ARRAY_SIZE 1 // first and second momment to measure variance in temporal accumulation.
+
+		// Input and output layout.
+		#define CONFIG_SIGNAL_INPUT_LAYOUT  SIGNAL_BUFFER_LAYOUT_AO_HISTORY
+		#define CONFIG_SIGNAL_OUTPUT_LAYOUT SIGNAL_BUFFER_LAYOUT_AO_HISTORY
+
+		#define CONFIG_INPUT_TEXTURE_COUNT 1
+		#define CONFIG_OUTPUT_TEXTURE_COUNT 1
+
+		#define CONFIG_SAMPLE_SET           SAMPLE_SET_HEXAWEB
+		#define CONFIG_CUSTOM_SPREAD_FACTOR 1
+
+		//#define CONFIG_MAX_WITH_REF_DISTANCE 1
+		#define CONFIG_OUTPUT_MODE          OUTPUT_MODE_DRB
+
+		#define CONFIG_BILATERAL_PRESET BILATERAL_PRESET_AO
 
 	#elif DIM_STAGE == STAGE_REJECTION_PRE_CONVOLUTION
 		#define SIGNAL_ARRAY_SIZE 2 // first and second momment to measure variance in temporal accumulation.
@@ -214,7 +241,7 @@
 		#define CONFIG_INPUT_TEXTURE_COUNT 1
 		#define CONFIG_OUTPUT_TEXTURE_COUNT 1
 
-		#define CONFIG_BILATERAL_DISTANCE_COMPUTATION SIGNAL_WORLD_FREQUENCY_HIT_DISTANCE
+		#define CONFIG_BILATERAL_PRESET BILATERAL_PRESET_AO_HISTORY
 
 	#elif DIM_STAGE == STAGE_POST_FILTERING
 		#define SIGNAL_ARRAY_SIZE 1
@@ -226,10 +253,13 @@
 		#define CONFIG_INPUT_TEXTURE_COUNT 1
 		#define CONFIG_OUTPUT_TEXTURE_COUNT 1
 
-		#define CONFIG_SAMPLE_SET           SAMPLE_SET_STACKOWIAK_4_SETS
-		#define CONFIG_SAMPLE_SUBSET        1
+		#define CONFIG_SAMPLE_SET           SAMPLE_SET_HEXAWEB
+		#define CONFIG_OUTPUT_MODE          OUTPUT_MODE_DRB
+		#define CONFIG_CUSTOM_SPREAD_FACTOR 1
 
 		#define CONFIG_SAMPLE_COUNT_POLICY  SAMPLE_COUNT_POLICY_SAMPLE_ACCUMULATION_BASED
+
+		#define CONFIG_BILATERAL_PRESET BILATERAL_PRESET_AO
 
 	#else
 		#error Unexpected stage.
@@ -766,11 +796,16 @@ void MainCS(
 				{
 					KernelConfig.RefBilateralDistance[MultiplexId] = RefFrequencies.Array[MultiplexId].WorldBluringRadius;
 				}
+				else if (KernelConfig.BilateralDistanceComputation == SIGNAL_WORLD_FREQUENCY_HIT_DISTANCE)
+				{
+					KernelConfig.RefBilateralDistance[MultiplexId] = RefFrequencies.Array[MultiplexId].ClosestHitDistance;
+				}
 				else
 				{
 					const uint BatchedSignalId = ComputeSignalBatchIdFromSignalMultiplexId(KernelConfig, MultiplexId);
+					FSSDSignalDomainKnowledge DomainKnowledge = GetSignalDomainKnowledge(BatchedSignalId);
 
-					KernelConfig.RefBilateralDistance[MultiplexId] = GetSignalWorldBluringRadius(RefFrequencies.Array[MultiplexId], RefSceneMetadata, BatchedSignalId);
+					KernelConfig.RefBilateralDistance[MultiplexId] = GetSignalWorldBluringRadius(RefFrequencies.Array[MultiplexId], RefSceneMetadata, DomainKnowledge);
 				}
 			}
 		}
@@ -797,7 +832,7 @@ void MainCS(
 
 			// Add a bit of jittering to hide low sample.
 			KernelConfig.bSampleKernelCenter = false;
-			KernelConfig.BufferUV += View.ViewSizeAndInvSize.zw * (E - 0.5) * (KernelConfig.KernelSpreadFactor * (0.5 * rcp(2)));
+			KernelConfig.BufferUV += View.ViewSizeAndInvSize.zw * (E - 0.5) * (KernelConfig.KernelSpreadFactor);
 		}
 		#endif
 
@@ -810,7 +845,8 @@ void MainCS(
 			for (uint SignalMultiplexId = 0; SignalMultiplexId < SIGNAL_ARRAY_SIZE; SignalMultiplexId++)
 			{
 				const uint BatchedSignalId = ComputeSignalBatchIdFromSignalMultiplexId(KernelConfig, SignalMultiplexId);
-				
+				FSSDSignalDomainKnowledge DomainKnowledge = GetSignalDomainKnowledge(BatchedSignalId);
+
 				uint2 RefPixelCoord = floor(KernelConfig.BufferUV * KernelConfig.BufferSizeAndInvSize.xy);
 				FSSDSignalSample CenterSample = TransformSignalSampleForAccumulation(
 					KernelConfig,
@@ -823,7 +859,7 @@ void MainCS(
 				SampleInfos.Sample = CenterSample;
 				SampleInfos.Frequency = RefFrequencies.Array[SignalMultiplexId];
 				SampleInfos.FinalWeight = 1.0;
-				SampleInfos.InvFrequency = GetSignalWorldBluringRadius(SampleInfos.Frequency, RefSceneMetadata, BatchedSignalId);
+				SampleInfos.InvFrequency = GetSignalWorldBluringRadius(SampleInfos.Frequency, RefSceneMetadata, DomainKnowledge);
 				
 				if (KernelConfig.BilateralDistanceComputation == SIGNAL_WORLD_FREQUENCY_PRECOMPUTED_BLURING_RADIUS)
 				{
@@ -879,7 +915,39 @@ void MainCS(
 		}
 		#elif CONFIG_SAMPLE_SET == SAMPLE_SET_DIRECTIONAL_RECT || CONFIG_SAMPLE_SET == SAMPLE_SET_DIRECTIONAL_ELLIPSE
 		{
-			#if CONFIG_SIGNAL_PROCESSING == SIGNAL_PROCESSING_REFLECTIONS
+			#if CONFIG_SIGNAL_PROCESSING == SIGNAL_PROCESSING_SHADOW_VISIBILITY_MASK
+			{
+				float RefPixelWorldBluringRadius = ComputeWorldBluringRadiusCausedByPixelSize(RefSceneMetadata);
+
+				FSSDSignalDomainKnowledge DomainKnowledge = GetSignalDomainKnowledge(/* BatchedSignalId = */ 0);
+
+				float3 L = ComputeMajorLightRayDirection(RefSceneMetadata, DomainKnowledge);
+
+				float3 N = GetWorldNormal(RefSceneMetadata);
+
+				float NoL = dot(L, N);
+
+				float MajorPixelRadius = lerp(6, 0.5, abs(NoL));
+
+				// Project light dir onto horizon plane
+				float3 WorldBlurDir = normalize(L - dot(L, N) * N);
+
+				float3 TranslatedWorldOffset = GetTranslatedWorldPosition(RefSceneMetadata) + WorldBlurDir * (RefPixelWorldBluringRadius * MajorPixelRadius);
+				float4 ClipOffset = mul(float4(TranslatedWorldOffset, 1.0), View.TranslatedWorldToClip);
+				float2 ScreenOffset = ClipOffset.xy * rcp(ClipOffset.w);
+
+				float2 ScreenDirection = ScreenOffset - RefSceneMetadata.ScreenPosition;
+				float2 ViewportDirection = ScreenDirection * float2(0.5, -0.5);
+				float2 PixelDirection = normalize(ViewportDirection * View.ViewSizeAndInvSize.xy);
+				float PixelDirectionLength = length(ViewportDirection * View.ViewSizeAndInvSize.xy);
+
+				KernelConfig.MajorAxis = PixelDirection;
+				KernelConfig.MajorPixelRadius = MajorPixelRadius;
+				KernelConfig.MinorPixelRadius = 0.5;
+
+				KernelConfig.SampleCount = 2 * KernelConfig.MajorPixelRadius;
+			}
+			#elif CONFIG_SIGNAL_PROCESSING == SIGNAL_PROCESSING_REFLECTIONS
 			{
 				const float TargetSamplePerPixel = 0.25;
 				const float MinimalPixelRadius = 0.5 * rsqrt(2.0);

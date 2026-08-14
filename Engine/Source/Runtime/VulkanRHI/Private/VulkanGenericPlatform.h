@@ -45,6 +45,7 @@ public:
 	static void SetupFeatureLevels();
 
 	static bool SupportsStandardSwapchain() { return true; }
+	static bool RequiresRenderingBackBuffer() { return true; }
 	static EPixelFormat GetPixelFormatForNonDefaultSwapchain()
 	{
 		checkf(0, TEXT("Platform Requires Standard Swapchain!"));
@@ -119,9 +120,6 @@ public:
 
 	// Does the platform allow a nullptr Pixelshader on the pipeline
 	static bool SupportsNullPixelShader() { return true; }
-
-	// Does the platform require resolve attachments in its MSAA renderpasses
-	static bool RequiresRenderPassResolveAttachments() { return false; }
 
 	// Does the platform require depth to be written on stencil clear
 	static bool RequiresDepthWriteOnStencilClear() { return false; }

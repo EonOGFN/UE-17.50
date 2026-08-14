@@ -61,6 +61,7 @@ static bool IsSupportedVertexFactoryType(const FVertexFactoryType* VertexFactory
 	static FName LandscapeVfFname = FName(TEXT("FLandscapeVertexFactory"), FNAME_Find);
 	static FName LandscapeFixedGridVfFname = FName(TEXT("FLandscapeFixedGridVertexFactory"), FNAME_Find);
 	static FName LandscapeXYOffsetVfFname = FName(TEXT("FLandscapeXYOffsetVertexFactory"), FNAME_Find);
+	static FName HairCardVfFname = FName(TEXT("FHairCardsVertexFactory"), FNAME_Find);
 
 	return VertexFactoryType == FindVertexFactoryType(LocalVfFname)
 		|| VertexFactoryType == FindVertexFactoryType(LSkinnedVfFname)
@@ -70,7 +71,8 @@ static bool IsSupportedVertexFactoryType(const FVertexFactoryType* VertexFactory
 		|| VertexFactoryType == FindVertexFactoryType(GeometryCacheVfFname)
 		|| VertexFactoryType == FindVertexFactoryType(LandscapeVfFname)
 		|| VertexFactoryType == FindVertexFactoryType(LandscapeFixedGridVfFname)
-		|| VertexFactoryType == FindVertexFactoryType(LandscapeXYOffsetVfFname);
+		|| VertexFactoryType == FindVertexFactoryType(LandscapeXYOffsetVfFname)
+		|| VertexFactoryType == FindVertexFactoryType(HairCardVfFname);
 }
 
 class FMaterialCHS : public FMeshMaterialShader, public FUniformLightMapPolicyShaderParametersType
@@ -80,7 +82,7 @@ public:
 	FMaterialCHS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
 		FUniformLightMapPolicyShaderParametersType::Bind(Initializer.ParameterMap);
 	}
 
@@ -169,7 +171,7 @@ public:
 
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
 	{
-		if (ParameterMap.ContainsParameterAllocation(FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName()))
+		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName()))
 		{
 			OutError.Add(TEXT("Ray tracing closest hit shaders cannot read from the SceneTexturesStruct."));
 			return false;
@@ -510,12 +512,12 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::BindRayTracingMaterialP
 
 	FRayTracingPipelineStateInitializer Initializer;
 
-	Initializer.MaxPayloadSizeInBytes = 60; // sizeof(FPackedMaterialClosestHitPayload)
+	Initializer.MaxPayloadSizeInBytes = 64; // sizeof(FPackedMaterialClosestHitPayload)
 	Initializer.bAllowHitGroupIndexing = true;
 
 	const bool bLightingMissShader = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
 
-	FRHIRayTracingShader* DefaultMissShader = View.ShaderMap->GetShader<FDefaultMainMS>().GetRayTracingShader();
+	FRHIRayTracingShader* DefaultMissShader = View.ShaderMap->GetShader<FPackedMaterialClosestHitPayloadMS>().GetRayTracingShader();
 
 	FRHIRayTracingShader* RayTracingMissShaderLibrary[RAY_TRACING_NUM_MISS_SHADER_SLOTS] = {};
 	RayTracingMissShaderLibrary[RAY_TRACING_MISS_SHADER_SLOT_DEFAULT] = DefaultMissShader;

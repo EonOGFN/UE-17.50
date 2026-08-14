@@ -3,7 +3,10 @@
 #include "SStatsView.h"
 
 #include "EditorStyleSet.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "SlateOptMacros.h"
 #include "TraceServices/AnalysisService.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -17,20 +20,54 @@
 
 // Insights
 #include "Insights/Common/Stopwatch.h"
+#include "Insights/Common/TimeUtils.h"
 #include "Insights/Table/ViewModels/Table.h"
 #include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/TimingProfilerCommon.h"
 #include "Insights/TimingProfilerManager.h"
+#include "Insights/ViewModels/CounterAggregation.h"
 #include "Insights/ViewModels/StatsNodeHelper.h"
 #include "Insights/ViewModels/StatsViewColumnFactory.h"
 #include "Insights/ViewModels/TimingGraphTrack.h"
+#include "Insights/Widgets/SAggregatorStatus.h"
 #include "Insights/Widgets/SStatsViewTooltip.h"
 #include "Insights/Widgets/SStatsTableRow.h"
 #include "Insights/Widgets/STimingProfilerWindow.h"
 #include "Insights/Widgets/STimingView.h"
 
+#include <limits>
+
 #define LOCTEXT_NAMESPACE "SStatsView"
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FStatsViewCommands
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FStatsViewCommands : public TCommands<FStatsViewCommands>
+{
+public:
+	FStatsViewCommands()
+		: TCommands<FStatsViewCommands>(TEXT("FStatsViewCommands"), NSLOCTEXT("FStatsViewCommands", "Stats View Commands", "Stats View Commands"), NAME_None, FEditorStyle::Get().GetStyleSetName())
+	{
+	}
+
+	virtual ~FStatsViewCommands()
+	{
+	}
+
+	// UI_COMMAND takes long for the compiler to optimize
+	PRAGMA_DISABLE_OPTIMIZATION
+	virtual void RegisterCommands() override
+	{
+		UI_COMMAND(Command_CopyToClipboard, "Copy To Clipboard", "Copies selection to clipboard", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::C));
+	}
+	PRAGMA_ENABLE_OPTIMIZATION
+
+	TSharedPtr<FUICommandInfo> Command_CopyToClipboard;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// SStatsView
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 SStatsView::SStatsView()
@@ -42,10 +79,10 @@ SStatsView::SStatsView()
 	, CurrentSorter(nullptr)
 	, ColumnBeingSorted(GetDefaultColumnBeingSorted())
 	, ColumnSortMode(GetDefaultColumnSortMode())
-	, StatsStartTime(0.0)
-	, StatsEndTime(0.0)
+	, Aggregator(MakeShared<Insights::FCounterAggregator>())
 {
-	FMemory::Memset(bStatsNodeIsVisible, 1);
+	FMemory::Memset(FilterByNodeType, 1);
+	FMemory::Memset(FilterByDataType, 1);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -57,6 +94,15 @@ SStatsView::~SStatsView()
 	{
 		FInsightsManager::Get()->GetSessionChangedEvent().RemoveAll(this);
 	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SStatsView::InitCommandList()
+{
+	FStatsViewCommands::Register();
+	CommandList = MakeShared<FUICommandList>();
+	CommandList->MapAction(FStatsViewCommands::Get().Command_CopyToClipboard, FExecuteAction::CreateSP(this, &SStatsView::ContextMenu_CopySelectedToClipboard_Execute), FCanExecuteAction::CreateSP(this, &SStatsView::ContextMenu_CopySelectedToClipboard_CanExecute));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -167,14 +213,14 @@ void SStatsView::Construct(const FArguments& InArgs)
 					.Padding(FMargin(0.0f,0.0f,1.0f,0.0f))
 					.FillWidth(1.0f)
 					[
-						GetToggleButtonForStatsType(EStatsNodeType::Int64)
+						GetToggleButtonForDataType(EStatsNodeDataType::Int64)
 					]
 
 					+ SHorizontalBox::Slot()
 					.Padding(FMargin(1.0f,0.0f,1.0f,0.0f))
 					.FillWidth(1.0f)
 					[
-						GetToggleButtonForStatsType(EStatsNodeType::Float)
+						GetToggleButtonForDataType(EStatsNodeDataType::Double)
 					]
 				]
 			]
@@ -196,10 +242,16 @@ void SStatsView::Construct(const FArguments& InArgs)
 
 				+ SScrollBox::Slot()
 				[
-					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-					.Padding(0.0f)
+					SNew(SOverlay)
+
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
 					[
+					//SNew(SBorder)
+					//.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					//.Padding(0.0f)
+					//[
 						SAssignNew(TreeView, STreeView<FStatsNodePtr>)
 						.ExternalScrollbar(ExternalScrollbar)
 						.SelectionMode(ESelectionMode::Multi)
@@ -215,6 +267,15 @@ void SStatsView::Construct(const FArguments& InArgs)
 							SAssignNew(TreeViewHeaderRow, SHeaderRow)
 							.Visibility(EVisibility::Visible)
 						)
+					//]
+					]
+
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Right)
+					.VAlign(VAlign_Bottom)
+					.Padding(16.0f)
+					[
+						SAssignNew(AggregatorStatus, Insights::SAggregatorStatus, Aggregator)
 					]
 				]
 			]
@@ -242,6 +303,8 @@ void SStatsView::Construct(const FArguments& InArgs)
 
 	CreateGroupByOptionsSources();
 	CreateSortings();
+
+	InitCommandList();
 
 	// Register ourselves with the Insights manager.
 	FInsightsManager::Get()->GetSessionChangedEvent().AddSP(this, &SStatsView::InsightsManager_OnSessionChanged);
@@ -290,7 +353,7 @@ TSharedPtr<SWidget> SStatsView::TreeView_GetMenuContent()
 	}
 
 	const bool bShouldCloseWindowAfterMenuSelection = true;
-	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, NULL);
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, CommandList.ToSharedRef());
 
 	// Selection menu
 	MenuBuilder.BeginSection("Selection", LOCTEXT("ContextMenu_Header_Selection", "Selection"));
@@ -316,19 +379,14 @@ TSharedPtr<SWidget> SStatsView::TreeView_GetMenuContent()
 
 	MenuBuilder.BeginSection("Misc", LOCTEXT("ContextMenu_Header_Misc", "Miscellaneous"));
 	{
-		/*TODO
-		FUIAction Action_CopySelectedToClipboard
-		(
-			FExecuteAction::CreateSP(this, &SStatsView::ContextMenu_CopySelectedToClipboard_Execute),
-			FCanExecuteAction::CreateSP(this, &SStatsView::ContextMenu_CopySelectedToClipboard_CanExecute)
-		);
 		MenuBuilder.AddMenuEntry
 		(
-			LOCTEXT("ContextMenu_Header_Misc_CopySelectedToClipboard", "Copy To Clipboard"),
-			LOCTEXT("ContextMenu_Header_Misc_CopySelectedToClipboard_Desc", "Copies selection to clipboard"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.CopyToClipboard"), Action_CopySelectedToClipboard, NAME_None, EUserInterfaceActionType::Button
+			FStatsViewCommands::Get().Command_CopyToClipboard,
+			NAME_None,
+			TAttribute<FText>(),
+			TAttribute<FText>(),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.CopyToClipboard")
 		);
-		*/
 
 		MenuBuilder.AddSubMenu
 		(
@@ -661,7 +719,8 @@ void SStatsView::ApplyFiltering()
 			// Add a child.
 			const FStatsNodePtr& NodePtr = StaticCastSharedPtr<FStatsNode, Insights::FBaseTreeNode>(GroupChildren[Cx]);
 			const bool bIsChildVisible = (!bFilterOutZeroCountStats || NodePtr->GetAggregatedStats().Count > 0)
-									  && bStatsNodeIsVisible[static_cast<int>(NodePtr->GetType())]
+									  && FilterByNodeType[static_cast<int>(NodePtr->GetType())]
+									  && FilterByDataType[static_cast<int>(NodePtr->GetDataType())]
 									  && Filters->PassesAllFilters(NodePtr);
 			if (bIsChildVisible)
 			{
@@ -713,6 +772,77 @@ void SStatsView::ApplyFiltering()
 		}
 	}
 
+	// Update aggregations for groups.
+	for (FStatsNodePtr& GroupPtr : FilteredGroupNodes)
+	{
+		FAggregatedStats& AggregatedStats = GroupPtr->GetAggregatedStats();
+
+		GroupPtr->ResetAggregatedStats();
+
+		AggregatedStats.DoubleStats.Min = std::numeric_limits<double>::max();
+		AggregatedStats.DoubleStats.Max = std::numeric_limits<double>::lowest();
+		constexpr double NotAvailableDoubleValue = std::numeric_limits<double>::quiet_NaN();
+		AggregatedStats.DoubleStats.Average = NotAvailableDoubleValue;
+		AggregatedStats.DoubleStats.Median = NotAvailableDoubleValue;
+		AggregatedStats.DoubleStats.LowerQuartile = NotAvailableDoubleValue;
+		AggregatedStats.DoubleStats.UpperQuartile = NotAvailableDoubleValue;
+
+		AggregatedStats.Int64Stats.Min = std::numeric_limits<int64>::max();
+		AggregatedStats.Int64Stats.Max = std::numeric_limits<int64>::lowest();
+		constexpr int64 NotAvailableIntegerValue = 0;// std::numeric_limits<int64>::max();
+		AggregatedStats.Int64Stats.Average = NotAvailableIntegerValue;
+		AggregatedStats.Int64Stats.Median = NotAvailableIntegerValue;
+		AggregatedStats.Int64Stats.LowerQuartile = NotAvailableIntegerValue;
+		AggregatedStats.Int64Stats.UpperQuartile = NotAvailableIntegerValue;
+
+		EStatsNodeDataType GroupDataType = EStatsNodeDataType::InvalidOrMax;
+
+		const TArray<Insights::FBaseTreeNodePtr>& GroupChildren = GroupPtr->GetFilteredChildren();
+		for (const Insights::FBaseTreeNodePtr& ChildPtr : GroupChildren)
+		{
+			const FStatsNodePtr& NodePtr = StaticCastSharedPtr<FStatsNode, Insights::FBaseTreeNode>(ChildPtr);
+			const FAggregatedStats& NodeAggregatedStats = NodePtr->GetAggregatedStats();
+
+			if (NodeAggregatedStats.Count > 0)
+			{
+				AggregatedStats.Count += NodeAggregatedStats.Count;
+
+				AggregatedStats.DoubleStats.Sum += NodeAggregatedStats.DoubleStats.Sum;
+				AggregatedStats.DoubleStats.Min = FMath::Min(AggregatedStats.DoubleStats.Min, NodeAggregatedStats.DoubleStats.Min);
+				AggregatedStats.DoubleStats.Max = FMath::Max(AggregatedStats.DoubleStats.Max, NodeAggregatedStats.DoubleStats.Max);
+
+				AggregatedStats.Int64Stats.Sum += NodeAggregatedStats.Int64Stats.Sum;
+				AggregatedStats.Int64Stats.Min = FMath::Min(AggregatedStats.Int64Stats.Min, NodeAggregatedStats.Int64Stats.Min);
+				AggregatedStats.Int64Stats.Max = FMath::Max(AggregatedStats.Int64Stats.Max, NodeAggregatedStats.Int64Stats.Max);
+			}
+
+			if (GroupDataType == EStatsNodeDataType::InvalidOrMax)
+			{
+				GroupDataType = NodePtr->GetDataType();
+			}
+			else
+			{
+				if (GroupDataType != NodePtr->GetDataType())
+				{
+					GroupDataType = EStatsNodeDataType::Undefined;
+				}
+			}
+		}
+
+		// If not all children have same type, reset aggregated stats for group.
+		if (GroupDataType >= EStatsNodeDataType::Undefined)
+		{
+			AggregatedStats.DoubleStats.Sum = NotAvailableDoubleValue;
+			AggregatedStats.DoubleStats.Min = NotAvailableDoubleValue;
+			AggregatedStats.DoubleStats.Max = NotAvailableDoubleValue;
+
+			AggregatedStats.Int64Stats.Sum = NotAvailableIntegerValue;
+			AggregatedStats.Int64Stats.Min = NotAvailableIntegerValue;
+			AggregatedStats.Int64Stats.Max = NotAvailableIntegerValue;
+		}
+		GroupPtr->SetDataType(GroupDataType);
+	}
+
 	// Request tree refresh
 	TreeView->RequestTreeRefresh();
 }
@@ -726,7 +856,7 @@ void SStatsView::HandleItemToStringArray(const FStatsNodePtr& FStatsNodePtr, TAr
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-TSharedRef<SWidget> SStatsView::GetToggleButtonForStatsType(const EStatsNodeType NodeType)
+TSharedRef<SWidget> SStatsView::GetToggleButtonForNodeType(const EStatsNodeType NodeType)
 {
 	return SNew(SCheckBox)
 		.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
@@ -743,7 +873,7 @@ TSharedRef<SWidget> SStatsView::GetToggleButtonForStatsType(const EStatsNodeType
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-						.Image(StatsNodeTypeHelper::GetIconForStatsNodeType(NodeType))
+						.Image(StatsNodeTypeHelper::GetIcon(NodeType))
 				]
 
 			+ SHorizontalBox::Slot()
@@ -752,6 +882,39 @@ TSharedRef<SWidget> SStatsView::GetToggleButtonForStatsType(const EStatsNodeType
 				[
 					SNew(STextBlock)
 						.Text(StatsNodeTypeHelper::ToText(NodeType))
+						.TextStyle(FEditorStyle::Get(), TEXT("Profiler.Caption"))
+				]
+		];
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> SStatsView::GetToggleButtonForDataType(const EStatsNodeDataType DataType)
+{
+	return SNew(SCheckBox)
+		.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+		.HAlign(HAlign_Center)
+		.Padding(2.0f)
+		.OnCheckStateChanged(this, &SStatsView::FilterByStatsDataType_OnCheckStateChanged, DataType)
+		.IsChecked(this, &SStatsView::FilterByStatsDataType_IsChecked, DataType)
+		.ToolTipText(StatsNodeDataTypeHelper::ToDescription(DataType))
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SImage)
+						.Image(StatsNodeDataTypeHelper::GetIcon(DataType))
+				]
+
+			+ SHorizontalBox::Slot()
+				.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+						.Text(StatsNodeDataTypeHelper::ToText(DataType))
 						.TextStyle(FEditorStyle::Get(), TEXT("Profiler.Caption"))
 				]
 		];
@@ -774,17 +937,32 @@ ECheckBoxState SStatsView::FilterOutZeroCountStats_IsChecked() const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SStatsView::FilterByStatsType_OnCheckStateChanged(ECheckBoxState NewRadioState, const EStatsNodeType InStatType)
+void SStatsView::FilterByStatsType_OnCheckStateChanged(ECheckBoxState NewRadioState, const EStatsNodeType InNodeType)
 {
-	bStatsNodeIsVisible[static_cast<int>(InStatType)] = (NewRadioState == ECheckBoxState::Checked);
+	FilterByNodeType[static_cast<int>(InNodeType)] = (NewRadioState == ECheckBoxState::Checked);
 	ApplyFiltering();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-ECheckBoxState SStatsView::FilterByStatsType_IsChecked(const EStatsNodeType InStatType) const
+ECheckBoxState SStatsView::FilterByStatsType_IsChecked(const EStatsNodeType InNodeType) const
 {
-	return bStatsNodeIsVisible[static_cast<int>(InStatType)] ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return FilterByNodeType[static_cast<int>(InNodeType)] ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SStatsView::FilterByStatsDataType_OnCheckStateChanged(ECheckBoxState NewRadioState, const EStatsNodeDataType InDataType)
+{
+	FilterByDataType[static_cast<int>(InDataType)] = (NewRadioState == ECheckBoxState::Checked);
+	ApplyFiltering();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+ECheckBoxState SStatsView::FilterByStatsDataType_IsChecked(const EStatsNodeDataType InDataType) const
+{
+	return FilterByDataType[static_cast<int>(InDataType)] ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1003,7 +1181,7 @@ void SStatsView::CreateGroups()
 		GroupNodeSet.KeySort([](const FName& A, const FName& B) { return A.Compare(B) < 0; }); // sort groups by name
 		GroupNodeSet.GenerateValueArray(GroupNodes);
 	}
-	// Creates one group for each stat type.
+	// Creates one group for each node type.
 	else if (GroupingMode == EStatsGroupingMode::ByType)
 	{
 		TMap<EStatsNodeType, FStatsNodePtr> GroupNodeSet;
@@ -1020,6 +1198,25 @@ void SStatsView::CreateGroups()
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.KeySort([](const EStatsNodeType& A, const EStatsNodeType& B) { return A < B; }); // sort groups by type
+		GroupNodeSet.GenerateValueArray(GroupNodes);
+	}
+	// Creates one group for each data type.
+	else if (GroupingMode == EStatsGroupingMode::ByDataType)
+	{
+		TMap<EStatsNodeDataType, FStatsNodePtr> GroupNodeSet;
+		for (const FStatsNodePtr& NodePtr : StatsNodes)
+		{
+			const EStatsNodeDataType DataType = NodePtr->GetDataType();
+			FStatsNodePtr GroupPtr = GroupNodeSet.FindRef(DataType);
+			if (!GroupPtr)
+			{
+				const FName GroupName = *StatsNodeDataTypeHelper::ToText(DataType).ToString();
+				GroupPtr = GroupNodeSet.Add(DataType, MakeShared<FStatsNode>(GroupName));
+			}
+			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			TreeView->SetItemExpansion(GroupPtr, true);
+		}
+		GroupNodeSet.KeySort([](const EStatsNodeDataType& A, const EStatsNodeDataType& B) { return A < B; }); // sort groups by data type
 		GroupNodeSet.GenerateValueArray(GroupNodes);
 	}
 	// Creates one group for one letter.
@@ -1090,6 +1287,7 @@ void SStatsView::CreateGroupByOptionsSources()
 	GroupByOptionsSource.Add(MakeShared<EStatsGroupingMode>(EStatsGroupingMode::ByName));
 	GroupByOptionsSource.Add(MakeShared<EStatsGroupingMode>(EStatsGroupingMode::ByMetaGroupName));
 	GroupByOptionsSource.Add(MakeShared<EStatsGroupingMode>(EStatsGroupingMode::ByType));
+	GroupByOptionsSource.Add(MakeShared<EStatsGroupingMode>(EStatsGroupingMode::ByDataType));
 	GroupByOptionsSource.Add(MakeShared<EStatsGroupingMode>(EStatsGroupingMode::ByCount));
 
 	EStatsGroupingModePtr* GroupingModePtrPtr = GroupByOptionsSource.FindByPredicate([&](const EStatsGroupingModePtr InGroupingModePtr) { return *InGroupingModePtr == GroupingMode; });
@@ -1552,8 +1750,8 @@ void SStatsView::ContextMenu_ResetColumns_Execute()
 
 void SStatsView::Reset()
 {
-	StatsStartTime = 0.0;
-	StatsEndTime = 0.0;
+	Aggregator->Cancel();
+	Aggregator->SetTimeInterval(0.0, 0.0);
 
 	RebuildTree(true);
 }
@@ -1562,7 +1760,7 @@ void SStatsView::Reset()
 
 void SStatsView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	// Check if we need to update the lists of counters, but not too often.
+	// Check if we need to update the list of counters, but not too often.
 	static uint64 NextTimestamp = 0;
 	const uint64 Time = FPlatformTime::Cycles64();
 	if (Time > NextTimestamp)
@@ -1576,6 +1774,8 @@ void SStatsView::Tick(const FGeometry& AllottedGeometry, const double InCurrentT
 		const uint64 WaitTime = static_cast<uint64>(WaitTimeSec / FPlatformTime::GetSecondsPerCycle64());
 		NextTimestamp = Time + WaitTime;
 	}
+
+	Aggregator->Tick(Session, InCurrentTime, InDeltaTime, [this]() { FinishAggregation(); });
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1610,7 +1810,7 @@ void SStatsView::RebuildTree(bool bResync)
 			StatsNodesIdMap.Reserve(CounterCount);
 
 			const FName MemoryGroup(TEXT("Memory"));
-			const FName MiscFloatGroup(TEXT("Misc_float"));
+			const FName MiscFloatGroup(TEXT("Misc_double"));
 			const FName MiscInt64Group(TEXT("Misc_int64"));
 
 			// Add nodes only for new counters.
@@ -1622,8 +1822,9 @@ void SStatsView::RebuildTree(bool bResync)
 					FName Name(Counter.GetName());
 					const FName Group = ((Counter.GetDisplayHint() == Trace::CounterDisplayHint_Memory) ? MemoryGroup :
 										  Counter.IsFloatingPoint() ? MiscFloatGroup : MiscInt64Group);
-					const EStatsNodeType Type = Counter.IsFloatingPoint() ? EStatsNodeType::Float : EStatsNodeType::Int64;
-					NodePtr = MakeShared<FStatsNode>(CounterId, Name, Group, Type);
+					const EStatsNodeType Type = EStatsNodeType::Counter;
+					const EStatsNodeDataType DataType = Counter.IsFloatingPoint() ? EStatsNodeDataType::Double : EStatsNodeDataType::Int64;
+					NodePtr = MakeShared<FStatsNode>(CounterId, Name, Group, Type, DataType);
 					UpdateNode(NodePtr);
 					StatsNodes.Add(NodePtr);
 					StatsNodesIdMap.Add(CounterId, NodePtr);
@@ -1645,7 +1846,8 @@ void SStatsView::RebuildTree(bool bResync)
 		}
 
 		UpdateTree();
-		UpdateStatsInternal();
+		Aggregator->Cancel();
+		Aggregator->Start();
 
 		// Save selection.
 		TArray<FStatsNodePtr> SelectedItems;
@@ -1709,366 +1911,32 @@ void SStatsView::UpdateNode(FStatsNodePtr NodePtr)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Type>
-class TTimeCalculationHelper
-{
-public:
-	TTimeCalculationHelper<Type>(double InIntervalStartTime, double InIntervalEndTime)
-		: IntervalStartTime(InIntervalStartTime)
-		, IntervalEndTime(InIntervalEndTime)
-	{
-	}
-
-	void Update(uint32 CounterId, const Trace::ICounter& Counter)
-	{
-		EnumerateValues(CounterId, Counter, UpdateMinMax);
-	}
-
-	void PrecomputeHistograms();
-
-	void UpdateHistograms(uint32 CounterId, const Trace::ICounter& Counter)
-	{
-		EnumerateValues(CounterId, Counter, UpdateHistogram);
-	}
-
-	void PostProcess(TMap<uint32, FStatsNodePtr>& StatsNodesIdMap, bool bComputeMedian);
-
-private:
-	template<typename CallbackType>
-	void EnumerateValues(uint32 CounterId, const Trace::ICounter& Counter, CallbackType Callback);
-
-	static void UpdateMinMax(TAggregatedStatsEx<Type>& Stats, Type Value);
-	static void UpdateHistogram(TAggregatedStatsEx<Type>& StatsEx, Type Value);
-	static void PostProcess(TAggregatedStatsEx<Type>& StatsEx, bool bComputeMedian);
-
-	double IntervalStartTime;
-	double IntervalEndTime;
-	TMap<uint64, TAggregatedStatsEx<Type>> StatsMap;
-};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = double
-
-template<>
-template<typename CallbackType>
-void TTimeCalculationHelper<double>::EnumerateValues(uint32 CounterId, const Trace::ICounter& Counter, CallbackType Callback)
-{
-	TAggregatedStatsEx<double>* StatsExPtr = StatsMap.Find(CounterId);
-	if (!StatsExPtr)
-	{
-		StatsExPtr = &StatsMap.Add(CounterId);
-		StatsExPtr->BaseStats.Min = +MAX_dbl;
-		StatsExPtr->BaseStats.Max = -MAX_dbl;
-	}
-	TAggregatedStatsEx<double>& StatsEx = *StatsExPtr;
-
-	Counter.EnumerateFloatValues(IntervalStartTime, IntervalEndTime, false, [this, &StatsEx, Callback](double Time, double Value)
-	{
-		Callback(StatsEx, Value);
-	});
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = int64
-
-template<>
-template<typename CallbackType>
-void TTimeCalculationHelper<int64>::EnumerateValues(uint32 CounterId, const Trace::ICounter& Counter, CallbackType Callback)
-{
-	TAggregatedStatsEx<int64>* StatsExPtr = StatsMap.Find(CounterId);
-	if (!StatsExPtr)
-	{
-		StatsExPtr = &StatsMap.Add(CounterId);
-		StatsExPtr->BaseStats.Min = +MAX_int64;
-		StatsExPtr->BaseStats.Max = -MAX_int64;
-	}
-	TAggregatedStatsEx<int64>& StatsEx = *StatsExPtr;
-
-	Counter.EnumerateValues(IntervalStartTime, IntervalEndTime, false, [this, &StatsEx, Callback](double Time, int64 Value)
-	{
-		Callback(StatsEx, Value);
-	});
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template<typename Type>
-void TTimeCalculationHelper<Type>::UpdateMinMax(TAggregatedStatsEx<Type>& StatsEx, Type Value)
-{
-	TAggregatedStats<Type>& Stats = StatsEx.BaseStats;
-
-	Stats.Sum += Value;
-
-	if (Value < Stats.Min)
-	{
-		Stats.Min = Value;
-	}
-
-	if (Value > Stats.Max)
-	{
-		Stats.Max = Value;
-	}
-
-	Stats.Count++;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = double
-
-template<>
-void TTimeCalculationHelper<double>::PrecomputeHistograms()
-{
-	for (auto& KV : StatsMap)
-	{
-		TAggregatedStatsEx<double>& StatsEx = KV.Value;
-		const TAggregatedStats<double>& Stats = StatsEx.BaseStats;
-
-		// Each bucket (Histogram[i]) will be centered on a value.
-		// I.e. First bucket (bucket 0) is centered on Min value: [Min-DT/2, Min+DT/2)
-		// and last bucket (bucket N-1) is centered on Max value: [Max-DT/2, Max+DT/2).
-
-		if (Stats.Max == Stats.Min)
-		{
-			StatsEx.DT = 1.0; // single large bucket
-		}
-		else
-		{
-			StatsEx.DT = (Stats.Max - Stats.Min) / (TAggregatedStatsEx<double>::HistogramLen - 1);
-			if (StatsEx.DT == 0.0)
-			{
-				StatsEx.DT = 1.0;
-			}
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = int64
-
-template<>
-void TTimeCalculationHelper<int64>::PrecomputeHistograms()
-{
-	for (auto& KV : StatsMap)
-	{
-		TAggregatedStatsEx<int64>& StatsEx = KV.Value;
-		const TAggregatedStats<int64>& Stats = StatsEx.BaseStats;
-
-		// Each bucket (Histogram[i]) will be centered on a value.
-		// I.e. First bucket (bucket 0) is centered on Min value: [Min-DT/2, Min+DT/2)
-		// and last bucket (bucket N-1) is centered on Max value: [Max-DT/2, Max+DT/2).
-
-		if (Stats.Max == Stats.Min)
-		{
-			StatsEx.DT = 1; // single bucket
-		}
-		else
-		{
-			// DT = Ceil[(Max - Min) / (N - 1)]
-			StatsEx.DT = (Stats.Max - Stats.Min + TAggregatedStatsEx<int64>::HistogramLen - 2) / (TAggregatedStatsEx<int64>::HistogramLen - 1);
-			if (StatsEx.DT == 0)
-			{
-				StatsEx.DT = 1;
-			}
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template<typename Type>
-void TTimeCalculationHelper<Type>::UpdateHistogram(TAggregatedStatsEx<Type>& StatsEx, Type Value)
-{
-	const TAggregatedStats<Type>& Stats = StatsEx.BaseStats;
-
-	// Index = (Value - Min + DT/2) / DT
-	int32 Index = static_cast<int32>((Value - Stats.Min + StatsEx.DT/2) / StatsEx.DT);
-	ensure(Index >= 0);
-	if (Index < 0)
-	{
-		Index = 0;
-	}
-	ensure(Index < TAggregatedStatsEx<Type>::HistogramLen);
-	if (Index >= TAggregatedStatsEx<Type>::HistogramLen)
-	{
-		Index = TAggregatedStatsEx<Type>::HistogramLen - 1;
-	}
-	StatsEx.Histogram[Index]++;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template<typename Type>
-void TTimeCalculationHelper<Type>::PostProcess(TAggregatedStatsEx<Type>& StatsEx, bool bComputeMedian)
-{
-	TAggregatedStats<Type>& Stats = StatsEx.BaseStats;
-
-	// Compute average value.
-	if (Stats.Count > 0)
-	{
-		Stats.Average = Stats.Sum / static_cast<Type>(Stats.Count);
-
-		if (bComputeMedian)
-		{
-			const int32 HalfCount = Stats.Count / 2;
-
-			// Compute median value.
-			int32 Count = 0;
-			for (int32 HistogramIndex = 0; HistogramIndex < TAggregatedStatsEx<Type>::HistogramLen; HistogramIndex++)
-			{
-				Count += StatsEx.Histogram[HistogramIndex];
-				if (Count > HalfCount)
-				{
-					Stats.Median = Stats.Min + HistogramIndex * StatsEx.DT;
-
-					if (HistogramIndex > 0 &&
-						Stats.Count % 2 == 0 &&
-						Count - StatsEx.Histogram[HistogramIndex] == HalfCount)
-					{
-						const Type PrevMedian = Stats.Min + (HistogramIndex - 1) * StatsEx.DT;
-						Stats.Median = (Stats.Median + PrevMedian) / 2;
-					}
-
-					break;
-				}
-			}
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = double
-
-template<>
-void TTimeCalculationHelper<double>::PostProcess(TMap<uint32, FStatsNodePtr>& StatsNodesIdMap, bool bComputeMedian)
-{
-	for (auto& KV : StatsMap)
-	{
-		PostProcess(KV.Value, bComputeMedian);
-
-		// Update the stats node.
-		FStatsNodePtr* NodePtrPtr = StatsNodesIdMap.Find(KV.Key);
-		if (NodePtrPtr != nullptr)
-		{
-			FStatsNodePtr NodePtr = *NodePtrPtr;
-			NodePtr->SetAggregatedStats(KV.Value.BaseStats);
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// specialization for Type = int64
-
-template<>
-void TTimeCalculationHelper<int64>::PostProcess(TMap<uint32, FStatsNodePtr>& StatsNodesIdMap, bool bComputeMedian)
-{
-	for (auto& KV : StatsMap)
-	{
-		PostProcess(KV.Value, bComputeMedian);
-
-		// Update the stats node.
-		FStatsNodePtr* NodePtrPtr = StatsNodesIdMap.Find(KV.Key);
-		if (NodePtrPtr != nullptr)
-		{
-			FStatsNodePtr NodePtr = *NodePtrPtr;
-			NodePtr->SetAggregatedIntegerStats(KV.Value.BaseStats);
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void SStatsView::ResetStats()
 {
-	StatsStartTime = 0.0;
-	StatsEndTime = 0.0;
-
-	UpdateStatsInternal();
+	Aggregator->Cancel();
+	Aggregator->SetTimeInterval(0.0, 0.0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SStatsView::UpdateStats(double StartTime, double EndTime)
 {
-	StatsStartTime = StartTime;
-	StatsEndTime = EndTime;
-
-	UpdateStatsInternal();
+	Aggregator->Cancel();
+	Aggregator->SetTimeInterval(StartTime, EndTime);
+	Aggregator->Start();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SStatsView::UpdateStatsInternal()
+void SStatsView::FinishAggregation()
 {
-	if (StatsStartTime >= StatsEndTime)
-	{
-		// keep previous aggregated stats
-		return;
-	}
-
-	FStopwatch AggregationStopwatch;
-	FStopwatch Stopwatch;
-	Stopwatch.Start();
-
 	for (const FStatsNodePtr& NodePtr : StatsNodes)
 	{
 		NodePtr->ResetAggregatedStats();
 	}
 
-	if (Session.IsValid())
-	{
-		const bool bComputeMedian = true;
-
-		TTimeCalculationHelper<double> CalculationHelperDbl(StatsStartTime, StatsEndTime);
-		TTimeCalculationHelper<int64>  CalculationHelperInt(StatsStartTime, StatsEndTime);
-
-		AggregationStopwatch.Start();
-		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-
-			const Trace::ICounterProvider& CountersProvider = Trace::ReadCounterProvider(*Session.Get());
-
-			// Compute instance count and total/min/max inclusive/exclusive times for each counter.
-			// Iterate through all counters.
-			CountersProvider.EnumerateCounters([&CalculationHelperDbl, &CalculationHelperInt](uint32 CounterId, const Trace::ICounter& Counter)
-			{
-				if (Counter.IsFloatingPoint())
-				{
-					CalculationHelperDbl.Update(CounterId, Counter);
-				}
-				else
-				{
-					CalculationHelperInt.Update(CounterId, Counter);
-				}
-			});
-
-			// Now, as we know min/max inclusive/exclusive times for counter, we can compute histogram and median values.
-			if (bComputeMedian)
-			{
-				// Update bucket size (DT) for computing histogram.
-				CalculationHelperDbl.PrecomputeHistograms();
-				CalculationHelperInt.PrecomputeHistograms();
-
-				// Compute histogram.
-				// Iterate again through all counters.
-				CountersProvider.EnumerateCounters([&CalculationHelperDbl, &CalculationHelperInt](uint32 CounterId, const Trace::ICounter& Counter)
-				{
-					if (Counter.IsFloatingPoint())
-					{
-						CalculationHelperDbl.UpdateHistograms(CounterId, Counter);
-					}
-					else
-					{
-						CalculationHelperInt.UpdateHistograms(CounterId, Counter);
-					}
-				});
-			}
-		}
-		AggregationStopwatch.Stop();
-
-		// Compute average and median inclusive/exclusive times.
-		CalculationHelperDbl.PostProcess(StatsNodesIdMap, bComputeMedian);
-		CalculationHelperInt.PostProcess(StatsNodesIdMap, bComputeMedian);
-	}
+	Aggregator->ApplyResultsTo(StatsNodesIdMap);
+	Aggregator->ResetResults();
 
 	// Invalidate all tree table rows.
 	for (const FStatsNodePtr& NodePtr : StatsNodes)
@@ -2076,24 +1944,19 @@ void SStatsView::UpdateStatsInternal()
 		TSharedPtr<ITableRow> TableRowPtr = TreeView->WidgetFromItem(NodePtr);
 		if (TableRowPtr.IsValid())
 		{
-			TSharedPtr<SStatsTableRow> StatsTableRowPtr = StaticCastSharedPtr<SStatsTableRow, ITableRow>(TableRowPtr);
-			StatsTableRowPtr->InvalidateContent();
+			TSharedPtr<SStatsTableRow> RowPtr = StaticCastSharedPtr<SStatsTableRow, ITableRow>(TableRowPtr);
+			RowPtr->InvalidateContent();
 		}
 	}
 
-	UpdateTree();
+	UpdateTree(); // grouping + sorting + filtering
 
+	// Ensure the last selected item is visible.
 	const TArray<FStatsNodePtr> SelectedNodes = TreeView->GetSelectedItems();
 	if (SelectedNodes.Num() > 0)
 	{
-		TreeView->RequestScrollIntoView(SelectedNodes[0]);
+		TreeView->RequestScrollIntoView(SelectedNodes.Last());
 	}
-
-	Stopwatch.Stop();
-	const double TotalTime = Stopwatch.GetAccumulatedTime();
-	const double AggregationTime = AggregationStopwatch.GetAccumulatedTime();
-	UE_LOG(TimingProfiler, Log, TEXT("[Counters] Aggregated stats updated in %.4fs (%.4fs + %.4fs)"),
-		TotalTime, AggregationTime, TotalTime - AggregationTime);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2113,6 +1976,57 @@ void SStatsView::SelectCounterNode(uint32 CounterId)
 		TreeView->SetSelection(NodePtr);
 		TreeView->RequestScrollIntoView(NodePtr);
 	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool SStatsView::ContextMenu_CopySelectedToClipboard_CanExecute() const
+{
+	const TArray<FStatsNodePtr> SelectedNodes = TreeView->GetSelectedItems();
+
+	return SelectedNodes.Num() > 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SStatsView::ContextMenu_CopySelectedToClipboard_Execute()
+{
+	if (!Table->IsValid())
+	{
+		return;
+	}
+
+	TArray<Insights::FBaseTreeNodePtr> SelectedNodes;
+	for (FStatsNodePtr TimerPtr : TreeView->GetSelectedItems())
+	{
+		SelectedNodes.Add(TimerPtr);
+	}
+
+	if (SelectedNodes.Num() == 0)
+	{
+		return;
+	}
+
+	FString ClipboardText;
+
+	if (CurrentSorter.IsValid())
+	{
+		CurrentSorter->Sort(SelectedNodes, ColumnSortMode == EColumnSortMode::Ascending ? Insights::ESortMode::Ascending : Insights::ESortMode::Descending);
+	}
+
+	Table->GetVisibleColumnsData(SelectedNodes, ClipboardText);
+
+	if (ClipboardText.Len() > 0)
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*ClipboardText);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FReply SStatsView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	return CommandList->ProcessCommandBindings(InKeyEvent) == true ? FReply::Handled() : FReply::Unhandled();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

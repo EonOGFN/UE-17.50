@@ -3,10 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "NiagaraRendererProperties.h"
 #include "NiagaraCommon.h"
+#include "NiagaraRendererProperties.h"
 #include "Components/PointLightComponent.h"
+#include "Engine/EngineTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealType.h"
 #include "NiagaraComponentRendererProperties.generated.h"
 
 class FNiagaraEmitterInstance;
@@ -38,6 +40,12 @@ struct FNiagaraComponentPropertyBinding
 	UFunction* SetterFunction = nullptr;
 };
 
+struct FNiagaraPropertySetter
+{
+	UFunction* Function;
+	bool bIgnoreConversion = false;
+};
+
 UCLASS(editinlinenew, MinimalAPI, meta = (DisplayName = "Component Renderer"))
 class UNiagaraComponentRendererProperties : public UNiagaraRendererProperties
 {
@@ -45,6 +53,7 @@ public:
 	GENERATED_BODY()
 
 	UNiagaraComponentRendererProperties();
+	~UNiagaraComponentRendererProperties();
 
 	//UObject Interface
 	virtual void PostLoad() override;
@@ -64,7 +73,7 @@ public:
 
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
+	virtual void GetRendererFeedback(UNiagaraEmitter* InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
 	virtual const FSlateBrush* GetStackIcon() const override;
 	virtual FText GetWidgetDisplayName() const override;
 
@@ -89,6 +98,11 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering")
 	bool bAssignComponentsOnParticleID;
 
+	/** If true then new components can only be created on newly spawned particles. If a particle is not able to create a component on it's first frame (e.g. because the component
+	 * limit was reached) then it will be blocked from spawning a component on subsequent frames. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering", meta = (EditConition = "bAssignComponentsOnParticleID"))
+	bool bOnlyCreateComponentsOnParticleSpawn;
+
 #if WITH_EDITORONLY_DATA
 
 	/** If true then the editor visualization is enabled for the component; has no effect in-game. */
@@ -104,6 +118,8 @@ public:
 	UPROPERTY()
 	TArray<FNiagaraComponentPropertyBinding> PropertyBindings;
 
+	TMap<FName, FNiagaraPropertySetter> SetterFunctionMapping;
+
 	NIAGARA_API static bool IsConvertible(const FNiagaraTypeDefinition& SourceType, const FNiagaraTypeDefinition& TargetType);
 	NIAGARA_API static FNiagaraTypeDefinition ToNiagaraType(FProperty* Property);
 	static FNiagaraTypeDefinition GetFColorDef();
@@ -112,7 +128,7 @@ public:
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 
 protected:
-	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode) override;
+	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit = false) override;
 
 private:
 	static TArray<TWeakObjectPtr<UNiagaraComponentRendererProperties>> ComponentRendererPropertiesToDeferredInit;
@@ -121,4 +137,11 @@ private:
 	const UNiagaraEmitter* EmitterPtr;
 
 	void CreateTemplateComponent();
+
+	void UpdateSetterFunctions();
+
+	bool HasPropertyBinding(FName PropertyName) const;
+
+	/** Callback for whenever any blueprint components are reinstanced */
+	void OnObjectsReplacedCallback(const TMap<UObject*, UObject*>& ReplacementsMap);
 };

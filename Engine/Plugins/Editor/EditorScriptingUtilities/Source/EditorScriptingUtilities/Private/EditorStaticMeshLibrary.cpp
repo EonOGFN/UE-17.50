@@ -63,12 +63,12 @@ namespace InternalEditorMeshLibrary
 		TRACE_CPUPROFILER_EVENT_SCOPE(GenerateConvexCollision)
 
 		// If RenderData has not been computed yet, do it
-		if (!StaticMesh->RenderData)
+		if (!StaticMesh->GetRenderData())
 		{
 			StaticMesh->CacheDerivedData();
 		}
 
-		const FStaticMeshLODResources& LODModel = StaticMesh->RenderData->LODResources[0];
+		const FStaticMeshLODResources& LODModel = StaticMesh->GetRenderData()->LODResources[0];
 
 		// Make vertex buffer
 		int32 NumVerts = LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
@@ -103,7 +103,7 @@ namespace InternalEditorMeshLibrary
 		}
 
 		// Get the BodySetup we are going to put the collision into
-		UBodySetup* BodySetup = StaticMesh->BodySetup;
+		UBodySetup* BodySetup = StaticMesh->GetBodySetup();
 		if(BodySetup)
 		{
 			BodySetup->RemoveSimpleCollision();
@@ -112,7 +112,7 @@ namespace InternalEditorMeshLibrary
 		{
 			// Otherwise, create one here.
 			StaticMesh->CreateBodySetup();
-			BodySetup = StaticMesh->BodySetup;
+			BodySetup = StaticMesh->GetBodySetup();
 		}
 
 		// Run actual util to do the work (if we have some valid input)
@@ -158,7 +158,7 @@ int32 UEditorStaticMeshLibrary::SetLodsWithNotification(UStaticMesh* StaticMesh,
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return -1;
 	}
@@ -245,7 +245,7 @@ void UEditorStaticMeshLibrary::GetLodReductionSettings(const UStaticMesh* Static
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -273,7 +273,7 @@ void UEditorStaticMeshLibrary::SetLodReductionSettings(UStaticMesh* StaticMesh, 
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -321,7 +321,7 @@ void UEditorStaticMeshLibrary::GetLodBuildSettings(const UStaticMesh* StaticMesh
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -349,7 +349,7 @@ void UEditorStaticMeshLibrary::SetLodBuildSettings(UStaticMesh* StaticMesh, cons
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -397,7 +397,7 @@ int32 UEditorStaticMeshLibrary::ImportLOD(UStaticMesh* BaseStaticMesh, const int
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("StaticMesh ImportLOD: Cannot import or re-import when editor PIE is active."));
 		return INDEX_NONE;
@@ -451,7 +451,7 @@ bool UEditorStaticMeshLibrary::ReimportAllCustomLODs(UStaticMesh* StaticMesh)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("StaticMesh ReimportAllCustomLODs: Cannot import or re-import when editor PIE is active."));
 		return false;
@@ -494,7 +494,7 @@ int32 UEditorStaticMeshLibrary::SetLodFromStaticMesh(UStaticMesh* DestinationSta
 {
 	TGuardValue<bool> UnattendedScriptGuard( GIsRunningUnattendedScript, true );
 
-	if ( !EditorScriptingUtils::CheckIfInEditorAndPIE() )
+	if ( !EditorScriptingUtils::IsInEditorAndNotPlaying() )
 	{
 		return -1;
 	}
@@ -612,7 +612,7 @@ int32 UEditorStaticMeshLibrary::SetLodFromStaticMesh(UStaticMesh* DestinationSta
 	{
 		auto FindMaterialIndex = []( UStaticMesh* StaticMesh, const UMaterialInterface* Material ) -> int32
 		{
-			for ( int32 MaterialIndex = 0; MaterialIndex < StaticMesh->StaticMaterials.Num(); ++MaterialIndex )
+			for ( int32 MaterialIndex = 0; MaterialIndex < StaticMesh->GetStaticMaterials().Num(); ++MaterialIndex )
 			{
 				if ( StaticMesh->GetMaterial( MaterialIndex ) == Material )
 				{
@@ -625,7 +625,7 @@ int32 UEditorStaticMeshLibrary::SetLodFromStaticMesh(UStaticMesh* DestinationSta
 
 		TMap< int32, int32 > LodSectionMaterialMapping; // LOD section index -> destination material index
 
-		int32 NumDestinationMaterial = DestinationStaticMesh->StaticMaterials.Num();
+		int32 NumDestinationMaterial = DestinationStaticMesh->GetStaticMaterials().Num();
 
 		const int32 SourceLodNumSections = SourceStaticMesh->GetSectionInfoMap().GetSectionNumber( SourceLodIndex );
 
@@ -661,11 +661,11 @@ int32 UEditorStaticMeshLibrary::SetLodFromStaticMesh(UStaticMesh* DestinationSta
 			const int32 SourceMaterialIndex = SourceSectionInfo.MaterialIndex;
 			const int32 DestinationMaterialIndex = It->Value;
 
-			if ( !DestinationStaticMesh->StaticMaterials.IsValidIndex( DestinationMaterialIndex ) )
+			if ( !DestinationStaticMesh->GetStaticMaterials().IsValidIndex( DestinationMaterialIndex ) )
 			{
-				DestinationStaticMesh->StaticMaterials.Add( SourceStaticMesh->StaticMaterials[ SourceSectionInfo.MaterialIndex ] );
+				DestinationStaticMesh->GetStaticMaterials().Add( SourceStaticMesh->GetStaticMaterials()[ SourceSectionInfo.MaterialIndex ] );
 
-				ensure( DestinationStaticMesh->StaticMaterials.Num() == DestinationMaterialIndex + 1 ); // We assume that we are not creating holes in StaticMaterials
+				ensure( DestinationStaticMesh->GetStaticMaterials().Num() == DestinationMaterialIndex + 1 ); // We assume that we are not creating holes in StaticMaterials
 			}
 
 			FMeshSectionInfo DestinationSectionInfo = SourceSectionInfo;
@@ -696,7 +696,7 @@ int32 UEditorStaticMeshLibrary::GetLodCount(UStaticMesh* StaticMesh)
 		return -1;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return -1;
 	}
@@ -714,7 +714,7 @@ bool UEditorStaticMeshLibrary::RemoveLods(UStaticMesh* StaticMesh)
 		return false;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -756,7 +756,7 @@ TArray<float> UEditorStaticMeshLibrary::GetLodScreenSizes(UStaticMesh* StaticMes
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
 	TArray<float> ScreenSizes;
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return ScreenSizes;
 	}
@@ -769,9 +769,9 @@ TArray<float> UEditorStaticMeshLibrary::GetLodScreenSizes(UStaticMesh* StaticMes
 
 	for (int i = 0; i < StaticMesh->GetNumLODs(); i++)
 	{
-		if (StaticMesh->RenderData.IsValid())
+		if (StaticMesh->GetRenderData())
 		{
-			float CurScreenSize = StaticMesh->RenderData->ScreenSize[i].Default;
+			float CurScreenSize = StaticMesh->GetRenderData()->ScreenSize[i].Default;
 			ScreenSizes.Add(CurScreenSize);
 		}
 		else
@@ -794,7 +794,7 @@ int32 UEditorStaticMeshLibrary::AddSimpleCollisionsWithNotification(UStaticMesh*
 		return INDEX_NONE;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return INDEX_NONE;
 	}
@@ -884,12 +884,12 @@ int32 UEditorStaticMeshLibrary::GetSimpleCollisionCount(UStaticMesh* StaticMesh)
 		return -1;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return -1;
 	}
 
-	UBodySetup* BodySetup = StaticMesh->BodySetup;
+	UBodySetup* BodySetup = StaticMesh->GetBodySetup();
 	if (BodySetup == nullptr)
 	{
 		return 0;
@@ -912,14 +912,14 @@ TEnumAsByte<ECollisionTraceFlag> UEditorStaticMeshLibrary::GetCollisionComplexit
 		return ECollisionTraceFlag::CTF_UseDefault;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return ECollisionTraceFlag::CTF_UseDefault;
 	}
 
-	if (StaticMesh->BodySetup)
+	if (StaticMesh->GetBodySetup())
 	{
-		return StaticMesh->BodySetup->CollisionTraceFlag;
+		return StaticMesh->GetBodySetup()->CollisionTraceFlag;
 	}
 
 	return ECollisionTraceFlag::CTF_UseDefault;
@@ -935,12 +935,12 @@ int32 UEditorStaticMeshLibrary::GetConvexCollisionCount(UStaticMesh* StaticMesh)
 		return -1;
 	}
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return -1;
 	}
 
-	UBodySetup* BodySetup = StaticMesh->BodySetup;
+	UBodySetup* BodySetup = StaticMesh->GetBodySetup();
 	if (BodySetup == nullptr)
 	{
 		return 0;
@@ -955,7 +955,7 @@ bool UEditorStaticMeshLibrary::BulkSetConvexDecompositionCollisionsWithNotificat
 
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -975,14 +975,14 @@ bool UEditorStaticMeshLibrary::BulkSetConvexDecompositionCollisionsWithNotificat
 		return false;
 	}
 
-	if (Algo::AnyOf(StaticMeshes, [](const UStaticMesh* StaticMesh) { return StaticMesh->RenderData == nullptr; }))
+	if (Algo::AnyOf(StaticMeshes, [](const UStaticMesh* StaticMesh) { return StaticMesh->GetRenderData() == nullptr; }))
 	{
 		UStaticMesh::BatchBuild(StaticMeshes);
 	}
 
 	Algo::SortBy(
 		StaticMeshes,
-		[](const UStaticMesh* StaticMesh){ return StaticMesh->RenderData->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices(); },
+		[](const UStaticMesh* StaticMesh){ return StaticMesh->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices(); },
 		TGreater<>()
 	);
 
@@ -998,15 +998,15 @@ bool UEditorStaticMeshLibrary::BulkSetConvexDecompositionCollisionsWithNotificat
 			EditedStaticMeshes.Add(StaticMesh);
 		}
 
-		if (StaticMesh->BodySetup)
+		if (StaticMesh->GetBodySetup())
 		{
 			if (bApplyChanges)
 			{
-				StaticMesh->BodySetup->Modify();
+				StaticMesh->GetBodySetup()->Modify();
 			}
 
 			// Remove simple collisions
-			StaticMesh->BodySetup->RemoveSimpleCollision();
+			StaticMesh->GetBodySetup()->RemoveSimpleCollision();
 		}
 	}
 
@@ -1076,7 +1076,7 @@ bool UEditorStaticMeshLibrary::RemoveCollisionsWithNotification(UStaticMesh* Sta
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1087,7 +1087,7 @@ bool UEditorStaticMeshLibrary::RemoveCollisionsWithNotification(UStaticMesh* Sta
 		return false;
 	}
 
-	if (StaticMesh->BodySetup == nullptr)
+	if (StaticMesh->GetBodySetup() == nullptr)
 	{
 		UE_LOG(LogEditorScripting, Log, TEXT("RemoveCollisions: No collision set up. Nothing to do."));
 		return true;
@@ -1104,11 +1104,11 @@ bool UEditorStaticMeshLibrary::RemoveCollisionsWithNotification(UStaticMesh* Sta
 
 	if(bApplyChanges)
 	{
-		StaticMesh->BodySetup->Modify();
+		StaticMesh->GetBodySetup()->Modify();
 	}
 
 	// Remove simple collisions
-	StaticMesh->BodySetup->RemoveSimpleCollision();
+	StaticMesh->GetBodySetup()->RemoveSimpleCollision();
 
 	// refresh collision change back to static mesh components
 	RefreshCollisionChange(*StaticMesh);
@@ -1132,7 +1132,7 @@ void UEditorStaticMeshLibrary::EnableSectionCollision(UStaticMesh* StaticMesh, b
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -1170,7 +1170,7 @@ bool UEditorStaticMeshLibrary::IsSectionCollisionEnabled(UStaticMesh* StaticMesh
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1201,7 +1201,7 @@ void UEditorStaticMeshLibrary::EnableSectionCastShadow(UStaticMesh* StaticMesh, 
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -1239,7 +1239,7 @@ bool UEditorStaticMeshLibrary::HasVertexColors(UStaticMesh* StaticMesh)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1276,7 +1276,7 @@ bool UEditorStaticMeshLibrary::HasInstanceVertexColors(UStaticMeshComponent* Sta
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1302,7 +1302,7 @@ bool UEditorStaticMeshLibrary::SetGenerateLightmapUVs(UStaticMesh* StaticMesh, b
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1350,7 +1350,7 @@ int32 UEditorStaticMeshLibrary::GetNumberVerts(UStaticMesh* StaticMesh, int32 LO
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return 0;
 	}
@@ -1368,7 +1368,7 @@ int32 UEditorStaticMeshLibrary::GetNumberMaterials(UStaticMesh* StaticMesh)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return 0;
 	}
@@ -1379,14 +1379,14 @@ int32 UEditorStaticMeshLibrary::GetNumberMaterials(UStaticMesh* StaticMesh)
 		return 0;
 	}
 
-	return StaticMesh->StaticMaterials.Num();
+	return StaticMesh->GetStaticMaterials().Num();
 }
 
 void UEditorStaticMeshLibrary::SetAllowCPUAccess(UStaticMesh* StaticMesh, bool bAllowCPUAccess)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -1406,7 +1406,7 @@ int32 UEditorStaticMeshLibrary::GetNumUVChannels(UStaticMesh* StaticMesh, int32 
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return 0;
 	}
@@ -1430,7 +1430,7 @@ bool UEditorStaticMeshLibrary::AddUVChannel(UStaticMesh* StaticMesh, int32 LODIn
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1460,7 +1460,7 @@ bool UEditorStaticMeshLibrary::InsertUVChannel(UStaticMesh* StaticMesh, int32 LO
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1497,7 +1497,7 @@ bool UEditorStaticMeshLibrary::RemoveUVChannel(UStaticMesh* StaticMesh, int32 LO
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1534,7 +1534,7 @@ bool UEditorStaticMeshLibrary::GeneratePlanarUVChannel(UStaticMesh* StaticMesh, 
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1558,7 +1558,7 @@ bool UEditorStaticMeshLibrary::GenerateCylindricalUVChannel(UStaticMesh* StaticM
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -1582,7 +1582,7 @@ bool UEditorStaticMeshLibrary::GenerateBoxUVChannel(UStaticMesh* StaticMesh, int
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}

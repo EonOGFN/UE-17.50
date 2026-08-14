@@ -205,6 +205,7 @@ public:
 	virtual int32 RegisterCurrentScene(FSceneInterface* Scene) override;
 	virtual int32 GetCurrentSceneIndex() const override;
 	virtual void ClearScenes() override;
+	EPixelFormat GetSlateRecommendedColorFormat() override;
 	virtual void DestroyCachedFastPathRenderingData(struct FSlateCachedFastPathRenderingData* InRenderingData) override;
 	virtual void DestroyCachedFastPathElementData(FSlateCachedElementData* InCachedElementData) override;
 	virtual void BeginFrame() const override;
@@ -231,7 +232,7 @@ public:
 	 */
 	virtual void InvalidateAllViewports() override;
 
-	virtual void PrepareToTakeScreenshot(const FIntRect& Rect, TArray<FColor>* OutColorData) override;
+	virtual void PrepareToTakeScreenshot(const FIntRect& Rect, TArray<FColor>* OutColorData, SWindow* ScreenshotWindow) override;
 
 	virtual void SetWindowRenderTarget(const SWindow& Window, class IViewportRenderTargetProvider* Provider) override;
 
@@ -296,6 +297,7 @@ private:
 
 	bool bTakingAScreenShot;
 	FIntRect ScreenshotRect;
+	FViewportInfo* ScreenshotViewportInfo;
 	TArray<FColor>* OutScreenshotData;
 
 	/** These are state management variables for Scenes on the game thread. A similar copy exists on the RHI Rendering Policy for the rendering thread.*/

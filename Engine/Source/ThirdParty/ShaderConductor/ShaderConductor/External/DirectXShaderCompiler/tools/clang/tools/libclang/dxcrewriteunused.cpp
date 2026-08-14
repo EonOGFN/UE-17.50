@@ -96,6 +96,15 @@ public:
     }
     return true;
   }
+  bool VisitCXXMemberCallExpr(CXXMemberCallExpr *expr) {
+    if (FunctionDecl *fnDecl =
+            dyn_cast_or_null<FunctionDecl>(expr->getCalleeDecl())) {
+	  if (!m_visitedFunctions.count(fnDecl)) {
+	    m_pendingFunctions.push_back(fnDecl);
+	  }
+    }
+    return true;
+  }
 };
 
 static void raw_string_ostream_to_CoString(raw_string_ostream &o, _Outptr_result_z_ LPSTR *pResult) {
@@ -133,6 +142,9 @@ void SetupCompilerForRewrite(CompilerInstance &compiler,
   compiler.getLangOpts().UseMinPrecision = !opts.Enable16BitTypes;
   compiler.getLangOpts().EnableDX9CompatMode = opts.EnableDX9CompatMode;
   compiler.getLangOpts().EnableFXCCompatMode = opts.EnableFXCCompatMode;
+  // UE Change Begin: Enable Vulkan specific features in rewriter.
+  compiler.getLangOpts().SPIRV = opts.GenSPIRV;
+  // UE Change End: Enable Vulkan specific features in rewriter.
 
   PreprocessorOptions &PPOpts = compiler.getPreprocessorOpts();
   if (rewrite != nullptr) {
@@ -553,6 +565,9 @@ HRESULT DoRewriteUnused(_In_ DxcLangExtensionsHelper *pHelper,
 
   hlsl::options::DxcOpts opts;
   opts.HLSLVersion = 2015;
+  // UE Change Begin: Enable Vulkan specific features in rewriter.
+  opts.GenSPIRV = true;
+  // UE Change End: Enable Vulkan specific features in rewriter.
 
   SetupCompilerForRewrite(compiler, pHelper, pFileName, diagPrinter.get(), pRemap, opts, pDefines);
 
@@ -808,6 +823,9 @@ public:
 
       hlsl::options::DxcOpts opts;
       opts.HLSLVersion = 2015;
+      // UE Change Begin: Enable Vulkan specific features in rewriter.
+      opts.GenSPIRV = true;
+      // UE Change End: Enable Vulkan specific features in rewriter.
 
       std::string errors;
       std::string rewrite;
@@ -861,6 +879,9 @@ public:
 
       hlsl::options::DxcOpts opts;
       opts.HLSLVersion = 2015;
+      // UE Change Begin: Enable Vulkan specific features in rewriter.
+      opts.GenSPIRV = true;
+      // UE Change End: Enable Vulkan specific features in rewriter.
 
       std::string errors;
       std::string rewrite;

@@ -1048,6 +1048,8 @@ void FBodyInstance::UpdatePhysicsFilterData()
 		{
 			PhysScene->UpdateActorInAccelerationStructure(Actor);
 		}
+		// Always wake actors up when collision filters change
+		FPhysicsInterface::WakeUp_AssumesLocked(Actor);
 #endif
 	});
 
@@ -1154,7 +1156,8 @@ void FInitBodiesHelperBase::CreateActor_AssumesLocked(FBodyInstance* Instance, c
 
 	FActorCreationParams ActorParams;
 	ActorParams.InitialTM = Transform;
-	ActorParams.BodyInstance = Instance;
+	ActorParams.bSimulatePhysics = Instance->ShouldInstanceSimulatingPhysics();
+	ActorParams.bStartAwake = Instance->bStartAwake;
 #if USE_BODYINSTANCE_DEBUG_NAMES
 	ActorParams.DebugName = Instance->CharDebugName.IsValid() ? Instance->CharDebugName->GetData() : nullptr;
 #endif
@@ -1672,8 +1675,10 @@ void FBodyInstance::UnWeld(FBodyInstance* TheirBI)
 		const int32 NumSyncShapes = GetAllShapes_AssumesLocked(Shapes);
 		const int32 NumTotalShapes = Shapes.Num();
 
-		for(FPhysicsShapeHandle& Shape : Shapes)
+		// reversed since FPhysicsInterface::DetachShape is removing shapes
+		for (int Idx = Shapes.Num()-1; Idx >=0; Idx--)
 		{
+			FPhysicsShapeHandle& Shape = Shapes[Idx];
 			const FBodyInstance* BI = GetOriginalBodyInstance(Shape);
 			if (TheirBI == BI)
 			{
@@ -2047,11 +2052,42 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 					// PhysX supports translation, we currently do not.
 					CHAOS_ENSURE(RelativeTM.GetTranslation() == FVector(0, 0, 0));
 
+					auto CreateTriGeomInstanced = [](auto InObject, TArray<TUniquePtr<FImplicitObject>>& OutGeoArray)
+					{
+						TUniquePtr<TImplicitObjectInstanced<FTriangleMeshImplicitObject>> NewTriangleMesh = MakeUnique<TImplicitObjectInstanced<FTriangleMeshImplicitObject>>(InObject);
+						OutGeoArray.Emplace(MoveTemp(NewTriangleMesh));
+					};
+
+					auto CreateTriGeomScaled = [](auto InObject, TArray<TUniquePtr<FImplicitObject>>& OutGeoArray, const FVec3& InScale)
+					{
+						TUniquePtr<TImplicitObjectScaled<FTriangleMeshImplicitObject>> NewTriangleMesh = MakeUnique<TImplicitObjectScaled<FTriangleMeshImplicitObject>>(MoveTemp(InObject), InScale);
+						OutGeoArray.Emplace(MoveTemp(NewTriangleMesh));
+					};
+
+					auto CreateTriGeomAuto = [&CreateTriGeomInstanced, &CreateTriGeomScaled](auto InObject, TArray<TUniquePtr<FImplicitObject>>& OutGeoArray, const FVec3& InScale)
+					{
+						if(InScale == FVec3(1.0f, 1.0f, 1.0f))
+						{
+							CreateTriGeomInstanced(InObject, OutGeoArray);
+						}
+						else
+						{
+							CreateTriGeomScaled(InObject, OutGeoArray, InScale);
+						}
+					};
+
 					TSharedPtr<FTriangleMeshImplicitObject, ESPMode::ThreadSafe> InnerTriangleMesh = nullptr;
 					if (IsScaled(ImplicitType))
 					{
 						const TImplicitObjectScaled<FTriangleMeshImplicitObject>* ScaledTriangleMesh = (static_cast<const TImplicitObjectScaled<FTriangleMeshImplicitObject>*>(&ImplicitObject));
 						InnerTriangleMesh = ScaledTriangleMesh->GetSharedObject();
+
+						if(!InnerTriangleMesh)
+						{
+							// While a body setup will instantiate the triangle mesh as a shared geometry, other methods might not (e.g. retopologized landscape)
+							TImplicitObjectScaled<FTriangleMeshImplicitObject>::ObjectType InnerObject = ScaledTriangleMesh->Object();
+							CreateTriGeomScaled(ScaledTriangleMesh->Object(), NewGeometry, AdjustedScale3D);
+						}
 					}
 					else if (IsInstanced(ImplicitType))
 					{
@@ -2064,17 +2100,10 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 						break;
 					}
 
-					if (AdjustedScale3D == FVec3(1.0f, 1.0f, 1.0f))
+					if(InnerTriangleMesh)
 					{
-						TUniquePtr<TImplicitObjectInstanced<FTriangleMeshImplicitObject>> NewTriangleMesh = MakeUnique<TImplicitObjectInstanced<FTriangleMeshImplicitObject>>(InnerTriangleMesh);
-						NewGeometry.Emplace(MoveTemp(NewTriangleMesh));
+						CreateTriGeomAuto(MoveTempIfPossible(InnerTriangleMesh), NewGeometry, AdjustedScale3D);
 					}
-					else
-					{
-						TUniquePtr<TImplicitObjectScaled<FTriangleMeshImplicitObject>> NewTriangleMesh = MakeUnique<TImplicitObjectScaled<FTriangleMeshImplicitObject>>(MoveTemp(InnerTriangleMesh), AdjustedScale3D);
-						NewGeometry.Emplace(MoveTemp(NewTriangleMesh));
-					}
-
 
 					bSuccess = true;
 
@@ -3239,7 +3268,6 @@ void FBodyInstance::SetLinearVelocity(const FVector& NewVel, bool bAddToCurrent,
 	});
 }
 
-/** Note NewAngVel is in degrees per second */
 void FBodyInstance::SetAngularVelocityInRadians(const FVector& NewAngVel, bool bAddToCurrent, bool bAutoWake)
 {
 	FPhysicsCommand::ExecuteWrite(ActorHandle, [&](const FPhysicsActorHandle& Actor)
@@ -3353,6 +3381,19 @@ void FBodyInstance::ClearForces(bool bAllowSubstepping)
 			}
 		}
 	});
+}
+
+void FBodyInstance::SetOneWayInteraction(bool InOneWayInteraction /*= true*/)
+{
+#if WITH_CHAOS
+	FPhysicsCommand::ExecuteWrite(ActorHandle, [&](const FPhysicsActorHandle& Actor)
+		{
+			if (FPhysicsInterface::IsRigidBody(Actor) && !IsRigidBodyKinematic_AssumesLocked(Actor))
+			{
+				FPhysicsInterface::SetOneWayInteraction_AssumesLocked(Actor, InOneWayInteraction);
+			}
+		});
+#endif
 }
 
 void FBodyInstance::AddTorqueInRadians(const FVector& Torque, bool bAllowSubstepping, bool bAccelChange)
@@ -3631,6 +3672,16 @@ bool FBodyInstance::OverlapTest(const FVector& Position, const FQuat& Rotation, 
 		bHasOverlap = FPhysicsInterface::Overlap_Geom(this, CollisionShape, Rotation, GeomTransform, OutMTD);
 	});
 
+	return bHasOverlap;
+}
+
+bool FBodyInstance::OverlapTest_AssumesLocked(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD /*= nullptr*/) const
+{
+	SCOPE_CYCLE_COUNTER(STAT_Collision_SceneQueryTotal);
+	SCOPE_CYCLE_COUNTER(STAT_Collision_FBodyInstance_OverlapTest);
+
+	FTransform GeomTransform(Rotation, Position);
+	bool bHasOverlap = FPhysicsInterface::Overlap_Geom(this, CollisionShape, Rotation, GeomTransform, OutMTD);
 	return bHasOverlap;
 }
 

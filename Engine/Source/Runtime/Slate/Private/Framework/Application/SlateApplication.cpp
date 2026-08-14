@@ -23,6 +23,7 @@
 #include "Widgets/SToolTip.h"
 #include "Widgets/SViewport.h"
 #include "Framework/Application/SWindowTitleBar.h"
+#include "Input/Events.h"
 #include "Input/HittestGrid.h"
 #include "HAL/PlatformApplicationMisc.h"
 #if WITH_ACCESSIBILITY
@@ -41,6 +42,7 @@
 #include "Math/UnitConversion.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Trace/SlateTrace.h"
 
 #ifndef SLATE_HAS_WIDGET_REFLECTOR
 	#define SLATE_HAS_WIDGET_REFLECTOR !(UE_BUILD_TEST || UE_BUILD_SHIPPING) && PLATFORM_DESKTOP
@@ -475,6 +477,9 @@ namespace SlateDefs
 
 	// How far tool tips should be pushed out from a force field border, in pixels
 	static const FVector2D ToolTipOffsetFromForceField( 4.0f, 3.0f );
+
+	// Empty set of Touch Key
+	static TSet<FKey> EmptyTouchKeySet;
 }
 
 
@@ -791,7 +796,8 @@ FSlateApplication::FSlateApplication()
 	{
 		CVarGlobalInvalidation->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([this](IConsoleVariable* Variable)
 		{
-			OnGlobalInvalidationToggledEvent.Broadcast(GSlateEnableGlobalInvalidation);
+			UE_TRACE_SLATE_BOOKMARK(TEXT("GlobalInvalidationChanged"));
+			OnGlobalInvalidationToggledEvent.Broadcast(GSlateEnableGlobalInvalidation != 0);
 		}));
 	}
 }
@@ -943,6 +949,14 @@ void FSlateApplication::UsePlatformCursorForCursorUser(bool bUsePlatformCursor)
 				SlateUser->OverrideCursor(bUsePlatformCursor ? PlatformApplication->Cursor : MakeShared<FFauxSlateCursor>());
 			}
 		}
+	}
+}
+
+void FSlateApplication::SetPlatformCursorVisibility(bool bNewVisibility)
+{
+	if (PlatformApplication && PlatformApplication->Cursor)
+	{
+		PlatformApplication->Cursor->SetType(bNewVisibility ? EMouseCursor::Default : EMouseCursor::None);
 	}
 }
 
@@ -1577,6 +1591,8 @@ void FSlateApplication::TickAndDrawWidgets(float DeltaTime)
 		GetAccessibleMessageHandler()->ProcessAccessibleTasks();
 	}
 #endif
+
+	UE_TRACE_SLATE_APPLICATION_TICK_AND_DRAW_WIDGETS(GetDeltaTime());
 }
 
 void FSlateApplication::PumpMessages()
@@ -1864,7 +1880,7 @@ void FSlateApplication::AddModalWindow( TSharedRef<SWindow> InSlateWindow, const
 		}
 		else
 		{
-			FDebug::DumpStackTraceToLog();
+			FDebug::DumpStackTraceToLog(ELogVerbosity::Error);
 		}
 		return;
 	}
@@ -2964,7 +2980,7 @@ void FSlateApplication::ProcessExternalReply(const FWidgetPath& CurrentEventPath
 			PointerIndex,
 			SlateUser->GetCursorPosition(),
 			SlateUser->GetPreviousCursorPosition(),
-			bIsPrimaryUser ? PressedMouseButtons : TSet<FKey>(),
+			bIsPrimaryUser ? PressedMouseButtons : SlateDefs::EmptyTouchKeySet,
 			EKeys::Invalid,
 			0,
 			bIsPrimaryUser ? PlatformApplication->GetModifierKeys() : FModifierKeysState()
@@ -3385,6 +3401,11 @@ void FSlateApplication::EnterDebuggingMode()
 	GFirstFrameIntraFrameDebugging = true;
 #endif	//WITH_EDITORONLY_DATA
 
+	//Disable GPU Profiler during BluePrint Debugging to prevent leaking memory.
+	IConsoleVariable* CvarMaxQueriesPerFrame = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUStatsMaxQueriesPerFrame"));
+	int MaxQueriesPerFrame = CvarMaxQueriesPerFrame->GetInt();
+	CvarMaxQueriesPerFrame->Set(0);
+
 	// Tick slate from here in the event that we should not return until the modal window is closed.
 	while (!bRequestLeaveDebugMode)
 	{
@@ -3409,6 +3430,8 @@ void FSlateApplication::EnterDebuggingMode()
 #endif	//WITH_EDITORONLY_DATA
 	}
 
+	CvarMaxQueriesPerFrame->Set(MaxQueriesPerFrame);
+	
 	Renderer->BeginFrame();
 	bRequestLeaveDebugMode = false;
 	
@@ -3804,13 +3827,13 @@ bool FSlateApplication::TakeScreenshot(const TSharedRef<SWidget>& Widget, const 
 	ScreenshotRect.Max.X += ( Position.X - WindowPosition.X );
 	ScreenshotRect.Max.Y += ( Position.Y - WindowPosition.Y );
 
-	Renderer->PrepareToTakeScreenshot(ScreenshotRect, &OutColorData);
+	Renderer->PrepareToTakeScreenshot(ScreenshotRect, &OutColorData, WidgetWindow.Get());
 	PrivateDrawWindows(WidgetWindow);
 
 	OutSize.X = ScreenshotRect.Size().X;
 	OutSize.Y = ScreenshotRect.Size().Y;
 
-	return (OutSize.X != 0 && OutSize.Y != 0);
+	return (OutSize.X != 0 && OutSize.Y != 0 && OutColorData.Num() >= OutSize.X * OutSize.Y);
 }
 
 TSharedRef<FSlateVirtualUserHandle> FSlateApplication::FindOrCreateVirtualUser(int32 VirtualUserIndex)
@@ -5565,9 +5588,10 @@ bool FSlateApplication::ProcessMouseMoveEvent( const FPointerEvent& MouseEvent, 
 
 	// When the event came from the OS, we are guaranteed to be over a slate window.
 	// Otherwise, we are synthesizing a MouseMove ourselves, and must verify that the
-	// cursor is indeed over a Slate window.
-	const bool bOverSlateWindow = !bIsSynthetic || IsActive() || PlatformApplication->IsCursorDirectlyOverSlateWindow();
-	
+	// cursor is indeed over a Slate window.  Synthesized device (gamepad) input while
+	// the application is inactive also needs to populate the widget path.
+	const bool bOverSlateWindow = !bIsSynthetic || IsActive() || PlatformApplication->IsCursorDirectlyOverSlateWindow() || GetHandleDeviceInputWhenApplicationNotActive();
+   
 	FWidgetPath WidgetsUnderCursor = bOverSlateWindow
 		? LocateWindowUnderMouse(MouseEvent.GetScreenSpacePosition(), GetInteractiveTopLevelWindows(), false, MouseEvent.GetUserIndex())
 		: FWidgetPath();

@@ -395,6 +395,11 @@ void FStaticMeshInstanceBuffer::InitRHI()
 		if (InstanceData->GetNumCustomDataFloats() > 0)
 		{
 			CreateVertexBuffer(InstanceData->GetCustomDataResourceArray(), AccessFlags | BUF_ShaderResource, 4, PF_R32_FLOAT, InstanceCustomDataBuffer.VertexBufferRHI, InstanceCustomDataSRV);
+			// Make sure we still create custom data SRV on platforms that do not support/use MVF 
+			if (InstanceCustomDataSRV == nullptr)
+			{
+				InstanceCustomDataSRV = RHICreateShaderResourceView(InstanceCustomDataBuffer.VertexBufferRHI, 4, PF_R32_FLOAT);
+			}
 		}
 		else
 		{
@@ -460,11 +465,14 @@ void FStaticMeshInstanceBuffer::CreateVertexBuffer(FResourceArrayInterface* InRe
 
 void FStaticMeshInstanceBuffer::BindInstanceVertexBuffer(const class FVertexFactory* VertexFactory, FInstancedStaticMeshDataType& InstancedStaticMeshData) const
 {
-	if (InstanceData->GetNumInstances() && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
+	if (InstanceData->GetNumInstances())
 	{
-		check(InstanceOriginSRV);
-		check(InstanceTransformSRV);
-		check(InstanceLightmapSRV);
+		if (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
+		{
+			check(InstanceOriginSRV);
+			check(InstanceTransformSRV);
+			check(InstanceLightmapSRV);
+		}
 		check(InstanceCustomDataSRV); // Should not be nullptr, but can be assigned a dummy buffer
 	}
 
@@ -881,7 +889,6 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_InstancedStaticMeshSceneProxy_GetMeshElements);
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	const bool bSelectionRenderEnabled = GIsEditor && ViewFamily.EngineShowFlags.Selection;
 
 	// If the first pass rendered selected instances only, we need to render the deselected instances in a second pass
@@ -910,7 +917,7 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 			for (int32 SelectionGroupIndex = 0; SelectionGroupIndex < NumSelectionGroups; SelectionGroupIndex++)
 			{
 				const int32 LODIndex = GetLOD(View);
-				const FStaticMeshLODResources& LODModel = StaticMesh->RenderData->LODResources[LODIndex];
+				const FStaticMeshLODResources& LODModel = StaticMesh->GetRenderData()->LODResources[LODIndex];
 
 				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 				{
@@ -945,7 +952,6 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 			}
 		}
 	}
-#endif
 }
 
 int32 FInstancedStaticMeshSceneProxy::CollectOccluderElements(FOccluderElementsCollector& Collector) const
@@ -994,7 +1000,7 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 	}
 
 	// Copy the parameters for LOD - all instances
-	UserData_AllInstances.MeshRenderData = InComponent->GetStaticMesh()->RenderData.Get();
+	UserData_AllInstances.MeshRenderData = InComponent->GetStaticMesh()->GetRenderData();
 	UserData_AllInstances.StartCullDistance = InComponent->InstanceStartCullDistance;
 	UserData_AllInstances.EndCullDistance = InComponent->InstanceEndCullDistance;
 	UserData_AllInstances.InstancingOffset = InComponent->GetStaticMesh()->GetBoundingBox().GetCenter();
@@ -1187,32 +1193,29 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			{
 				const uint32 InstanceIdx = Node.Instance;
 
-				if (InstancedRenderData.Component->PerInstanceSMData.IsValidIndex(InstanceIdx))
+				FVector InstanceLocation = Node.Center;
+				FVector VToInstanceCenter = Context.ReferenceView->ViewLocation - InstanceLocation;
+				float DistanceToInstanceCenter = VToInstanceCenter.Size();
+				float InstanceRadius = Node.Radius;
+				float DistanceToInstanceStart = DistanceToInstanceCenter - InstanceRadius;
+
+				// Cull instance based on distance
+				if (DistanceToInstanceStart > BVHCullRadius && ApplyGeneralCulling)
+					continue;
+
+				// Special culling for small scale objects
+				if (InstanceRadius < BVHLowScaleThreshold && ApplyLowScaleCulling)
 				{
-					FVector InstanceLocation = Node.Center;
-					FVector VToInstanceCenter = Context.ReferenceView->ViewLocation - InstanceLocation;
-					float DistanceToInstanceCenter = VToInstanceCenter.Size();
-					float InstanceRadius = Node.Radius;
-					float DistanceToInstanceStart = DistanceToInstanceCenter - InstanceRadius;
-
-					// Cull instance based on distance
-					if (DistanceToInstanceStart > BVHCullRadius && ApplyGeneralCulling)
+					if (DistanceToInstanceStart > BVHLowScaleRadius)
 						continue;
+				}
 
-					// Special culling for small scale objects
-					if (InstanceRadius < BVHLowScaleThreshold && ApplyLowScaleCulling)
-					{
-						if (DistanceToInstanceStart > BVHLowScaleRadius)
-							continue;
-					}
+				FMatrix Transform;
+				InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIdx, Transform);
+				Transform.M[3][3] = 1.0f;
+				FMatrix InstanceTransform = Transform * GetLocalToWorld();
 
-					FMatrix Transform;
-					InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIdx, Transform);
-					Transform.M[3][3] = 1.0f;
-					FMatrix InstanceTransform = Transform * GetLocalToWorld();
-
-					RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
-                }
+				RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
 			}
 		}
 	}
@@ -1221,15 +1224,12 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		// No culling
 		for (int32 InstanceIdx = 0; InstanceIdx < InstanceCount; ++InstanceIdx)
 		{
-			if (InstancedRenderData.Component->PerInstanceSMData.IsValidIndex(InstanceIdx))
-			{
-				FMatrix Transform;
-				InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIdx, Transform);
-				Transform.M[3][3] = 1.0f;
-				FMatrix InstanceTransform = Transform * GetLocalToWorld();
+			FMatrix Transform;
+			InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIdx, Transform);
+			Transform.M[3][3] = 1.0f;
+			FMatrix InstanceTransform = Transform * GetLocalToWorld();
 
-				RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
-			}
+			RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
 		}
 	}
 
@@ -1869,7 +1869,7 @@ void UInstancedStaticMeshComponent::GetStaticLightingInfo(FStaticLightingPrimiti
 
 		for (int32 LODIndex = 0; LODIndex < NumLODs; LODIndex++)
 		{
-			const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->RenderData->LODResources[LODIndex];
+			const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
 
 			for (int32 InstanceIndex = 0; InstanceIndex < PerInstanceSMData.Num(); InstanceIndex++)
 			{
@@ -2973,10 +2973,10 @@ void UInstancedStaticMeshComponent::PartialNavigationUpdate(int32 InstanceIdx)
 
 bool UInstancedStaticMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const
 {
-	if (GetStaticMesh() && GetStaticMesh()->NavCollision)
+	if (GetStaticMesh() && GetStaticMesh()->GetNavCollision())
 	{
-		UNavCollisionBase* NavCollision = GetStaticMesh()->NavCollision;
-		if (GetStaticMesh()->NavCollision->IsDynamicObstacle())
+		UNavCollisionBase* NavCollision = GetStaticMesh()->GetNavCollision();
+		if (NavCollision->IsDynamicObstacle())
 		{
 			return false;
 		}
@@ -2991,7 +2991,7 @@ bool UInstancedStaticMeshComponent::DoCustomNavigableGeometryExport(FNavigableGe
 		}
 		else
 		{
-			UBodySetup* BodySetup = GetStaticMesh()->BodySetup;
+			UBodySetup* BodySetup = GetStaticMesh()->GetBodySetup();
 			if (BodySetup)
 			{
 				GeomExport.ExportRigidBodySetup(*BodySetup, FTransform::Identity);
@@ -3008,9 +3008,9 @@ bool UInstancedStaticMeshComponent::DoCustomNavigableGeometryExport(FNavigableGe
 
 void UInstancedStaticMeshComponent::GetNavigationData(FNavigationRelevantData& Data) const
 {
-	if (GetStaticMesh() && GetStaticMesh()->NavCollision)
+	if (GetStaticMesh() && GetStaticMesh()->GetNavCollision())
 	{
-		UNavCollisionBase* NavCollision = GetStaticMesh()->NavCollision;
+		UNavCollisionBase* NavCollision = GetStaticMesh()->GetNavCollision();
 		if (NavCollision->IsDynamicObstacle())
 		{
 			Data.Modifiers.MarkAsPerInstanceModifier();

@@ -140,12 +140,6 @@ FGuid FNiagaraEmitterHandleViewModel::GetId() const
 	return FGuid();
 }
 
-FText FNiagaraEmitterHandleViewModel::GetIdText() const
-{
-	return FText::FromString( GetId().ToString() );
-}
-
-
 FText FNiagaraEmitterHandleViewModel::GetErrorText() const
 {
 	switch (EmitterViewModel->GetLatestCompileStatus())
@@ -190,7 +184,7 @@ FName FNiagaraEmitterHandleViewModel::GetName() const
 
 void FNiagaraEmitterHandleViewModel::SetName(FName InName)
 {
-	if (EmitterHandle && EmitterHandle->GetName() == InName)
+	if (EmitterHandle && EmitterHandle->GetName().IsEqual(InName, ENameCase::CaseSensitive, false))
 	{
 		return;
 	}

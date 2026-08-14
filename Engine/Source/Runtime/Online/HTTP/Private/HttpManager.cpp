@@ -120,6 +120,14 @@ void FHttpManager::UpdateConfigs()
 	// empty
 }
 
+void FHttpManager::AddGameThreadTask(TFunction<void()>&& Task)
+{
+	if (Task)
+	{
+		GameThreadQueue.Enqueue(MoveTemp(Task));
+	}
+}
+
 FHttpThread* FHttpManager::CreateHttpThread()
 {
 	return new FHttpThread();
@@ -132,6 +140,9 @@ void FHttpManager::Flush(bool bShutdown)
 	FScopeLock ScopeLock(&RequestLock);
 	double MaxFlushTimeSeconds = -1.0; // default to no limit
 	GConfig->GetDouble(TEXT("HTTP"), TEXT("MaxFlushTimeSeconds"), MaxFlushTimeSeconds, GEngineIni);
+
+	bool bAlwaysCancelRequestsOnFlush = false; // Default to not immediately cancelling
+	GConfig->GetBool(TEXT("HTTP"), TEXT("bAlwaysCancelRequestsOnFlush"), bAlwaysCancelRequestsOnFlush, GEngineIni);
 
 	if (bShutdown)
 	{
@@ -158,9 +169,17 @@ void FHttpManager::Flush(bool bShutdown)
 	{
 		const double AppTime = FPlatformTime::Seconds();
 		//UE_LOG(LogHttp, Display, TEXT("Waiting for %0.2f seconds. Limit:%0.2f seconds"), (AppTime - BeginWaitTime), MaxFlushTimeSeconds);
-		if (bShutdown && MaxFlushTimeSeconds > 0 && (AppTime - BeginWaitTime > MaxFlushTimeSeconds))
+		if (bAlwaysCancelRequestsOnFlush || (bShutdown && MaxFlushTimeSeconds > 0 && (AppTime - BeginWaitTime > MaxFlushTimeSeconds)))
 		{
-			UE_LOG(LogHttp, Display, TEXT("Canceling remaining HTTP requests after waiting %0.2f seconds"), (AppTime - BeginWaitTime));
+			if (bAlwaysCancelRequestsOnFlush)
+			{
+				UE_LOG(LogHttp, Display, TEXT("Immediately cancelling active HTTP requests"));
+			}
+			else
+			{
+				UE_LOG(LogHttp, Display, TEXT("Canceling remaining HTTP requests after waiting %0.2f seconds"), (AppTime - BeginWaitTime));
+			}
+
 			for (TArray<TSharedRef<IHttpRequest, ESPMode::ThreadSafe>>::TIterator It(Requests); It; ++It)
 			{
 				TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request = *It;
@@ -203,6 +222,14 @@ void FHttpManager::Flush(bool bShutdown)
 bool FHttpManager::Tick(float DeltaSeconds)
 {
     QUICK_SCOPE_CYCLE_COUNTER(STAT_FHttpManager_Tick);
+
+	// Run GameThread tasks
+	TFunction<void()> Task = nullptr;
+	while (GameThreadQueue.Dequeue(Task))
+	{
+		check(Task);
+		Task();
+	}
 
 	FScopeLock ScopeLock(&RequestLock);
 

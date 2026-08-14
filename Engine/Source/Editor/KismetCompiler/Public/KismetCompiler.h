@@ -388,7 +388,7 @@ protected:
 	virtual void PostCompile() { OnPostCompile.Broadcast(); }
 
 	// Gives derived classes a chance to process post-node expansion
-	virtual void PostExpansionStep(UEdGraph* Graph) {}
+	virtual void PostExpansionStep(const UEdGraph* Graph) {}
 
 	/** Determines if a node is pure */
 	virtual bool IsNodePure(const UEdGraphNode* Node) const;
@@ -510,6 +510,10 @@ protected:
 	 */
 	virtual void PrecompileFunction(FKismetFunctionContext& Context, EInternalCompilerFlags InternalFlags);
 
+	/**
+	 * Used for performing custom patching during stage IX of the compilation during load.
+	 */
+	virtual void PreCompileUpdateBlueprintOnLoad(UBlueprint* BP) {}
 	/**
 	 * Second phase of compiling a function graph
 	 *   - Generates an executable statement list

@@ -60,6 +60,8 @@ UAbilitySystemComponent::UAbilitySystemComponent(const FObjectInitializer& Objec
 
 	ClientActivateAbilityFailedStartTime = 0.f;
 	ClientActivateAbilityFailedCountRecent = 0;
+
+	bDestroyActiveStateInitiated = false;
 }
 
 const UAttributeSet* UAbilitySystemComponent::InitStats(TSubclassOf<class UAttributeSet> Attributes, const UDataTable* DataTable)
@@ -1669,7 +1671,6 @@ void UAbilitySystemComponent::OnGameplayEffectAppliedToTarget(UAbilitySystemComp
 	SCOPE_CYCLE_COUNTER(STAT_AbilitySystemComp_OnGameplayEffectAppliedToTarget);
 #endif
 	OnGameplayEffectAppliedDelegateToTarget.Broadcast(Target, SpecApplied, ActiveHandle);
-	ActiveGameplayEffects.ApplyStackingLogicPostApplyAsSource(Target, SpecApplied, ActiveHandle);
 }
 
 void UAbilitySystemComponent::OnGameplayEffectAppliedToSelf(UAbilitySystemComponent* Source, const FGameplayEffectSpec& SpecApplied, FActiveGameplayEffectHandle ActiveHandle)

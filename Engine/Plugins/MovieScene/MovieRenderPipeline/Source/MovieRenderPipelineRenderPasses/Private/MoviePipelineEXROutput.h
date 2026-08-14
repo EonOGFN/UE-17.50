@@ -114,24 +114,21 @@ public:
 	{
 		OutputFormat = EImageFormat::EXR;
 		Compression = EEXRCompressionFormat::PIZ;
+		bMultilayer = true;
 	}
 
-	virtual bool IsAlphaSupportedImpl() const override { return bOutputAlpha; }
-	virtual void OnRecieveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame) override;
+	virtual void OnReceiveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame) override;
 
 public:
-	/**
-	* Should we accumulate the alpha channel and write it into the resulting image? This requires r.PostProcessing.PropagateAlpha
-	* to be set to 1 or 2 (see "Enable Alpha Channel Support in Post Processing" under Project Settings > Rendering). This adds
-	* ~30% cost to the accumulation so you should not enable it unless necessary. You must delete both the sky and fog to ensure
-	* that they do not make all pixels opaque.
-	*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EXR")
-	bool bOutputAlpha;
-
 	/**
 	* Which compression method should the resulting EXR file be compressed with
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EXR")
 	EEXRCompressionFormat Compression;
+
+	/**
+	* Should we write all render passes to the same exr file? Not all software supports multi-layer exr files.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EXR")
+	bool bMultilayer;
 };

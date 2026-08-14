@@ -91,6 +91,11 @@ namespace UnrealBuildTool
 			return SDK.HasRequiredSDKsInstalled();
 		}
 
+		public override string GetRequiredSDKString()
+		{
+			return SDK.GetRequiredSDKString();
+		}
+
 		public override void ResetTarget(TargetRules Target)
 		{
 			ValidateTarget(Target);
@@ -246,7 +251,7 @@ namespace UnrealBuildTool
 						bBuildShaderFormats = true;
 						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatDXT");
 						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatASTC");
-						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatAndroid");  // ETC2 
+						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatETC2");  // ETC2 
 						if (Target.bBuildDeveloperTools)
 						{
 							//Rules.DynamicallyLoadedModuleNames.Add("AudioFormatADPCM");	//@todo android: android audio
@@ -376,7 +381,7 @@ namespace UnrealBuildTool
 
 			if (!UseTegraGraphicsDebugger(Target))
 			{
-				LinkEnvironment.SystemLibraries.Add("GLESv2");
+				LinkEnvironment.SystemLibraries.Add("GLESv3");
 				LinkEnvironment.SystemLibraries.Add("EGL");
 			}
 			LinkEnvironment.SystemLibraries.Add("android");
@@ -399,6 +404,22 @@ namespace UnrealBuildTool
 
 			CompileEnvironment.Definitions.Add("WITH_EDITOR=0");
 			CompileEnvironment.Definitions.Add("USE_NULL_RHI=0");
+
+			if (Target.bPGOOptimize || Target.bPGOProfile)
+			{
+				Log.TraceInformation("PGO {0} build", Target.bPGOOptimize ? "optimize" : "profile");
+				if(Target.bPGOOptimize)
+				{
+					CompileEnvironment.PGODirectory = Path.Combine(DirectoryReference.FromFile(Target.ProjectFile).FullName, "Platforms", "Android", "Build", "PGO");
+					CompileEnvironment.PGOFilenamePrefix = string.Format("{0}-Android-{1}", Target.Name, Target.Configuration);
+
+					LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
+					LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
+
+					Log.TraceInformation("PGO Dir: {0}", CompileEnvironment.PGODirectory);
+					Log.TraceInformation("PGO Prefix: {0}", CompileEnvironment.PGOFilenamePrefix);
+				}
+			}
 
 			SetUpSpecificEnvironment(Target, CompileEnvironment, LinkEnvironment);
 
@@ -463,7 +484,7 @@ namespace UnrealBuildTool
 			return "Android";
 		}
 
-		protected override string GetRequiredSDKString()
+		public override string GetRequiredSDKString()
 		{
 			return "-23";
 		}

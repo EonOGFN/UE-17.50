@@ -164,6 +164,9 @@ namespace ChaosInterface
 			CollisionTraceType = UPhysicsSettings::Get()->DefaultShapeComplexity;
 		}
 
+		const float CollisionMarginFraction = FMath::Max(0.0f, UPhysicsSettingsCore::Get()->SolverOptions.CollisionMarginFraction);
+		const float CollisionMarginMax = FMath::Max(0.0f, UPhysicsSettingsCore::Get()->SolverOptions.CollisionMarginMax);
+
 #if WITH_CHAOS
 		// Complex as simple should not create simple geometry, unless there is no complex geometry.  Otherwise both get queried against.
 		bool bMakeSimpleGeometry = (CollisionTraceType != CTF_UseComplexAsSimple) || (InParams.ChaosTriMeshes.Num() == 0);
@@ -224,16 +227,18 @@ namespace ChaosInterface
 				HalfExtents.Y = FMath::Max(HalfExtents.Y, KINDA_SMALL_NUMBER);
 				HalfExtents.Z = FMath::Max(HalfExtents.Z, KINDA_SMALL_NUMBER);
 
+				const float CollisionMargin = FMath::Min(2.0f * HalfExtents.GetAbsMax() * CollisionMarginFraction, CollisionMarginMax);
+
 				// TAABB can handle translations internally but if we have a rotation we need to wrap it in a transform
 				TUniquePtr<Chaos::FImplicitObject> Implicit;
 				if (!BoxTransform.GetRotation().IsIdentity())
 				{
-					auto ImplicitBox = MakeUnique<Chaos::TBox<float, 3>>(-HalfExtents, HalfExtents);
+					auto ImplicitBox = MakeUnique<Chaos::TBox<float, 3>>(-HalfExtents, HalfExtents, CollisionMargin);
 					Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectTransformed<float, 3>(MoveTemp(ImplicitBox), BoxTransform));
 				}
 				else
 				{
-					Implicit = MakeUnique<Chaos::TBox<float, 3>>(BoxTransform.GetTranslation() - HalfExtents, BoxTransform.GetTranslation() + HalfExtents);
+					Implicit = MakeUnique<Chaos::TBox<float, 3>>(BoxTransform.GetTranslation() - HalfExtents, BoxTransform.GetTranslation() + HalfExtents, CollisionMargin);
 				}
 
 				TUniquePtr<Chaos::FPerShapeData> NewShape = NewShapeHelper(MakeSerializable(Implicit),Shapes.Num(), (void*)BoxElem.GetUserData(), BoxElem.GetCollisionEnabled());
@@ -298,27 +303,31 @@ namespace ChaosInterface
 			for (uint32 i = 0; i < static_cast<uint32>(InParams.Geometry->ConvexElems.Num()); ++i)
 			{
 				const FKConvexElem& CollisionBody = InParams.Geometry->ConvexElems[i];
-				const FTransform& ConvexTransform = CollisionBody.GetTransform();
+				const FTransform& ConvexTransform = InParams.LocalTransform;
 				if (const auto& ConvexImplicit = CollisionBody.GetChaosConvexMesh())
 				{
-					//if (!ConvexTransform.GetTranslation().IsNearlyZero() || !ConvexTransform.GetRotation().IsIdentity())
-					//{
-					//	TUniquePtr<Chaos::FImplicitObject> TransformImplicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectTransformed<float, 3>(MakeSerializable(ConvexImplicit), ConvexTransform));
-					//	TUniquePtr<Chaos::TImplicitObjectScaled<float, 3, false>> Implicit = MakeUnique<Chaos::TImplicitObjectScaled<float, 3, false>>(MoveTemp(TransformImplicit), Scale);
-					//	auto NewShape = NewShapeHelper(MakeSerializable(Implicit));
-					//	Shapes.Emplace(MoveTemp(NewShape));
-					//	Geoms.Add(MoveTemp(Implicit));
-					//}
-					//else
+					const float CollisionMargin = FMath::Min(CollisionBody.ElemBox.GetSize().GetMax() * CollisionMarginFraction, CollisionMarginMax);
+
+					if (!ConvexTransform.GetTranslation().IsNearlyZero() || !ConvexTransform.GetRotation().IsIdentity())
 					{
+						// this path is taken when objects are welded
+						//TUniquePtr<Chaos::FImplicitObject> ScaledImplicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectScaled<Chaos::FImplicitObject>(MakeSerializable(ConvexImplicit), Scale, CollisionMargin));
+						TUniquePtr<Chaos::FImplicitObject> Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectTransformed<float, 3>(MakeSerializable(ConvexImplicit), ConvexTransform));
+						TUniquePtr<Chaos::FPerShapeData> NewShape = NewShapeHelper(MakeSerializable(Implicit), Shapes.Num(), (void*)CollisionBody.GetUserData(), CollisionBody.GetCollisionEnabled());
+						Shapes.Emplace(MoveTemp(NewShape));
+						Geoms.Add(MoveTemp(Implicit));
+					}
+					else
+					{
+						// NOTE: CollisionMargin is on the Instance/Scaled wrapper, not the inner convex (which has no margin). This means that convex shapes grow by the margion size...
 						TUniquePtr<Chaos::FImplicitObject> Implicit;
 						if (Scale == FVector(1))
 						{
-							Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectInstanced<Chaos::FConvex>(ConvexImplicit));
+							Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectInstanced<Chaos::FConvex>(ConvexImplicit, CollisionMargin));
 						}
 						else
 						{
-							Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectScaled<Chaos::FConvex>(ConvexImplicit, Scale));
+							Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectScaled<Chaos::FConvex>(ConvexImplicit, Scale, CollisionMargin));
 						}
 
 						TUniquePtr<Chaos::FPerShapeData> NewShape = NewShapeHelper(MakeSerializable(Implicit),Shapes.Num(), (void*)CollisionBody.GetUserData(), CollisionBody.GetCollisionEnabled());
@@ -459,21 +468,26 @@ namespace ChaosInterface
 		OutProperties.CenterOfMass = TotalCenterOfMass;
 	}
 
-	void CalculateMassPropertiesFromShapeCollection(Chaos::TMassProperties<float, 3>& OutProperties, const Chaos::FShapesArray& InShapes, float InDensityKGPerCM)
+	void CalculateMassPropertiesFromShapeCollection(Chaos::TMassProperties<float, 3>& OutProperties, const Chaos::FShapesArray& InShapes, const TArray<bool>& bContributesToMass, float InDensityKGPerCM)
 	{
 		float TotalMass = 0.f;
 		Chaos::FVec3 TotalCenterOfMass(0.f);
 		TArray< Chaos::TMassProperties<float, 3> > MassPropertiesList;
-		for (const TUniquePtr<Chaos::FPerShapeData>& Shape : InShapes)
+		for (int32 ShapeIndex = 0; ShapeIndex < InShapes.Num(); ++ShapeIndex)
 		{
-			if (const Chaos::FImplicitObject* ImplicitObject = Shape->GetGeometry().Get())
+			const TUniquePtr<Chaos::FPerShapeData>& Shape = InShapes[ShapeIndex];
+			const bool bHassMass = (ShapeIndex < bContributesToMass.Num())? bContributesToMass[ShapeIndex] : true;
+			if (bHassMass)
 			{
-				Chaos::TMassProperties<float, 3> MassProperties;
-				if (CalculateMassPropertiesOfImplicitType(MassProperties, FTransform::Identity, ImplicitObject, InDensityKGPerCM))
+				if (const Chaos::FImplicitObject* ImplicitObject = Shape->GetGeometry().Get())
 				{
-					MassPropertiesList.Add(MassProperties);
-					TotalMass += MassProperties.Mass;
-					TotalCenterOfMass += MassProperties.CenterOfMass * MassProperties.Mass;
+					Chaos::TMassProperties<float, 3> MassProperties;
+					if (CalculateMassPropertiesOfImplicitType(MassProperties, FTransform::Identity, ImplicitObject, InDensityKGPerCM))
+					{
+						MassPropertiesList.Add(MassProperties);
+						TotalMass += MassProperties.Mass;
+						TotalCenterOfMass += MassProperties.CenterOfMass * MassProperties.Mass;
+					}
 				}
 			}
 		}

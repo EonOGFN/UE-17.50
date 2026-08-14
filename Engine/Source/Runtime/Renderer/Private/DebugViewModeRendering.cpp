@@ -27,14 +27,12 @@ DebugViewModeRendering.cpp: Contains definitions for rendering debug viewmodes.
 #include "DeferredShadingRenderer.h"
 #include "MeshPassProcessor.inl"
 
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FDebugViewModePassPassUniformParameters, "DebugViewModePass");
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FDebugViewModePassUniformParameters, "DebugViewModePass", SceneTextures);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-void SetupDebugViewModePassUniformBuffer(FSceneRenderTargets& SceneContext, const FViewInfo& ViewInfo, FDebugViewModePassPassUniformParameters& PassParameters)
+void SetupDebugViewModePassUniformBufferConstants(const FViewInfo& ViewInfo, FDebugViewModePassUniformParameters& PassParameters)
 {
-	SetupSceneTextureUniformParameters(SceneContext, ViewInfo.FeatureLevel, ESceneTextureSetupMode::None, PassParameters.SceneTextures);
-
 	// Accuracy colors
 	{
 		const int32 NumEngineColors = FMath::Min<int32>(GEngine->StreamingAccuracyColors.Num(), NumStreamingAccuracyColors);
@@ -59,7 +57,7 @@ void SetupDebugViewModePassUniformBuffer(FSceneRenderTargets& SceneContext, cons
 		{
 			Colors = &GEngine->HLODColorationColors;
 		}
-		
+
 		const int32 NumColors = Colors ? FMath::Min<int32>(NumLODColorationColors, Colors->Num()) : 0;
 		int32 ColorIndex = 0;
 		for (; ColorIndex < NumColors; ++ColorIndex)
@@ -73,69 +71,67 @@ void SetupDebugViewModePassUniformBuffer(FSceneRenderTargets& SceneContext, cons
 	}
 }
 
+TUniformBufferRef<FDebugViewModePassUniformParameters> CreateDebugViewModePassUniformBuffer(FRHICommandList& RHICmdList, const FViewInfo& View)
+{
+	FDebugViewModePassUniformParameters Parameters;
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	SetupSceneTextureUniformParameters(SceneContext, View.FeatureLevel, ESceneTextureSetupMode::None, Parameters.SceneTextures);
+	SetupDebugViewModePassUniformBufferConstants(View, Parameters);
+	return TUniformBufferRef<FDebugViewModePassUniformParameters>::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleFrame);
+}
+
+TRDGUniformBufferRef<FDebugViewModePassUniformParameters> CreateDebugViewModePassUniformBuffer(FRDGBuilder& GraphBuilder, const FViewInfo& View)
+{
+	auto* UniformBufferParameters = GraphBuilder.AllocParameters<FDebugViewModePassUniformParameters>();
+	SetupSceneTextureUniformParameters(GraphBuilder, View.FeatureLevel, ESceneTextureSetupMode::None, UniformBufferParameters->SceneTextures);
+	SetupDebugViewModePassUniformBufferConstants(View, *UniformBufferParameters);
+	return GraphBuilder.CreateUniformBuffer(UniformBufferParameters);
+}
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FDebugViewModeVS,TEXT("/Engine/Private/DebugViewModeVertexShader.usf"),TEXT("Main"),SF_Vertex);	
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FDebugViewModeHS,TEXT("/Engine/Private/DebugViewModeVertexShader.usf"),TEXT("MainHull"),SF_Hull);	
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FDebugViewModeDS,TEXT("/Engine/Private/DebugViewModeVertexShader.usf"),TEXT("MainDomain"),SF_Domain);
 
-ENGINE_API bool GetDebugViewMaterial(const UMaterialInterface* InMaterialInterface, EDebugViewShaderMode InDebugViewMode, ERHIFeatureLevel::Type InFeatureLevel,const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial);
-
-
 bool FDebugViewModeVS::ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 {
-	if (AllowDebugViewVSDSHS(Parameters.Platform))
-	{
-		// If it comes from FDebugViewModeMaterialProxy, compile it.
-		if (Parameters.MaterialParameters.bIsMaterialDebugViewMode)
-		{
-			return true;
-		}
-		// Otherwise we only cache it if this for the shader complexity.
-		else if (GCacheShaderComplexityShaders)
-		{
-			return !FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Parameters.MaterialParameters.TessellationMode,
-				Parameters.MaterialParameters.bHasVertexPositionOffsetConnected,
-				Parameters.MaterialParameters.bHasPixelDepthOffsetConnected) || Parameters.MaterialParameters.bIsDefaultMaterial;
-		}
-	}
-	return false;
+	return AllowDebugViewVSDSHS(Parameters.Platform) && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData);
 }
 
-bool FDeferredShadingSceneRenderer::RenderDebugViewMode(FRHICommandListImmediate& RHICmdList)
-{
-	bool bDirty=0;
-	SCOPED_DRAW_EVENT(RHICmdList, DebugViewMode);
+BEGIN_SHADER_PARAMETER_STRUCT(FDebugViewModePassParameters, )
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FDebugViewModePassUniformParameters, Pass)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
 
-	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+void FDeferredShadingSceneRenderer::RenderDebugViewMode(FRDGBuilder& GraphBuilder, const FRenderTargetBindingSlots& RenderTargets)
+{
+	RDG_EVENT_SCOPE(GraphBuilder, "DebugViewMode");
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		FViewInfo& View = Views[ViewIndex];
+		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+		RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
 
-		SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
-		SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
+		auto* PassParameters = GraphBuilder.AllocParameters<FDebugViewModePassParameters>();
+		PassParameters->Pass = CreateDebugViewModePassUniformBuffer(GraphBuilder, View);
+		PassParameters->RenderTargets = RenderTargets;
 
-		Scene->UniformBuffers.UpdateViewUniformBuffer(View);
-
-		// Some of the viewmodes use SCENE_TEXTURES_DISABLED to prevent issues when running in commandlet mode.
-		FDebugViewModePassPassUniformParameters PassParameters;
-		SetupDebugViewModePassUniformBuffer(SceneContext, View, PassParameters);
-		Scene->UniformBuffers.DebugViewModePassUniformBuffer.UpdateUniformBufferImmediate(PassParameters);
-
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
+		GraphBuilder.AddPass(
+			{},
+			PassParameters,
+			ERDGPassFlags::Raster,
+			[this, &View](FRHICommandList& RHICmdList)
 		{
-			SCOPED_DRAW_EVENT(RHICmdList, Dynamic);
-
+			Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
 			View.ParallelMeshDrawCommandPasses[EMeshPass::DebugViewMode].DispatchDraw(nullptr, RHICmdList);
-		}
+		});
 	}
-
-	return bDirty;
 }
 
 FDebugViewModePS::FDebugViewModePS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) : FMeshMaterialShader(Initializer)
 {
-	PassUniformBuffer.Bind(Initializer.ParameterMap, FDebugViewModePassPassUniformParameters::StaticStructMetadata.GetShaderVariableName());
+	PassUniformBuffer.Bind(Initializer.ParameterMap, FDebugViewModePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
 }
 
 void FDebugViewModePS::GetElementShaderBindings(
@@ -210,61 +206,65 @@ FDebugViewModeMeshProcessor::FDebugViewModeMeshProcessor(
 		{
 			ViewUniformBuffer = InScene->UniformBuffers.ViewUniformBuffer;
 		}
-		if (!PassUniformBuffer)
-		{
-			PassUniformBuffer = InScene->UniformBuffers.DebugViewModePassUniformBuffer;
-		}
+	}
+}
+
+void AddDebugViewModeShaderTypes(ERHIFeatureLevel::Type FeatureLevel,
+	EMaterialTessellationMode MaterialTessellationMode,
+	const FVertexFactoryType* VertexFactoryType,
+	FMaterialShaderTypes& OutShaderTypes)
+{
+	const bool bNeedsHSDS = RHISupportsTessellation(GShaderPlatformForFeatureLevel[FeatureLevel])
+		&& VertexFactoryType->SupportsTessellationShaders()
+		&& MaterialTessellationMode != MTM_NoTessellation;
+
+	OutShaderTypes.AddShaderType<FDebugViewModeVS>();
+	if (bNeedsHSDS)
+	{
+		OutShaderTypes.AddShaderType<FDebugViewModeDS>();
+		OutShaderTypes.AddShaderType<FDebugViewModeHS>();
 	}
 }
 
 void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
-	const FMaterial* BatchMaterial = MeshBatch.MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
-
-	if (!DebugViewModeInterface || !BatchMaterial)
+	if (!DebugViewModeInterface)
 	{
 		return;
 	}
 
-	const UMaterialInterface* ResolvedMaterial = MeshBatch.MaterialRenderProxy->GetMaterialInterface();
-	if (!DebugViewModeInterface->bNeedsMaterialProperties && FDebugViewModeInterface::AllowFallbackToDefaultMaterial(BatchMaterial))
-	{
-		ResolvedMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
-	}
-
-	const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
-	const FMaterial* Material = nullptr;
-
-	if (DebugViewMode == DVSM_ShaderComplexity && GCacheShaderComplexityShaders)
-	{
-		Material = ResolvedMaterial->GetMaterialResource(FeatureLevel);
-		MaterialRenderProxy  = ResolvedMaterial->GetRenderProxy();
-
-		if (!Material || !MaterialRenderProxy || !Material->HasValidGameThreadShaderMap() ||  !Material->GetRenderingThreadShaderMap())
-		{
-			return;
-		}
-	}
-	else if (!GetDebugViewMaterial(ResolvedMaterial, DebugViewMode, FeatureLevel, MaterialRenderProxy, Material))
+	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+	const FMaterial* BatchMaterial = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+	if (!BatchMaterial)
 	{
 		return;
+	}
+
+	const FMaterial* Material = BatchMaterial;
+	if (!DebugViewModeInterface->bNeedsMaterialProperties && FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Material))
+	{
+		MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+		Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+		check(Material);
 	}
 
 	FVertexFactoryType* VertexFactoryType = MeshBatch.VertexFactory->GetType();
-
 	const EMaterialTessellationMode MaterialTessellationMode = Material->GetTessellationMode();
-	const bool bNeedsHSDS = RHISupportsTessellation(GShaderPlatformForFeatureLevel[FeatureLevel])
-			&& VertexFactoryType->SupportsTessellationShaders()
-			&& MaterialTessellationMode != MTM_NoTessellation;
+
+	FMaterialShaderTypes ShaderTypes;
+	DebugViewModeInterface->AddShaderTypes(FeatureLevel, MaterialTessellationMode, VertexFactoryType, ShaderTypes);
+
+	FMaterialShaders Shaders;
+	if (!Material->TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+	{
+		return;
+	}
 
 	TMeshProcessorShaders<FDebugViewModeVS,	FDebugViewModeHS, FDebugViewModeDS,	FDebugViewModePS> DebugViewModePassShaders;
-	DebugViewModePassShaders.VertexShader = Material->GetShader<FDebugViewModeVS>(VertexFactoryType);
-	if (bNeedsHSDS)
-	{
-		DebugViewModePassShaders.DomainShader = Material->GetShader<FDebugViewModeDS>(VertexFactoryType);
-		DebugViewModePassShaders.HullShader = Material->GetShader<FDebugViewModeHS>(VertexFactoryType);
-	}
-	DebugViewModePassShaders.PixelShader = DebugViewModeInterface->GetPixelShader(Material, VertexFactoryType);
+	Shaders.TryGetVertexShader(DebugViewModePassShaders.VertexShader);
+	Shaders.TryGetPixelShader(DebugViewModePassShaders.PixelShader);
+	Shaders.TryGetHullShader(DebugViewModePassShaders.HullShader);
+	Shaders.TryGetDomainShader(DebugViewModePassShaders.DomainShader);
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *BatchMaterial, OverrideSettings);
@@ -289,7 +289,7 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 		ViewModeParamName);
 
 	// Shadermap can be null while shaders are compiling.
-	if (DebugViewModeInterface->bNeedsInstructionCount && BatchMaterial->GetRenderingThreadShaderMap())
+	if (DebugViewModeInterface->bNeedsInstructionCount)
 	{
 		UpdateInstructionCount(ShaderElementData, BatchMaterial, VertexFactoryType);
 	}
@@ -323,17 +323,27 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 		{
 			const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(InBatchMaterial->GetFeatureLevel());
 
+			FMaterialShaderTypes ShaderTypes;
 			if (IsSimpleForwardShadingEnabled(ShaderPlatform))
 			{
-				OutShaderElementData.NumVSInstructions = InBatchMaterial->GetShader<TBasePassVS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>, false>>(InVertexFactoryType)->GetNumInstructions();
-				OutShaderElementData.NumPSInstructions = InBatchMaterial->GetShader<TBasePassPS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>, false>>(InVertexFactoryType)->GetNumInstructions();
+				ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>, false>>();
+				ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>, false>>();
 			}
 			else
 			{
-				OutShaderElementData.NumVSInstructions = InBatchMaterial->GetShader<TBasePassVS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false>>(InVertexFactoryType)->GetNumInstructions();
-				OutShaderElementData.NumPSInstructions = InBatchMaterial->GetShader<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false>>(InVertexFactoryType)->GetNumInstructions();
+				ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false>>();
+				ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false>>();
+			}
 
-				if (IsForwardShadingEnabled(ShaderPlatform) && !IsTranslucentBlendMode(InBatchMaterial->GetBlendMode()))
+			FMaterialShaders Shaders;
+			if (InBatchMaterial->TryGetShaders(ShaderTypes, InVertexFactoryType, Shaders))
+			{
+				OutShaderElementData.NumVSInstructions = Shaders.Shaders[SF_Vertex]->GetNumInstructions();
+				OutShaderElementData.NumPSInstructions = Shaders.Shaders[SF_Pixel]->GetNumInstructions();
+
+				if (IsForwardShadingEnabled(ShaderPlatform) &&
+					!IsSimpleForwardShadingEnabled(ShaderPlatform) &&
+					!IsTranslucentBlendMode(InBatchMaterial->GetBlendMode()))
 				{
 					const bool bLit = InBatchMaterial->GetShadingModels().IsLit();
 
@@ -341,20 +351,20 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 					OutShaderElementData.NumVSInstructions -= GShaderComplexityBaselineForwardVS - GShaderComplexityBaselineDeferredVS;
 					OutShaderElementData.NumPSInstructions -= bLit ? (GShaderComplexityBaselineForwardPS - GShaderComplexityBaselineDeferredPS) : (GShaderComplexityBaselineForwardUnlitPS - GShaderComplexityBaselineDeferredUnlitPS);
 				}
-			}
 
-			OutShaderElementData.NumVSInstructions = FMath::Max<int32>(0, OutShaderElementData.NumVSInstructions);
-			OutShaderElementData.NumPSInstructions = FMath::Max<int32>(0, OutShaderElementData.NumPSInstructions);
+				OutShaderElementData.NumVSInstructions = FMath::Max<int32>(0, OutShaderElementData.NumVSInstructions);
+				OutShaderElementData.NumPSInstructions = FMath::Max<int32>(0, OutShaderElementData.NumPSInstructions);
+			}
 		}
 		else // EShadingPath::Mobile
 		{
 			TShaderRef<TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>> MobileVS;
 			TShaderRef<TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> MobilePS;
-
-			MobileBasePass::GetShaders(LMP_NO_LIGHTMAP, 0, *InBatchMaterial, InVertexFactoryType, false, MobileVS, MobilePS);
-
-			OutShaderElementData.NumVSInstructions = MobileVS.IsValid() ? MobileVS->GetNumInstructions() : 0;
-			OutShaderElementData.NumPSInstructions = MobilePS.IsValid() ? MobilePS->GetNumInstructions() : 0;
+			if (MobileBasePass::GetShaders(LMP_NO_LIGHTMAP, 0, *InBatchMaterial, InVertexFactoryType, false, MobileVS, MobilePS))
+			{
+				OutShaderElementData.NumVSInstructions = MobileVS.IsValid() ? MobileVS->GetNumInstructions() : 0;
+				OutShaderElementData.NumPSInstructions = MobilePS.IsValid() ? MobilePS->GetNumInstructions() : 0;
+			}
 		}
 	}
 }
@@ -386,10 +396,7 @@ void InitDebugViewModeInterfaces()
 
 #else // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-bool FDeferredShadingSceneRenderer::RenderDebugViewMode(FRHICommandListImmediate& RHICmdList)
-{
-	return false;
-}
+void FDeferredShadingSceneRenderer::RenderDebugViewMode(FRDGBuilder& GraphBuilder, const FRenderTargetBindingSlots& RenderTargets) {}
 
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 

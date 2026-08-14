@@ -41,7 +41,21 @@ FRigUnit_MathQuaternionFromTwoVectors_Execute()
 FRigUnit_MathQuaternionToAxisAndAngle_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Value.GetNormalized().ToAxisAndAngle(Axis, Angle);
+	if (Axis.IsNearlyZero())
+	{
+		Axis = FVector(1.f, 0.f, 0.f);
+		Angle = 0.f;
+	}
+}
+
+FRigUnit_MathQuaternionScale_Execute()
+{
+    DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	FVector Axis = FVector::ZeroVector;
+	float Angle = 0.f;
 	Value.ToAxisAndAngle(Axis, Angle);
+	Value = FQuat(Axis, Angle * Scale);
 }
 
 FRigUnit_MathQuaternionToEuler_Execute()

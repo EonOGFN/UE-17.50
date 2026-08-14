@@ -41,6 +41,7 @@ class IOnlineVoice;
 class IOnlineStats;
 class IOnlineGameActivity;
 class IOnlineGameItemStats;
+class IOnlineGameMatches;
 
 ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnline, Log, All);
 ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineGame, Log, All);
@@ -102,6 +103,8 @@ typedef TSharedPtr<class FOnlineNotificationTransportManager, ESPMode::ThreadSaf
 typedef TSharedPtr<class IOnlineStats, ESPMode::ThreadSafe> IOnlineStatsPtr;
 typedef TSharedPtr<IOnlineGameActivity, ESPMode::ThreadSafe> IOnlineGameActivityPtr;
 typedef TSharedPtr<IOnlineGameItemStats, ESPMode::ThreadSafe> IOnlineGameItemStatsPtr;
+typedef TSharedPtr<IOnlineGameMatches, ESPMode::ThreadSafe> IOnlineGameMatchesPtr;
+
 /**
  * Called when the connection state as reported by the online platform changes
  *
@@ -373,8 +376,7 @@ public:
 	 * Get the interface for accessing an online store
 	 * @return Interface pointer for the appropriate online store service
 	 */
-	// @todo samz
-	//	UE_DEPRECATED(4.26, "Move to OnlineStoreInterfaceV2 and OnlinePurchaseInterface.")
+	UE_DEPRECATED(4.26, "GetStoreInterface() is deprecated, please use GetStoreV2Interface() and GetPurchaseInterface() instead.")
 	virtual IOnlineStorePtr GetStoreInterface() const { return nullptr; }
 
 	/** 
@@ -448,6 +450,13 @@ public:
 	 * @return Interface pointer for the game item stats interface
 	 */
 	virtual IOnlineGameItemStatsPtr GetGameItemStatsInterface() const = 0;
+
+	/**
+	 * Get interface for accessing game matches
+	 * @return Interface pointer for the game matches interface
+	 */
+	virtual IOnlineGameMatchesPtr GetGameMatchesInterface() const = 0;
+
 	/**
 	 * Get the notification handler instance for this subsystem
 	 * @return Pointer for the appropriate notification handler
@@ -605,6 +614,11 @@ public:
 	 * @return The name of the online service this platform uses
 	 */
 	virtual FText GetOnlineServiceName() const = 0;
+
+	/**
+	 * @return The name of the social platform for this subsystem
+	 */
+	virtual FText GetSocialPlatformName() const = 0;
 
 	/**
 	 * Reload the configuration if it is relevant for this OSS instance

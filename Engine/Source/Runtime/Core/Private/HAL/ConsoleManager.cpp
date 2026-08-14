@@ -109,8 +109,19 @@ public:
 	{
 		return this;
 	}
+	
+	/** Legacy funciton to add old single delegates to the new multicast delegate. */
+	virtual void SetOnChangedCallback(const FConsoleVariableDelegate& Callback) 
+	{
+		OnChangedCallback.Remove(LegacyDelegateHandle);
+		OnChangedCallback.Add(Callback); 
+	}
 
-	virtual void SetOnChangedCallback(const FConsoleVariableDelegate& Callback) { OnChangedCallback = Callback; }
+	/** Returns a multicast delegate with which to register. Called when this CVar changes. */
+	virtual FConsoleVariableMulticastDelegate& OnChangedDelegate()
+	{
+		return OnChangedCallback;
+	}
 
 	// ------
 
@@ -169,7 +180,7 @@ public:
 
 		Flags = (EConsoleVariableFlags)(((uint32)Flags & ECVF_FlagMask) | SetBy);
 
-		OnChangedCallback.ExecuteIfBound(this);
+		OnChangedCallback.Broadcast(this);
 	}
 
 	
@@ -180,7 +191,9 @@ protected: // -----------------------------------------
 	//
 	EConsoleVariableFlags Flags;
 	/** User function to call when the console variable is changed */
-	FConsoleVariableDelegate OnChangedCallback;
+	FConsoleVariableMulticastDelegate OnChangedCallback;
+	/** Store the handle to the delegate assigned via the legacy SetOnChangedCallback() so that the previous can be removed if called again. */
+	FDelegateHandle LegacyDelegateHandle;
 
 	/** True if this console variable has been used on the wrong thread and we have warned about it. */
 	mutable bool bWarnedAboutThreadSafety;
@@ -1738,7 +1751,7 @@ void FConsoleManager::RegisterThreadPropagation(uint32 ThreadId, IConsoleThreadP
 	}
 
 	ThreadPropagationCallback = InCallback;
-	ThreadPropagationThreadId = ThreadId;
+	// `ThreadId` is ignored as only RenderingThread is supported
 }
 
 IConsoleThreadPropagation* FConsoleManager::GetThreadPropagationCallback()
@@ -1748,7 +1761,7 @@ IConsoleThreadPropagation* FConsoleManager::GetThreadPropagationCallback()
 
 bool FConsoleManager::IsThreadPropagationThread()
 {
-	return FPlatformTLS::GetCurrentThreadId() == ThreadPropagationThreadId;
+	return IsInActualRenderingThread();
 }
 
 void FConsoleManager::OnCVarChanged()
@@ -1973,6 +1986,7 @@ void CreateConsoleVariables()
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("DumpUnbuiltLightInteractions"),	TEXT("Logs all lights and primitives that have an unbuilt interaction."), ECVF_Cheat);
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("Stat MapBuildData"),	TEXT(""), ECVF_Cheat);
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("r.ResetViewState"), TEXT("Reset some state (e.g. TemporalAA index) to make rendering more deterministic (for automated screenshot verification)"), ECVF_Cheat);
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("r.RHI.Name"),		TEXT("Show current RHI's name"), ECVF_Cheat);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 
@@ -2064,6 +2078,13 @@ static TAutoConsoleVariable<int32> CVarMobileHDR(
 	1,
 	TEXT("0: Mobile renders in LDR gamma space. (suggested for unlit games targeting low-end phones)\n")
 	TEXT("1: Mobile renders in HDR linear space. (default)"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarMobileShadingPath(
+	TEXT("r.Mobile.ShadingPath"),
+	0,
+	TEXT("0: Forward shading (default)")
+	TEXT("1: Deferred shading"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 static TAutoConsoleVariable<int32> CVarMobileNumDynamicPointLights(
@@ -2318,13 +2339,7 @@ static TAutoConsoleVariable<int32> CVarContactShadows(
 static TAutoConsoleVariable<float> CVarContactShadowsNonShadowCastingIntensity(
 	TEXT("r.ContactShadows.NonShadowCastingIntensity"),
 	0.0f,
-	TEXT("Intensity of contact shadows from objects with cast contact shadows disabled. Defaults 0 (off).\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarContactShadowsSubsurfaceFalloff(
-	TEXT("r.ContactShadows.SubsurfaceFalloff"),
-	1,
-	TEXT("Whether to reduce the intensity of shadows on subsurface materials similar to the approximation used by the shadow maps path. \n"),
+	TEXT("Intensity of contact shadows from objects with cast contact shadows disabled. Usually 0 (off).\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 // Changing this causes a full shader recompile
@@ -2333,14 +2348,6 @@ static TAutoConsoleVariable<int32> CVarAllowStaticLighting(
 	1,
 	TEXT("Whether to allow any static lighting to be generated and used, like lightmaps and shadowmaps.\n")
 	TEXT("Games that only use dynamic lighting should set this to 0 to save some static lighting overhead."),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
-
-// Changing this causes a full shader recompile
-static TAutoConsoleVariable<int32> CVarAnisotropicBRDF(
-	TEXT("r.AnisotropicBRDF"),
-	0,
-	TEXT("Whether anisotropic BRDF is enabled. Default = 0\n")
-	TEXT("Note: base pass will only use the anisotropic BRDF if r.BasePassOutputsVelocity = 0"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarNormalMaps(

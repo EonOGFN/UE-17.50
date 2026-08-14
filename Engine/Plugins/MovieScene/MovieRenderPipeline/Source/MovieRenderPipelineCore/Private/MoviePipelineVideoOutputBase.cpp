@@ -6,7 +6,7 @@
 #include "MoviePipelineMasterConfig.h"
 #include "MovieRenderPipelineCoreModule.h"
 
-void UMoviePipelineVideoOutputBase::OnRecieveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame)
+void UMoviePipelineVideoOutputBase::OnReceiveImageDataImpl(FMoviePipelineMergerOutputFrame* InMergedOutputFrame)
 {
 	UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
 	check(OutputSettings);
@@ -20,8 +20,10 @@ void UMoviePipelineVideoOutputBase::OnRecieveImageDataImpl(FMoviePipelineMergerO
 		// We need to resolve the filename format string. We combine the folder and file name into one long string first
 		FMoviePipelineFormatArgs FinalFormatArgs;
 		FString FinalFilePath;
+		FString FinalVideoFileName;
+		FString ClipName;
 		{
-			FString FileNameFormatString = OutputDirectory / OutputSettings->FileNameFormat;
+			FString FileNameFormatString = OutputSettings->FileNameFormat;
 
 			// If we're writing more than one render pass out, we need to ensure the file name has the format string in it so we don't
 			// overwrite the same file multiple times. Burn In overlays don't count because they get composited on top of an existing file.
@@ -38,8 +40,15 @@ void UMoviePipelineVideoOutputBase::OnRecieveImageDataImpl(FMoviePipelineMergerO
 			FormatOverrides.Add(TEXT("render_pass"), RenderPassData.Key.Name);
 			FormatOverrides.Add(TEXT("ext"), GetFilenameExtension());
 
-			
-			GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, InMergedOutputFrame->FrameOutputState, FormatOverrides, /*Out*/ FinalFilePath, /*Out*/ FinalFormatArgs);
+			GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, FinalVideoFileName, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState);
+
+			FinalFilePath = OutputDirectory / FinalVideoFileName;
+
+			// Create a deterministic clipname by file extension, and any trailing .'s
+			FMoviePipelineFormatArgs TempFormatArgs;
+			GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, ClipName, TempFormatArgs, &InMergedOutputFrame->FrameOutputState);
+			ClipName.RemoveFromEnd(GetFilenameExtension());
+			ClipName.RemoveFromEnd(".");
 		}
 
 
@@ -78,13 +87,21 @@ void UMoviePipelineVideoOutputBase::OnRecieveImageDataImpl(FMoviePipelineMergerO
 
 		FMoviePipelineBackgroundMediaTasks Task;
 		FImagePixelData* RawRenderPassData = RenderPassData.Value.Get();
-		
+
+		// Making sure that if OCIO is enabled the Quantization won't do additional color conversion.
+		UMoviePipelineColorSetting* ColorSetting = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineColorSetting>();
+		OutputWriter->bConvertToSrgb = !(ColorSetting && ColorSetting->OCIOConfiguration.bIsEnabled);
+
 		//FGraphEventRef Event = Task.Execute([this, OutputWriter, RawRenderPassData]
 		//	{
 				// Enqueue a encode for this frame onto our worker thread.
 				this->WriteFrame_EncodeThread(OutputWriter, RawRenderPassData);
 		//	});
 		//OutstandingTasks.Add(Event);
+		
+#if WITH_EDITOR
+		GetPipeline()->AddFrameToOutputMetadata(ClipName, FinalVideoFileName, InMergedOutputFrame->FrameOutputState, GetFilenameExtension(), Payload->bRequireTransparentOutput);
+#endif
 	}
 }
 

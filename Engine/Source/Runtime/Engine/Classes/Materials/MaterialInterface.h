@@ -32,6 +32,7 @@ class UPhysicalMaterial;
 class UPhysicalMaterialMask;
 class USubsurfaceProfile;
 class UTexture;
+class UMaterialInstance;
 struct FMaterialParameterInfo;
 struct FMaterialResourceLocOnDisk;
 #if WITH_EDITORONLY_DATA
@@ -334,6 +335,11 @@ public:
 	virtual bool IsDependent(UMaterialInterface* TestDependency) { return TestDependency == this; }
 
 	/**
+	 * Same as above, but can be called concurrently
+	 */
+	virtual bool IsDependent_Concurrent(UMaterialInterface* TestDependency, TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) { return TestDependency == this; }
+
+	/**
 	* Return a pointer to the FMaterialRenderProxy used for rendering.
 	* @param	Selected	specify true to return an alternate material used for rendering this material when part of a selection
 	*						@note: only valid in the editor!
@@ -573,6 +579,9 @@ public:
 		PURE_VIRTUAL(UMaterialInterface::GetStaticSwitchParameterDefaultValue,return false;);
 	virtual bool GetStaticComponentMaskParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid, bool bCheckOwnedGlobalOverrides = false) const
 		PURE_VIRTUAL(UMaterialInterface::GetStaticComponentMaskParameterDefaultValue,return false;);
+	/** Add to the set any texture referenced by expressions, including nested functions, as well as any overrides from parameters. */
+	virtual void GetReferencedTexturesAndOverrides(TSet<const UTexture*>& InOutTextures) const
+		PURE_VIRTUAL(UMaterialInterface::GetReferencedTexturesAndOverrides, );
 #endif // WITH_EDITOR
 
 	virtual int32 GetLayerParameterIndex(EMaterialParameterAssociation Association, UMaterialFunctionInterface * LayerFunction) const

@@ -596,6 +596,9 @@ enum EMaterialShadingRate
 	MSR_2x1				UMETA(DisplayName = "2x1"),
 	MSR_1x2				UMETA(DisplayName = "1x2"),
 	MSR_2x2				UMETA(DisplayName = "2x2"),
+	MSR_4x2				UMETA(DisplayName = "4x2"),
+	MSR_2x4				UMETA(DisplayName = "2x4"),
+	MSR_4x4				UMETA(DisplayName = "4x4"),
 	MSR_Count			UMETA(Hidden),
 };
 
@@ -1580,17 +1583,17 @@ private:
 };
 
 /** A line of subtitle text and the time at which it should be displayed. */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FSubtitleCue
 {
 	GENERATED_BODY()
 
 	/** The text to appear in the subtitle. */
-	UPROPERTY(EditAnywhere, Category=SubtitleCue)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=SubtitleCue)
 	FText Text;
 
 	/** The time at which the subtitle is to be displayed, in seconds relative to the beginning of the line. */
-	UPROPERTY(EditAnywhere, Category=SubtitleCue)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=SubtitleCue)
 	float Time;
 
 	FSubtitleCue()
@@ -2941,7 +2944,7 @@ enum ENetRole
 };
 
 /** Describes if an actor can enter a low network bandwidth dormant mode */
-UENUM()
+UENUM(BlueprintType)
 enum ENetDormancy
 {
 	/** This actor can never go network dormant. */
@@ -3556,19 +3559,22 @@ struct FConstrainComponentPropName
  *	Struct that allows for different ways to reference a component. 
  *	If just an Actor is specified, will return RootComponent of that Actor.
  */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct ENGINE_API FComponentReference
 {
 	GENERATED_BODY()
 
 	FComponentReference() : OtherActor(nullptr) {}
 
-	/** Pointer to a different Actor that owns the Component.  */
-	UPROPERTY(EditInstanceOnly, Category=Component)
+	/** 
+	 * Pointer to a different Actor that owns the Component.  
+	 * If this is not provided the reference refers to a component on this / the same actor.
+	 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Referenced Actor"))
 	AActor* OtherActor;
 
-	/** Name of component property to use */
-	UPROPERTY(EditAnywhere, Category=Component)
+	/** Name of component to use. If this is not specified the reference refers to the root component. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Component Name"))
 	FName ComponentProperty;
 
 	/** Path to the component from its owner actor */

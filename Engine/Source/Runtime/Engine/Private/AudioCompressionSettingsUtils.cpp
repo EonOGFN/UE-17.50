@@ -86,7 +86,8 @@ void CacheAudioCookOverrides(FPlatformAudioCookOverrides& OutOverrides, const TC
 	FString PlatformName = InPlatformName ? FString(InPlatformName) : FString(FPlatformProperties::IniPlatformName());
 	
 	// now use that platform name to get the ini section out of DDPI
-	FString CategoryName = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).AudioCompressionSettingsIniSectionName;
+	const FDataDrivenPlatformInfoRegistry::FPlatformInfo& PlatformInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName);
+	const FString& CategoryName = PlatformInfo.AudioCompressionSettingsIniSectionName;
 
 	// if we don't support platform overrides, then return 
 	if (CategoryName.Len() == 0)
@@ -320,15 +321,18 @@ const FPlatformAudioCookOverrides* FPlatformCompressionUtilities::GetCookOverrid
 
 #if WITH_EDITOR
 	// In editor situations, the settings can change at any time, so we need to retrieve them.
-	
-	static double LastCacheTime = 0.0;
-	double CurrentTime = FPlatformTime::Seconds();
-	double TimeSinceLastCache = CurrentTime - LastCacheTime;
 
-	if (bForceRecache || TimeSinceLastCache > CookOverrideCachingIntervalCvar)
+	if (GIsEditor && !IsRunningCommandlet())
 	{
-		bNeedsToBeInitialized = true;
-		LastCacheTime = CurrentTime;
+		static double LastCacheTime = 0.0;
+		double CurrentTime = FPlatformTime::Seconds();
+		double TimeSinceLastCache = CurrentTime - LastCacheTime;
+
+		if (bForceRecache || TimeSinceLastCache > CookOverrideCachingIntervalCvar)
+		{
+			bNeedsToBeInitialized = true;
+			LastCacheTime = CurrentTime;
+		}
 	}
 #endif
 	

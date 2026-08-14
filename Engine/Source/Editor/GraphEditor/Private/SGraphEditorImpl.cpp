@@ -205,12 +205,9 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 	auto GetMenuEntryForPin = [](const UEdGraphPin* TargetPin, const FToolUIAction& Action, const FText& SingleDescFormat, const FText& MultiDescFormat, TMap< FString, uint32 >& LinkTitleCount)
 	{
 		FText Title = TargetPin->GetOwningNode()->GetNodeTitle(ENodeTitleType::ListView);
-		FString TitleString = Title.ToString();
 		const FText PinDisplayName = TargetPin->GetDisplayName();
 		if (!PinDisplayName.IsEmpty())
 		{
-			TitleString = FString::Printf(TEXT("%s (%s)"), *TitleString, *PinDisplayName.ToString());
-
 			// Add name of connection if possible
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("NodeTitle"), Title);
@@ -218,7 +215,7 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 			Title = FText::Format(LOCTEXT("JumpToDescPin", "{NodeTitle} ({PinName})"), Args);
 		}
 
-		uint32& Count = LinkTitleCount.FindOrAdd(TitleString);
+		uint32& Count = LinkTitleCount.FindOrAdd(Title.ToString());
 
 		FText Description;
 		FFormatNamedArguments Args;
@@ -236,7 +233,7 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 		++Count;
 
 		return FToolMenuEntry::InitMenuEntry(
-			TargetPin->GetOwningNode()->GetFName(),
+			NAME_None,
 			Description,
 			Description,
 			FSlateIcon(),
@@ -1060,16 +1057,19 @@ void SGraphEditorImpl::RegisterContextMenu(const UEdGraphSchema* Schema, FToolMe
 	{
 		UToolMenu* Menu = ToolMenus->FindMenu(EdGraphSchemaContextMenuName);
 
-		Menu->AddDynamicSection("EdGraphSchemaPinActions", FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu)
+		Menu->AddDynamicSection("EdGraphSchemaPinActions", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 			{
 				UGraphNodeContextMenuContext* NodeContext = InMenu->FindContext<UGraphNodeContextMenuContext>();
-				if (NodeContext && NodeContext->Pin)
+				if (NodeContext && NodeContext->Graph)
 				{
-					GetPinContextMenuActionsForSchema(InMenu);
+					if (TSharedPtr<SGraphEditorImpl> GraphEditor = StaticCastSharedPtr<SGraphEditorImpl>(FindGraphEditorForGraph(NodeContext->Graph)))
+					{
+						GraphEditor->GetPinContextMenuActionsForSchema(InMenu);
+					}
 				}
 			}));
 
-		Menu->AddDynamicSection("GetContextMenuActions", FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu)
+		Menu->AddDynamicSection("GetContextMenuActions", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 		{
 			if (UGraphNodeContextMenuContext* ContextObject = InMenu->FindContext<UGraphNodeContextMenuContext>())
 			{
@@ -1087,7 +1087,7 @@ void SGraphEditorImpl::RegisterContextMenu(const UEdGraphSchema* Schema, FToolMe
 	{
 		UToolMenu* Menu = ToolMenus->FindMenu(GetNodeContextMenuName(Context->Node->GetClass()));
 		 
-		Menu->AddDynamicSection("GetNodeContextMenuActions", FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu)
+		Menu->AddDynamicSection("GetNodeContextMenuActions", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 		{
 			UGraphNodeContextMenuContext* Context = InMenu->FindContext<UGraphNodeContextMenuContext>();
 			if (Context && Context->Node)
@@ -1131,6 +1131,7 @@ FActionMenuContent SGraphEditorImpl::GraphEd_OnGetContextMenuFor(const FGraphCon
 		check(Schema);
 
 		GraphPinForMenu.SetPin(SpawnInfo.GraphPin);
+		GraphNodeForMenu = SpawnInfo.GraphNode;
 		
 		if ((SpawnInfo.GraphPin != NULL) || (SpawnInfo.GraphNode != NULL))
 		{

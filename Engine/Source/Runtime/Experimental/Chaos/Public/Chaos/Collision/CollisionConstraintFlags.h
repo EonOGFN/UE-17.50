@@ -1,11 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/GeometryParticles.h"
+#include "Chaos/Core.h"
+#include "Chaos/Framework/MultiBufferResource.h"
+#include "Chaos/GeometryParticlesfwd.h"
+#include "Chaos/ParticleHandleFwd.h"
+#include "Chaos/PBDRigidsEvolutionFwd.h"
+#include "Containers/Queue.h"
 
 namespace Chaos
 {
-
 	enum class ECollisionConstraintFlags : uint32
 	{
 		CCF_None                       = 0x0,
@@ -16,53 +20,120 @@ namespace Chaos
 	class CHAOS_API FIgnoreCollisionManager
 	{
 	public:
-
+		using FGeometryParticle = TGeometryParticle<FReal, 3>;
 		using FHandleID = FUniqueIdx;
-
-		FIgnoreCollisionManager() {};
-
-		bool ContainsHandle(FHandleID Body0)
+		using FParticleArray = TArray<FGeometryParticle*>;
+		using FActiveMap = TMap<FHandleID, TArray<FHandleID> >;
+		using FPendingMap = TMap<FGeometryParticle*, FParticleArray >;
+		struct FStorageData
 		{
-			return IgnoreCollisionsList.Contains(Body0);
-		}
+			FPendingMap PendingActivations;
+			FParticleArray PendingDeactivations;
+			int32 ExternalTimestamp = INDEX_NONE;
 
-		bool IgnoresCollision(FHandleID Body0, FHandleID Body1)
-		{
-			if (IgnoreCollisionsList.Contains(Body0))
+			void Reset()
 			{
-				return IgnoreCollisionsList[Body0].Contains(Body1);
+				PendingActivations.Reset();
+				PendingDeactivations.Reset();
+				ExternalTimestamp = INDEX_NONE;
 			}
-			return false;
+		};
+
+		FIgnoreCollisionManager()
+			: StorageDataProducer(nullptr)
+		{
+			StorageDataProducer = GetNewStorageData();
 		}
 
-		int32 NumIgnoredCollision(FHandleID Body0)
+		bool ContainsHandle(FHandleID Body0);
+
+		bool IgnoresCollision(FHandleID Body0, FHandleID Body1);
+
+		int32 NumIgnoredCollision(FHandleID Body0);
+
+		void AddIgnoreCollisionsFor(FHandleID Body0, FHandleID Body1);
+
+		void RemoveIgnoreCollisionsFor(FHandleID Body0, FHandleID Body1);
+
+		FPendingMap& GetPendingActivationsForGameThread(int32 ExternalTimestamp) 
 		{
-			if (IgnoreCollisionsList.Contains(Body0))
+			if (StorageDataProducer->ExternalTimestamp == INDEX_NONE)
 			{
-				return IgnoreCollisionsList[Body0].Num();
+				StorageDataProducer->ExternalTimestamp = ExternalTimestamp;
 			}
-			return 0;
+			else
+			{
+				ensure(StorageDataProducer->ExternalTimestamp == ExternalTimestamp);
+			}
+
+			return StorageDataProducer->PendingActivations;
 		}
 
-		void AddIgnoreCollisionsFor(FHandleID Body0, FHandleID Body1)
+		FParticleArray& GetPendingDeactivationsForGameThread(int32 ExternalTimestamp)
 		{
-			if (!IgnoreCollisionsList.Contains(Body0))
+			if (StorageDataProducer->ExternalTimestamp == INDEX_NONE)
 			{
-				IgnoreCollisionsList.Add(Body0, TArray<FHandleID>());
+				StorageDataProducer->ExternalTimestamp = ExternalTimestamp;
 			}
-			IgnoreCollisionsList[Body0].Add(Body1);
+			else
+			{
+				ensure(StorageDataProducer->ExternalTimestamp == ExternalTimestamp);
+			}
 
+			return StorageDataProducer->PendingDeactivations;
 		}
-		void RemoveIgnoreCollisionsFor(FHandleID Body0, FHandleID Body1)
+
+		void PushProducerStorageData_External(int32 ExternalTimestamp)
 		{
-			if (IgnoreCollisionsList.Contains(Body0))
+			if (StorageDataProducer->ExternalTimestamp != INDEX_NONE)
 			{
-				IgnoreCollisionsList[Body0].Remove(Body1);
+				ensure(ExternalTimestamp == StorageDataProducer->ExternalTimestamp);
+				StorageDataQueue.Enqueue(StorageDataProducer);
+				StorageDataProducer = GetNewStorageData();
 			}
 		}
+
+		/*
+		*
+		*/
+		void ProcessPendingQueues();
+
+		/*
+		*
+		*/
+		void PopStorageData_Internal(int32 ExternalTimestamp);
 
 	private:
-		TMap<FHandleID, TArray<FHandleID> > IgnoreCollisionsList;
+
+		FStorageData* GetNewStorageData()
+		{
+			FStorageData* StorageData;
+			if (StorageDataFreePool.Dequeue(StorageData))
+			{
+				return StorageData;
+			}
+
+			StorageDataBackingBuffer.Emplace(MakeUnique<FStorageData>());
+			return StorageDataBackingBuffer.Last().Get();
+		}
+
+		void ReleaseStorageData(FStorageData *InStorageData)
+		{
+			InStorageData->Reset();
+			StorageDataFreePool.Enqueue(InStorageData);
+		}
+
+		FActiveMap IgnoreCollisionsList;
+
+		FPendingMap PendingActivations;
+		FParticleArray PendingDeactivations;
+
+		// Producer storage data, pending changes written here until pushed into queue.
+		FStorageData* StorageDataProducer;
+
+		TQueue<FStorageData*, EQueueMode::Spsc> StorageDataQueue; // Queue of storage data being passed to physics thread
+		TQueue<FStorageData*,EQueueMode::Spsc> StorageDataFreePool;	//free pool of storage data
+		TArray<TUniquePtr<FStorageData>> StorageDataBackingBuffer;	// Holds unique ptrs for storage data allocation
 	};
 
 } // Chaos

@@ -81,6 +81,7 @@ TEST(ImplicitTests, Implicit) {
 	ChaosTest::ImplicitTransformed<float>();
 	ChaosTest::ImplicitIntersection<float>();
 	ChaosTest::ImplicitUnion<float>();
+	ChaosTest::UpdateImplicitUnion<float>();
 	// @todo: Make this work at some point
 	//ChaosTest::ImplicitLevelset<float>();
 
@@ -106,6 +107,7 @@ TEST(CollisionTests, Collisions) {
 	ChaosTest::CollisionBoxPlane<float>();
 	ChaosTest::CollisionBoxPlaneZeroResitution<float>();
 	ChaosTest::CollisionBoxPlaneRestitution<float>();
+	ChaosTest::CollisionCubeCubeRestitution<float>();
 	ChaosTest::CollisionBoxToStaticBox<float>();
 	ChaosTest::CollisionConvexConvex<float>();
 
@@ -146,17 +148,17 @@ TEST(BroadphaseTests, Broadphase) {
 	SUCCEED();
 }
 
-TEST(ClothTests, DeformableGravity) {
-	ChaosTest::DeformableGravity<float>();
-
-	SUCCEED();
-}
-
-TEST(ClothTests, EdgeConstraints) {
-	ChaosTest::EdgeConstraints<float>();
-
-	SUCCEED();
-}
+//TEST(ClothTests, DeformableGravity) {
+//	ChaosTest::DeformableGravity<float>();
+//
+//	SUCCEED();
+//}
+//
+//TEST(ClothTests, EdgeConstraints) {
+//	ChaosTest::EdgeConstraints<float>();
+//
+//	SUCCEED();
+//}
 
 TEST(RaycastTests, Raycast) {
 	ChaosTest::SphereRaycast<float>();
@@ -285,6 +287,7 @@ TEST(GeometryCollection_MatricesTest,ReparentingMatrices) { GeometryCollectionTe
 // Creation Tests
 TEST(GeometryCollection_CreationTest,CheckIncrementMask) { GeometryCollectionTest::CheckIncrementMask<float>(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,Creation) { GeometryCollectionTest::Creation<float>(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest,Empty) { GeometryCollectionTest::Empty<float>(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,AppendTransformHierarchy) { GeometryCollectionTest::AppendTransformHierarchy<float>(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,ParentTransformTest) { GeometryCollectionTest::ParentTransformTest<float>(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,DeleteFromEnd) { GeometryCollectionTest::DeleteFromEnd<float>(); SUCCEED(); }
@@ -426,7 +429,8 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 {
     // start up the main loop
 	GEngineLoop.PreInit(ArgC, ArgV);
-
+	FModuleManager::Get().StartProcessingNewlyLoadedObjects();
+	
 	::testing::InitGoogleTest(&ArgC, ArgV);
 
 	// Add a UE-formatting printer

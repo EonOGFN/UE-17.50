@@ -129,6 +129,25 @@ struct NIAGARASHADER_API FNiagaraDataInterfaceGeneratedFunction
 
 	bool Serialize(FArchive& Ar);
 	friend bool operator<<(FArchive& Ar, FNiagaraDataInterfaceGeneratedFunction& DIFunction);
+
+	bool operator==(const FNiagaraDataInterfaceGeneratedFunction& Other) const
+	{
+		if (DefinitionName != Other.DefinitionName || InstanceName != Other.InstanceName)
+			return false;
+		if (Specifiers.Num() != Other.Specifiers.Num())
+			return false;
+		for (int32 i = 0; i < Specifiers.Num(); i++)
+		{
+			if (Specifiers[i] != Other.Specifiers[i])
+				return false;
+		}
+		return true;
+	}
+
+	bool operator!=(const FNiagaraDataInterfaceGeneratedFunction& Other) const
+	{
+		return !(*this == Other);
+	}
 };
 
 template<> struct TStructOpsTypeTraits<FNiagaraDataInterfaceGeneratedFunction> : public TStructOpsTypeTraitsBase2<FNiagaraDataInterfaceGeneratedFunction>
@@ -235,9 +254,6 @@ public:
 
 	/** Whether or not we need to bake Rapid Iteration params. True to keep params, false to bake.*/
 	LAYOUT_FIELD_INITIALIZED(bool, bUsesRapidIterationParams, true);
-
-	/** Should we use shader permutations to reduce the cost of simulation stages or not */
-	LAYOUT_FIELD_INITIALIZED(bool, bUseShaderPermutations, true);
 
 	FNiagaraShaderMapId()
 		: CompilerVersionID()
@@ -415,7 +431,7 @@ public:
 	NIAGARASHADER_API void Compile(
 		FNiagaraShaderScript* Script,
 		const FNiagaraShaderMapId& ShaderMapId,
-		TRefCountPtr<FShaderCompilerEnvironment> CompilationEnvironment,
+		TRefCountPtr<FSharedShaderCompilerEnvironment> CompilationEnvironment,
 		const FNiagaraComputeShaderCompilationOutput& InNiagaraCompilationOutput,
 		EShaderPlatform Platform,
 		bool bSynchronousCompile,
@@ -423,7 +439,7 @@ public:
 		);
 
 	/** Sorts the incoming compiled jobs into the appropriate mesh shader maps, and finalizes this shader map so that it can be used for rendering. */
-	bool ProcessCompilationResults(const TArray<TSharedRef<class FShaderCommonCompileJob, ESPMode::ThreadSafe>>& InCompilationResults, int32& ResultIndex, float& TimeBudget);
+	bool ProcessCompilationResults(const TArray<TRefCountPtr<class FShaderCommonCompileJob>>& InCompilationResults, int32& ResultIndex, float& TimeBudget);
 
 	/**
 	* Checks whether the shader map is missing any shader types necessary for the given script.
@@ -548,7 +564,7 @@ private:
 	/** Indicates whether the shader map should be stored in the shader cache. */
 	uint32 bIsPersistent : 1;
 
-	FShader* ProcessCompilationResultsForSingleJob(TSharedRef<class FShaderCommonCompileJob, ESPMode::ThreadSafe> SingleJob, const FSHAHash& ShaderMapHash);
+	FShader* ProcessCompilationResultsForSingleJob(const TRefCountPtr<class FShaderCommonCompileJob>& SingleJob, const FSHAHash& ShaderMapHash);
 
 	bool IsNiagaraShaderComplete(const FNiagaraShaderScript* Script, const FNiagaraShaderType* ShaderType, bool bSilent);
 
@@ -600,6 +616,7 @@ public:
 		, ShaderPlatform(SP_NumPlatforms)
 		, bLoadedCookedShaderMapId(false)
 		, bLoadedFromCookedMaterial(false)
+		, bQueuedForRelease(false)
 	{}
 
 	/**
@@ -614,8 +631,11 @@ public:
 	NIAGARASHADER_API  bool CacheShaders(bool bApplyCompletedShaderMapForRendering, bool bForceRecompile, bool bSynchronous = false, const ITargetPlatform* TargetPlatform = nullptr);
 	bool CacheShaders(const FNiagaraShaderMapId& ShaderMapId, bool bApplyCompletedShaderMapForRendering, bool bForceRecompile, bool bSynchronous = false);
 
+	NIAGARASHADER_API bool GetUsesSimulationStages() const;
+	NIAGARASHADER_API bool GetUsesOldShaderStages() const;
 
-	NIAGARASHADER_API uint32 GetUseSimStagesDefine() const;
+	NIAGARASHADER_API bool GetUsesCompressedAttributes() const;
+
 	/**
 	 * Should the shader for this script with the given platform, shader type and vertex
 	 * factory type combination be compiled
@@ -693,6 +713,8 @@ public:
 	NIAGARASHADER_API void SetRenderingThreadShaderMap(FNiagaraShaderMap* InShaderMap);
 	void SetRenderThreadCachedData(const FNiagaraShaderMapCachedData& CachedData);
 
+	NIAGARASHADER_API void QueueForRelease(FThreadSafeBool& Fence);
+
 	void AddCompileId(uint32 Id) 
 	{
 		check(IsInGameThread());
@@ -727,7 +749,7 @@ public:
 
 	NIAGARASHADER_API void SetScript(UNiagaraScriptBase* InScript, ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FGuid& InCompilerVersion, const TArray<FString>& InAdditionalDefines,
 		const FNiagaraCompileHash& InBaseCompileHash, const TArray<FNiagaraCompileHash>& InReferencedCompileHashes, 
-		bool bInUsesRapidIterationParams, bool bInUseShaderPermutations, FString InFriendlyName);
+		bool bInUsesRapidIterationParams, FString InFriendlyName);
 #if WITH_EDITOR
 	NIAGARASHADER_API bool MatchesScript(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FNiagaraVMExecutableDataId& ScriptId) const;
 #endif
@@ -763,7 +785,6 @@ public:
 
 	bool IsSame(const FNiagaraShaderMapId& InId) const;
 
-	bool GetUseShaderPermutations() const { return bUseShaderPermutations; }
 	NIAGARASHADER_API int32 GetNumPermutations() const { return NumPermutations; }
 	NIAGARASHADER_API int32 PermutationIdToShaderStageIndex(int32 PermutationId) const;
 
@@ -826,9 +847,6 @@ private:
 	/** Whether or not we need to bake Rapid Iteration params. True to keep params, false to bake.*/
 	bool bUsesRapidIterationParams = true;
 
-	/** Should we use shader permutations to reduce the cost of simulation stages or not */
-	bool bUseShaderPermutations = true;
-
 	/** Compile hash for the base script. */
 	FNiagaraCompileHash BaseCompileHash;
 
@@ -850,6 +868,7 @@ private:
 
 	uint32 bLoadedCookedShaderMapId : 1;
 	uint32 bLoadedFromCookedMaterial : 1;
+	uint32 bQueuedForRelease : 1;
 
 	int32 NumPermutations = 0;
 	TArray<TPair<int32, int32>> ShaderStageToPermutation;

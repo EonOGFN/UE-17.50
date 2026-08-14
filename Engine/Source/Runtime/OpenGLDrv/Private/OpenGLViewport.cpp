@@ -111,6 +111,11 @@ void FOpenGLDynamicRHI::RHIBeginDrawingViewport(FRHIViewport* ViewportRHI, FRHIT
 		FRHIRenderTargetView RTV(DrawingViewport->GetBackBuffer(), ERenderTargetLoadAction::ELoad);
 		SetRenderTargets(1, &RTV, nullptr);
 	}
+
+	if (IsValidRef(CustomPresent))
+	{
+		CustomPresent->BeginDrawing();
+	}
 }
 
 void FOpenGLDynamicRHI::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,bool bPresent,bool bLockToVsync)
@@ -126,6 +131,14 @@ void FOpenGLDynamicRHI::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,bool bPr
 	check(DrawingViewport.GetReference() == Viewport);
 
 	FOpenGLTexture2D* BackBuffer = Viewport->GetBackBuffer();
+
+	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+
+	if (ContextState.bScissorEnabled)
+	{
+		ContextState.bScissorEnabled = false;
+		glDisable(GL_SCISSOR_TEST);
+	}
 
 	bool bNeedFinishFrame = PlatformBlitToViewport(PlatformDevice,
 		*Viewport, 

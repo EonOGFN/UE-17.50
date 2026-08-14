@@ -99,28 +99,20 @@ namespace Audio
 			{
 				const float* SourceBufferPtr = nullptr;
 
-				// Check if the bus send is in fact from another audio bus (and not a source)
-				if (AudioBusSend.AudioBusId != INDEX_NONE)
+				// If the audio source mixing to this audio bus is itself a source bus, we need to use the previous renderer buffer to avoid infinite recursion
+				if (SourceManager->IsSourceBus(AudioBusSend.SourceId))
 				{
-					SourceBufferPtr = SourceManager->GetPreviousAudioBusBuffer(AudioBusSend.AudioBusId);
+					SourceBufferPtr = SourceManager->GetPreviousSourceBusBuffer(AudioBusSend.SourceId);
+				}
+				// If the source mixing into this is not itself a bus, then simply mix the pre-attenuation audio of the source into the bus
+				// The source will have already computed its buffers for this frame
+				else if (BusSendType == (int32)EBusSendType::PostEffect)
+				{
+					SourceBufferPtr = SourceManager->GetPreDistanceAttenuationBuffer(AudioBusSend.SourceId);
 				}
 				else
 				{
-					// If the audio source mixing to this audio bus is itself a source bus, we need to use the previous renderer buffer to avoid infinite recursion
-					if (SourceManager->IsSourceBus(AudioBusSend.SourceId))
-					{
-						SourceBufferPtr = SourceManager->GetPreviousSourceBusBuffer(AudioBusSend.SourceId);
-					}
-					// If the source mixing into this is not itself a bus, then simply mix the pre-attenuation audio of the source into the bus
-					// The source will have already computed its buffers for this frame
-					else if (BusSendType == (int32)EBusSendType::PostEffect)
-					{
-						SourceBufferPtr = SourceManager->GetPreDistanceAttenuationBuffer(AudioBusSend.SourceId);
-					}
-					else
-					{
-						SourceBufferPtr = SourceManager->GetPreEffectBuffer(AudioBusSend.SourceId);
-					}
+					SourceBufferPtr = SourceManager->GetPreEffectBuffer(AudioBusSend.SourceId);
 				}
 
 				// It's possible we may not have a source buffer ptr here, so protect against it
@@ -146,32 +138,22 @@ namespace Audio
 							}
 						}
 					}
-					// If the source channels are 2 but the bus is 1 channel, we need to down-mix
-					else if (NumSourceChannels == 2 && NumChannels == 1)
+					// If the source channels is greater than num channels
+					else if (NumSourceChannels > NumChannels)
 					{
-						int32 SourceSampleIndex = 0;
-						for (int32 BusSampleIndex = 0; BusSampleIndex < NumOutputFrames; ++BusSampleIndex)
-						{
-							// Downmix the stereo source to mono before summing to bus
-							float SourceSample = 0.0f;
-							for (int32 SourceChannel = 0; SourceChannel < 2; ++SourceChannel)
-							{
-								SourceSample += SourceBufferPtr[SourceSampleIndex++];
-							}
+						check(NumChannels == 1 || NumChannels == 2);
+						Audio::AlignedFloatBuffer ChannelMap;
+						SourceManager->Get2DChannelMap(AudioBusSend.SourceId, NumChannels, ChannelMap);
 
-							SourceSample *= 0.5f;
-							SourceSample *= AudioBusSend.SendLevel;
-
-							BusDataBufferPtr[BusSampleIndex] += SourceSample;
-						}
+						Audio::AlignedFloatBuffer DownmixedBuffer;
+						DownmixedBuffer.AddUninitialized(NumOutputFrames * NumChannels);
+						Audio::DownmixBuffer(NumSourceChannels, NumChannels, SourceBufferPtr, DownmixedBuffer.GetData(), NumOutputFrames, ChannelMap.GetData());
+						Audio::MixInBufferFast(DownmixedBuffer.GetData(), BusDataBufferPtr, DownmixedBuffer.Num(), AudioBusSend.SendLevel);
 					}
 					// If they're the same channels, just mix it in
-					else
+					else if (ensureMsgf(NumSourceChannels == NumChannels, TEXT("NumSourceChannels=%d, NumChannels=%d"), NumSourceChannels, NumChannels))
 					{
-						for (int32 SampleIndex = 0; SampleIndex < NumSourceSamples; ++SampleIndex)
-						{
-							BusDataBufferPtr[SampleIndex] += (AudioBusSend.SendLevel * SourceBufferPtr[SampleIndex]);
-						}
+						Audio::MixInBufferFast(SourceBufferPtr, BusDataBufferPtr, NumOutputFrames * NumChannels, AudioBusSend.SendLevel);
 					}
 
 					// Push the mixed data to the patch splitter

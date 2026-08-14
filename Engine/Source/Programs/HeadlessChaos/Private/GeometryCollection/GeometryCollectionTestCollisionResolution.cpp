@@ -16,13 +16,22 @@ namespace GeometryCollectionTest
 
 		TGeometryCollectionWrapper<Traits>* Collection = nullptr;
 		{
-			FVector GlobalTranslation(0, 0, 10); FQuat GlobalRotation = FQuat::MakeFromEuler(FVector(0));
-			CreationParameters Params; Params.DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic; Params.EnableClustering = false;
-			Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;  Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Sphere; Params.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-			Params.RootTransform = FTransform(GlobalRotation, GlobalTranslation); Params.NestedTransforms = { FTransform::Identity, FTransform::Identity, FTransform::Identity };
+			FVector GlobalTranslation(0, 0, 10); 
+			FQuat GlobalRotation = FQuat::MakeFromEuler(FVector(0));
+			
+			CreationParameters Params; 
+			Params.DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic; 
+			Params.EnableClustering = false;
+			Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;  
+			Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Sphere; 
+			Params.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
+			Params.RootTransform = FTransform(GlobalRotation, GlobalTranslation); 
+			Params.NestedTransforms = { FTransform::Identity, FTransform::Identity, FTransform::Identity };
+			
 			Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSingleRigid>::Init<Traits>(Params)->template As<TGeometryCollectionWrapper<Traits>>();
 			EXPECT_EQ(Collection->DynamicCollection->Parent[0], 1); // is a child of index one
 			EXPECT_TRUE(Collection->DynamicCollection->MassToLocal[0].Equals(FTransform::Identity)); // we are not testing MassToLocal in this test
+			
 			UnitTest.AddSimulationObject(Collection);
 		}
 
@@ -497,8 +506,12 @@ namespace GeometryCollectionTest
 		TGeometryCollectionWrapper<Traits>* Collection = nullptr;
 		{
 			FVector GlobalTranslation(0, 0, Scale + 10); FQuat GlobalRotation = FQuat::MakeFromEuler(FVector(0));
-			CreationParameters Params; Params.DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic; Params.EnableClustering = false;
-			Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_LevelSet;  Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Tetrahedron; Params.CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
+			CreationParameters Params;
+			Params.DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic;
+			Params.EnableClustering = false;
+			Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_LevelSet;
+			Params.SimplicialType = ESimplicialType::Chaos_Simplicial_Tetrahedron;
+			Params.CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
 			Params.GeomTransform = FTransform(GlobalRotation, GlobalTranslation);
 			FVector TetraHedronScale(Scale);
 			Params.GeomTransform.SetScale3D(TetraHedronScale); // Tetrahedron dimensions
@@ -514,16 +527,25 @@ namespace GeometryCollectionTest
 
 		UnitTest.Initialize();
 
-		for (int i = 0; i < 20; i++)
+		for (int i = 0; i < 40; i++)
 		{
 			UnitTest.Advance();
 		}
 		{
+			// Expected resting distance depends on the collision solver implementation. The current implementation uses PushOut
+			// to set distance to 0 (see CollisionSolver.cpp ApplyPushOutManifold()), but real PBD would leave the distance at G.dt.dt
+			// Note: This is set to the true PBD distance for now until zero restitution bouncing is fixed
+			const FReal ExpectedRestingDistance = 0.0f; // True for manifold solver
+			//const FReal ExpectedRestingDistance = UnitTest.Solver->GetEvolution()->GetGravityForces().GetAcceleration().Size() * UnitTest.Dt * UnitTest.Dt;	// Non-manifold version
+
+
 			// validate the tetahedron collides and moved away from the static floor
-			EXPECT_EQ(Collection->RestCollection->Transform[0].GetTranslation().Z, 0.f);
-			EXPECT_NEAR(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().X), 0.f, 0.01);
-			EXPECT_NEAR(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Y), 0.f, 0.01);
-			EXPECT_NEAR(Collection->DynamicCollection->Transform[0].GetTranslation().Z, -10.f, 0.1);
+			FVec3 RestTranslation = Collection->RestCollection->Transform[0].GetTranslation();
+			FVec3 DynamicTranslation = Collection->DynamicCollection->Transform[0].GetTranslation();
+			EXPECT_EQ(RestTranslation.Z, 0.f);
+			EXPECT_NEAR(FMath::Abs(DynamicTranslation.X), 0.f, 0.01f);
+			EXPECT_NEAR(FMath::Abs(DynamicTranslation.Y), 0.f, 0.01f);
+			EXPECT_NEAR(DynamicTranslation.Z, -10.f + ExpectedRestingDistance, 0.1f);
 		}
 	}
 

@@ -236,6 +236,7 @@ static bool VerifyLinkedProgram(GLuint Program)
 	{
 		if (ReportProgramLinkFailures())
 		{
+			GLenum LastGLError = glGetError();
 			GLint LogLength;
 			ANSICHAR DefaultLog[] = "No log";
 			ANSICHAR *CompileLog = DefaultLog;
@@ -245,8 +246,9 @@ static bool VerifyLinkedProgram(GLuint Program)
 				CompileLog = (ANSICHAR *)FMemory::Malloc(LogLength);
 				glGetProgramInfoLog(Program, LogLength, NULL, CompileLog);
 			}
-			UE_LOG(LogRHI, Error, TEXT("Failed to link program. Current total programs: %d program binary bytes: %d\n  log:\n%s"),
+			UE_LOG(LogRHI, Error, TEXT("Failed to link program. Current total programs: %d program binary bytes, last gl error 0x%X, drvalloc %d\n  log:\n%s"),
 				GNumPrograms,
+				LastGLError,
 				GCurrentDriverProgramBinaryAllocation,
 				ANSI_TO_TCHAR(CompileLog));
 
@@ -265,69 +267,6 @@ static bool VerifyLinkedProgram(GLuint Program)
 	return true;
 }
 
-/**
- * Verify that an OpenGL shader has compiled successfully.
- */
-static bool VerifyCompiledShader(GLuint Shader, const ANSICHAR* GlslCode )
-{
-	SCOPE_CYCLE_COUNTER(STAT_OpenGLShaderCompileVerifyTime);
-
-	if (FOpenGL::SupportsSeparateShaderObjects() && glIsProgram(Shader))
-	{
-		bool const bCompiledOK = VerifyLinkedProgram(Shader);
-#if DEBUG_GL_SHADERS
-		if (!bCompiledOK && GlslCode)
-		{
-			UE_LOG(LogRHI,Error,TEXT("Shader:\n%s"),ANSI_TO_TCHAR(GlslCode));
-		}
-#endif
-		return bCompiledOK;
-	}
-	else
-	{
-		GLint CompileStatus;
-		glGetShaderiv(Shader, GL_COMPILE_STATUS, &CompileStatus);
-		if (CompileStatus != GL_TRUE)
-		{
-			if (ReportShaderCompileFailures())
-			{
-				GLint LogLength;
-				ANSICHAR DefaultLog[] = "No log";
-				ANSICHAR *CompileLog = DefaultLog;
-				glGetShaderiv(Shader, GL_INFO_LOG_LENGTH, &LogLength);
-#if PLATFORM_ANDROID
-				if ( LogLength == 0 )
-				{
-					// make it big anyway
-					// there was a bug in android 2.2 where glGetShaderiv would return 0 even though there was a error message
-					// https://code.google.com/p/android/issues/detail?id=9953
-					LogLength = 4096;
-				}
-#endif
-				if (LogLength > 1)
-				{
-					CompileLog = (ANSICHAR *)FMemory::Malloc(LogLength);
-					glGetShaderInfoLog(Shader, LogLength, NULL, CompileLog);
-				}
-
-#if DEBUG_GL_SHADERS
-				if (GlslCode)
-				{
-					UE_LOG(LogRHI,Error,TEXT("Shader:\n%s"),ANSI_TO_TCHAR(GlslCode));
-				}
-#endif
-				UE_LOG(LogRHI,Error,TEXT("Failed to compile shader. Compile log:\n%s"), ANSI_TO_TCHAR(CompileLog));
-				if (LogLength > 1)
-				{
-					FMemory::Free(CompileLog);
-				}
-			}
-			// if we're required to ignore compile failure then we return true here, it will end with link failure.
-			return CVarIgnoreShaderCompileFailure.GetValueOnAnyThread() == 1;
-		}
-	}
-	return true;
-}
 
 // Verify a program has created successfully, the non-SSO case will log errors and return back success status.
 // TODO: SupportsSeparateShaderObjects case.
@@ -565,92 +504,9 @@ inline uint32 GetTypeHash(FAnsiCharArray const& CharArray)
 	return FCrc::MemCrc32(CharArray.GetData(), CharArray.Num() * sizeof(ANSICHAR));
 }
 
-static void BindShaderLocations(GLenum TypeEnum, GLuint Resource, uint16 InOutMask, const uint8 * RemapTable = nullptr)
-{
-	if ( OpenGLShaderPlatformNeedsBindLocation(GMaxRHIShaderPlatform) )
-	{
-		ANSICHAR Buf[32] = {0};
-		switch(TypeEnum)
-		{
-			case GL_VERTEX_SHADER:
-			{
-				uint32 Mask = InOutMask;
-				uint32 Index = 0;
-				FCStringAnsi::Strcpy(Buf, "in_ATTRIBUTE");
-				while (Mask)
-				{
-					if (Mask & 0x1)
-					{
-						if (Index < 10)
-						{
-							Buf[12] = '0' + Index;
-							Buf[13] = 0;
-						}
-						else
-						{
-							Buf[12] = '1';
-							Buf[13] = '0' + (Index % 10);
-							Buf[14] = 0;
-						}
-
-						if (FOpenGL::NeedsVertexAttribRemapTable())
-						{
-							check(RemapTable != nullptr);
-							uint32 MappedAttributeIndex = RemapTable[Index];
-							check(MappedAttributeIndex < NUM_OPENGL_VERTEX_STREAMS);
-							glBindAttribLocation(Resource, MappedAttributeIndex, Buf);
-						}
-						else
-						{
-							glBindAttribLocation(Resource, Index, Buf);
-						}
-					}
-					Index++;
-					Mask >>= 1;
-				}
-				break;
-			}
-			case GL_FRAGMENT_SHADER:
-			{
-				uint32 Mask = (InOutMask) & 0x7fff; // mask out the depth bit
-				uint32 Index = 0;
-				FCStringAnsi::Strcpy(Buf, "out_Target");
-				while (Mask)
-				{
-					if (Mask & 0x1)
-					{
-						if (Index < 10)
-						{
-							Buf[10] = '0' + Index;
-							Buf[11] = 0;
-						}
-						else
-						{
-							Buf[10] = '1';
-							Buf[11] = '0' + (Index % 10);
-							Buf[12] = 0;
-						}
-						FOpenGL::BindFragDataLocation(Resource, Index, Buf);
-					}
-					Index++;
-					Mask >>= 1;
-				}
-				break;
-			}
-			case GL_GEOMETRY_SHADER:
-			case GL_COMPUTE_SHADER:
-			case GL_TESS_CONTROL_SHADER:
-			case GL_TESS_EVALUATION_SHADER:
-				break;
-			default:
-				check(0);
-				break;
-		}
-	}
-}
-
-// Helper to compile a shader and return success, logging errors if necessary.
-GLint CompileCurrentShader(const GLuint Resource, const FAnsiCharArray& GlslCode)
+// Helper to compile a shader 
+// returns true if shader was compiled without any errors or errors should be ignored
+static bool CompileCurrentShader(const GLuint Resource, const FAnsiCharArray& GlslCode)
 {
 	VERIFY_GL_SCOPE();
 	const ANSICHAR * GlslCodeString = GlslCode.GetData();
@@ -659,43 +515,66 @@ GLint CompileCurrentShader(const GLuint Resource, const FAnsiCharArray& GlslCode
 	glShaderSource(Resource, 1, (const GLchar**)&GlslCodeString, &GlslCodeLength);
 	glCompileShader(Resource);
 
-	GLint CompileStatus = GL_TRUE;
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
-	// On Android the same shader is compiled with different hacks to find the right one(s) to apply so don't cache unless successful if currently testing them
-	if (FOpenGL::IsCheckingShaderCompilerHacks())
+	// Verify that an OpenGL shader has compiled successfully.
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLShaderCompileVerifyTime);
+	
+	if (FOpenGL::SupportsSeparateShaderObjects() && glIsProgram(Resource))
 	{
-		glGetShaderiv(Resource, GL_COMPILE_STATUS, &CompileStatus);
-		GOpenGLShaderHackLastCompileSuccess = (CompileStatus == GL_TRUE);
-	}
-#endif
-#if ((PLATFORM_ANDROID && !PLATFORM_LUMINGL4) || PLATFORM_IOS) && !UE_BUILD_SHIPPING
-	if (!FOpenGL::IsCheckingShaderCompilerHacks())
-	{
-		glGetShaderiv(Resource, GL_COMPILE_STATUS, &CompileStatus);
-		if (CompileStatus == GL_FALSE)
+		bool const bCompiledOK = VerifyLinkedProgram(Resource);
+#if DEBUG_GL_SHADERS
+		if (!bCompiledOK && GlslCodeString)
 		{
-			char Msg[2048];
-			glGetShaderInfoLog(Resource, 2048, nullptr, Msg);
-			UE_LOG(LogRHI, Error, TEXT("Shader compile failed: %s\n Original Source is (len %d) %s"), ANSI_TO_TCHAR(Msg), GlslCodeLength, ANSI_TO_TCHAR(GlslCodeString));
+			UE_LOG(LogRHI,Error,TEXT("Shader:\n%s"), ANSI_TO_TCHAR(GlslCodeString));
+		}
+#endif
+		return bCompiledOK;
+	}
+	else
+	{
+		GLint CompileStatus;
+		glGetShaderiv(Resource, GL_COMPILE_STATUS, &CompileStatus);
+		if (CompileStatus != GL_TRUE)
+		{
+			if (ReportShaderCompileFailures())
+			{
+				GLint LogLength;
+				ANSICHAR DefaultLog[] = "No log";
+				ANSICHAR *CompileLog = DefaultLog;
+				glGetShaderiv(Resource, GL_INFO_LOG_LENGTH, &LogLength);
+#if PLATFORM_ANDROID
+				if ( LogLength == 0 )
+				{
+					// make it big anyway
+					// there was a bug in android 2.2 where glGetShaderiv would return 0 even though there was a error message
+					// https://code.google.com/p/android/issues/detail?id=9953
+					LogLength = 4096;
+				}
+#endif
+				if (LogLength > 1)
+				{
+					CompileLog = (ANSICHAR *)FMemory::Malloc(LogLength);
+					glGetShaderInfoLog(Resource, LogLength, NULL, CompileLog);
+				}
+
+#if DEBUG_GL_SHADERS
+				if (GlslCodeString)
+				{
+					UE_LOG(LogRHI,Error,TEXT("Shader:\n%s"),ANSI_TO_TCHAR(GlslCodeString));
+				}
+#endif
+				UE_LOG(LogRHI,Error,TEXT("Failed to compile shader. Compile log:\n%s"), ANSI_TO_TCHAR(CompileLog));
+				if (LogLength > 1)
+				{
+					FMemory::Free(CompileLog);
+				}
+			}
+			// if we're required to ignore compile failure then we return true here, it will end with link failure.
+			return CVarIgnoreShaderCompileFailure.GetValueOnAnyThread() == 1;
 		}
 	}
-#endif
-
-#if PLATFORM_IOS // fix for running out of memory in the driver when compiling/linking a lot of shaders on the first frame
-	if (FOpenGL::IsLimitingShaderCompileCount())
-	{
-		static int CompileCount = 0;
-		CompileCount++;
-		if (CompileCount == 2500)
-		{
-			glFlush();
-			CompileCount = 0;
-		}
-	}
-#endif
-
-	return CompileStatus;
+	return true;
 }
+
 
 // Set the shader hash for FRHIShaders only.
 template<typename TRHIType>
@@ -834,17 +713,16 @@ ShaderType* CompileOpenGLShader(TArrayView<const uint8> InShaderCode, const FSHA
 		GetCurrentOpenGLShaderDeviceCapabilities(Capabilities);
 		GLSLToDeviceCompatibleGLSL(GlslCodeOriginal, Header.ShaderName, TypeEnum, Capabilities, GlslCode);
 
-		GLint CompileStatus = GL_TRUE;
-
 		// Save the code and defer compilation if our device supports program binaries and we're not checking for shader compatibility.
-		if (!FOpenGLProgramBinaryCache::DeferShaderCompilation(Resource, GlslCode))
-		{
-			CompileStatus = CompileCurrentShader(Resource, GlslCode);
-		}
+		const bool bDeferredCompilation = FOpenGLProgramBinaryCache::DeferShaderCompilation(Resource, GlslCode);
+		// deferred compilation is not supported for SeparateShaderObjects
+		check(!bDeferredCompilation || !Capabilities.bSupportsSeparateShaderObjects);
 
-		if ( CompileStatus == GL_TRUE ) //-V547
+		if (!bDeferredCompilation)
 		{
-			if (Capabilities.bSupportsSeparateShaderObjects)
+			const bool bSuccessfullyCompiled = CompileCurrentShader(Resource, GlslCode);
+			
+			if (Capabilities.bSupportsSeparateShaderObjects && bSuccessfullyCompiled)
 			{
 				ANSICHAR Buf[32] = {0};
 				// Create separate shader program
@@ -853,24 +731,19 @@ ShaderType* CompileOpenGLShader(TArrayView<const uint8> InShaderCode, const FSHA
 				glAttachShader(SeparateResource, Resource);
 				
 				glLinkProgram(SeparateResource);
-				bool const bLinkedOK = VerifyLinkedProgram(SeparateResource);
-				if (!bLinkedOK)
-				{
-					const ANSICHAR* GlslCodeString = GlslCode.GetData();
-					check(VerifyCompiledShader(Resource, GlslCodeString));
-				}
+				VerifyLinkedProgram(SeparateResource);
 			
-#if ENABLE_UNIFORM_BUFFER_LAYOUT_VERIFICATION
+	#if ENABLE_UNIFORM_BUFFER_LAYOUT_VERIFICATION
 				void VerifyUniformBufferLayouts(GLuint Program);
 				VerifyUniformBufferLayouts(SeparateResource);
-#endif // #if ENABLE_UNIFORM_BUFFER_LAYOUT_VERIFICATION
+	#endif // #if ENABLE_UNIFORM_BUFFER_LAYOUT_VERIFICATION
 			
 				Resource = SeparateResource;
 			}
-			
-			// Cache it; compile status will be checked later on link (always caching will prevent multiple attempts to compile a failed shader)
-			GetOpenGLCompiledShaderCache().Add(Key, Resource);
 		}
+
+		// Cache it; (always caching will prevent multiple attempts to compile a failed shader)
+		GetOpenGLCompiledShaderCache().Add(Key, Resource);
 	}
 
 	Shader = new ShaderType();
@@ -940,13 +813,9 @@ void OPENGLDRV_API GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceC
 	if (FOpenGL::IsAndroidGLESCompatibilityModeEnabled())
 	{
 		Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Android;
-		Capabilities.bUseES30ShadingLanguage = false;
 		Capabilities.bSupportsShaderFramebufferFetch = FOpenGL::SupportsShaderFramebufferFetch();
 		Capabilities.bRequiresARMShaderFramebufferFetchDepthStencilUndef = false;
-		Capabilities.bRequiresDontEmitPrecisionForTextureSamplers = false;
-		Capabilities.bRequiresTextureCubeLodEXTToTextureCubeLodDefine = false;
 		Capabilities.MaxVaryingVectors = FOpenGL::GetMaxVaryingVectors();
-		Capabilities.bRequiresTexture2DPrecisionHack = false;
 	}
 
 #elif PLATFORM_ANDROID
@@ -954,14 +823,9 @@ void OPENGLDRV_API GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceC
 		Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Desktop;
 	#else
 		Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Android;
-		Capabilities.bUseES30ShadingLanguage = FOpenGL::UseES30ShadingLanguage();
 		Capabilities.bSupportsShaderFramebufferFetch = FOpenGL::SupportsShaderFramebufferFetch();
 		Capabilities.bRequiresARMShaderFramebufferFetchDepthStencilUndef = FOpenGL::RequiresARMShaderFramebufferFetchDepthStencilUndef();
-		Capabilities.bRequiresDontEmitPrecisionForTextureSamplers = FOpenGL::RequiresDontEmitPrecisionForTextureSamplers();
-		Capabilities.bRequiresTextureCubeLodEXTToTextureCubeLodDefine = FOpenGL::RequiresTextureCubeLodEXTToTextureCubeLodDefine();
 		Capabilities.MaxVaryingVectors = FOpenGL::GetMaxVaryingVectors();
-		Capabilities.bRequiresTexture2DPrecisionHack = FOpenGL::RequiresTexture2DPrecisionHack();
-		Capabilities.bRequiresRoundFunctionHack = FOpenGL::RequiresRoundFunctionHack();
 		Capabilities.bRequiresDisabledEarlyFragmentTests = FOpenGL::RequiresDisabledEarlyFragmentTests();
 	#endif // PLATFORM_LUMINGL4
 #elif PLATFORM_IOS
@@ -985,36 +849,20 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 		return; // platform extension overrides
 	}
 
-	// Whether shader was compiled for ES 3.1
-	const ANSICHAR* ES310Version = "#version 310 es";
-	const bool bES31 = (FCStringAnsi::Strstr(GlslCodeOriginal.GetData(), ES310Version) != nullptr);
-
 	// Whether we need to emit mobile multi-view code or not.
 	const bool bEmitMobileMultiView = (FCStringAnsi::Strstr(GlslCodeOriginal.GetData(), "gl_ViewID_OVR") != nullptr);
 
 	// Whether we need to emit texture external code or not.
 	const bool bEmitTextureExternal = (FCStringAnsi::Strstr(GlslCodeOriginal.GetData(), "samplerExternalOES") != nullptr);
 
-	bool bUseES30ShadingLanguage = Capabilities.bUseES30ShadingLanguage;
-
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
-	FOpenGL::EImageExternalType ImageExternalType = FOpenGL::GetImageExternalType();
-
-	if (bEmitTextureExternal && ImageExternalType == FOpenGL::EImageExternalType::ImageExternal100)
-	{
-		bUseES30ShadingLanguage = false;
-	}
-#endif
-
 	FAnsiCharArray GlslCodeAfterExtensions;
 	const ANSICHAR* GlslPlaceHolderAfterExtensions = "// end extensions";
 	bool bGlslCodeHasExtensions = CStringCountOccurances(GlslCodeOriginal, GlslPlaceHolderAfterExtensions) == 1;
 	
-	bool bNeedsExtDrawInstancedDefine = false;
 	if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_Android)
 	{
-		bNeedsExtDrawInstancedDefine = false;
-		
+		const ANSICHAR* ES310Version = "#version 310 es";
+
 		// @todo Lumin hack: This is needed for AEP on Lumin, so that some shaders compile that need version 320
 		#if PLATFORM_LUMINGL4
 			AppendCString(GlslCode, "#version 320 es\n");
@@ -1025,20 +873,6 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 			ReplaceCString(GlslCodeOriginal, ES310Version, "");
 		#endif
 	}
-	else if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_iOS)
-	{
-		bNeedsExtDrawInstancedDefine = true;
-		AppendCString(GlslCode, "#version 100\n");
-		ReplaceCString(GlslCodeOriginal, "#version 100", "");
-	}
-
-	if (bNeedsExtDrawInstancedDefine)
-	{
-		// Check for the GL_EXT_draw_instanced extension if necessary (version < 300)
-		AppendCString(GlslCode, "#ifdef GL_EXT_draw_instanced\n");
-		AppendCString(GlslCode, "#define UE_EXT_draw_instanced 1\n");
-		AppendCString(GlslCode, "#endif\n");
-	}
 
 	if (TypeEnum == GL_FRAGMENT_SHADER && Capabilities.bRequiresDisabledEarlyFragmentTests)
 	{
@@ -1047,7 +881,7 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 
 	// The incoming glsl may have preprocessor code that is dependent on defines introduced via the engine.
 	// This is the place to insert such engine preprocessor defines, immediately after the glsl version declaration.
-	if (Capabilities.bRequiresUEShaderFramebufferFetchDef && TypeEnum == GL_FRAGMENT_SHADER )
+	if (Capabilities.bRequiresUEShaderFramebufferFetchDef && TypeEnum == GL_FRAGMENT_SHADER)
 	{
 		// Some devices (Zenfone5) support GL_EXT_shader_framebuffer_fetch but do not define GL_EXT_shader_framebuffer_fetch in GLSL compiler
 		// We can't define anything with GL_, so we use UE_EXT_shader_framebuffer_fetch to enable frame buffer fetch
@@ -1066,6 +900,7 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 			AppendCString(GlslCode, "\n\n");
 
 #if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+			FOpenGL::EImageExternalType ImageExternalType = FOpenGL::GetImageExternalType();
 			switch (ImageExternalType)
 			{
 				case FOpenGL::EImageExternalType::ImageExternal100:
@@ -1110,34 +945,18 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 		}
 	}
 
-	// Only desktop with separable shader platform can use GL_ARB_separate_shader_objects for reduced shader compile/link hitches
-	// however ES3.1 relies on layout(location=) support
-	bool const bNeedsBindLocation = OpenGLShaderPlatformNeedsBindLocation(Capabilities.MaxRHIShaderPlatform) && !bES31;
-	if (OpenGLShaderPlatformSeparable(Capabilities.MaxRHIShaderPlatform) || !bNeedsBindLocation)
+	// Move version tag & extensions before beginning all other operations
+	MoveHashLines(GlslCode, GlslCodeOriginal);
+
+	// OpenGL SM5 shader platforms require location declarations for the layout, but don't necessarily use SSOs
+	if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_Desktop)
 	{
-		// Move version tag & extensions before beginning all other operations
-		MoveHashLines(GlslCode, GlslCodeOriginal);
-		
-		// OpenGL SM5 shader platforms require location declarations for the layout, but don't necessarily use SSOs
-		if (Capabilities.bSupportsSeparateShaderObjects || !bNeedsBindLocation)
-		{
-			if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_Desktop)
-			{
-				AppendCString(GlslCode, "#extension GL_ARB_separate_shader_objects : enable\n");
-				AppendCString(GlslCode, "#define INTERFACE_LOCATION(Pos) layout(location=Pos) \n");
-				AppendCString(GlslCode, "#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) layout(location=Pos) Interp Modifiers struct { PreType PostType; }\n");
-			}
-			else
-			{
-				AppendCString(GlslCode, "#define INTERFACE_LOCATION(Pos) layout(location=Pos) \n");
-				AppendCString(GlslCode, "#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) layout(location=Pos) Modifiers Semantic { PreType PostType; }\n");
-			}
-		}
-		else
-		{
-			AppendCString(GlslCode, "#define INTERFACE_LOCATION(Pos) \n");
-			AppendCString(GlslCode, "#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) Modifiers Semantic { Interp PreType PostType; }\n");
-		}
+		AppendCString(GlslCode, "#extension GL_ARB_separate_shader_objects : enable\n");
+		AppendCString(GlslCode, "#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) layout(location=Pos) Interp Modifiers struct { PreType PostType; }\n");
+	}
+	else
+	{
+		AppendCString(GlslCode, "#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) layout(location=Pos) Modifiers Semantic { PreType PostType; }\n");
 	}
 
 	if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_Desktop)
@@ -1188,7 +1007,6 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 		// the initial code has an #extension chunk. replace the placeholder line
 		ReplaceCString(GlslCode, GlslPlaceHolderAfterExtensions, GlslCodeAfterExtensions.GetData());
 	}
-
 }
 
 /**
@@ -1260,27 +1078,6 @@ FDomainShaderRHIRef FOpenGLDynamicRHI::RHICreateDomainShader(TArrayView<const ui
 	return CreateProxyShader<FRHIDomainShader, FOpenGLDomainShaderProxy>(Code, Hash);
 }
 
-template<typename RHIType, typename TOGLProxyType>
-RHIType* CreateProxyShader(FRHIShaderLibrary* Library, FSHAHash Hash)
-{
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	if (ShouldRunGLRenderContextOpOnThisThread(RHICmdList))
-	{
-		return new TOGLProxyType([&](RHIType* OwnerRHI)
-		{
-			return CompileOpenGLShader<typename TOGLProxyType::ContainedGLType>(Library, Hash, OwnerRHI);
-		});
-	}
-	else
-	{
-		// take a copy of the code for RHIT version.
-		return new TOGLProxyType([Library, Hash](RHIType* OwnerRHI)
-		{
-			return CompileOpenGLShader<typename TOGLProxyType::ContainedGLType>(Library, Hash, OwnerRHI);
-		});
-	}
-}
-
 static void MarkShaderParameterCachesDirty(FOpenGLShaderParameterCache* ShaderParameters, bool UpdateCompute)
 {
 	VERIFY_GL_SCOPE();
@@ -1297,6 +1094,8 @@ void FOpenGLDynamicRHI::BindUniformBufferBase(FOpenGLContextState& ContextState,
 	SCOPE_CYCLE_COUNTER_DETAILED(STAT_OpenGLUniformBindTime);
 	VERIFY_GL_SCOPE();
 	checkSlow(IsInRenderingThread() || IsInRHIThread());
+	check(!GUseEmulatedUniformBuffers);
+
 	for (int32 BufferIndex = 0; BufferIndex < NumUniformBuffers; ++BufferIndex)
 	{
 		GLuint Buffer = 0;
@@ -1819,6 +1618,8 @@ static bool GetProgramBinaryFromGLProgram(GLuint Program, TArray<uint8>& Program
 
 static bool CreateGLProgramFromBinary(GLuint& ProgramOUT, const TArray<uint8>& ProgramBinary)
 {
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLCreateProgramFromBinaryTime)
+	
 	if (CVarStoreCompressedBinaries.GetValueOnAnyThread())
 	{
 		return CreateGLProgramFromCompressedBinary(ProgramOUT, ProgramBinary);
@@ -1905,7 +1706,17 @@ class FGLProgramCacheLRU
 			}
 			else
 			{
-				UE_LOG(LogRHI, Log, TEXT("[%s, %d, %d]"), *LinkedProgram->Config.ProgramKey.ToString(), LinkedProgram->Program, GetProgramBinary().Num() );
+				uint32 ProgramCRC = FCrc::MemCrc32(GetProgramBinary().GetData(), GetProgramBinary().Num());
+				UE_LOG(LogRHI, Log, TEXT("[%s, %d, %d, crc 0x%X]"), *LinkedProgram->Config.ProgramKey.ToString(), LinkedProgram->Program, GetProgramBinary().Num(), ProgramCRC );
+				// dump first 32 bytes..
+				if (GetProgramBinary().Num() >= 32)
+				{
+					const uint32* MemPtr = (const uint32*)GetProgramBinary().GetData();
+					for (int32 Dump = 0; Dump < 8; Dump++)
+					{
+						UE_LOG(LogRHI, Log, TEXT("[%d :  0x%08X]"), Dump, *MemPtr++);
+					}
+				}
 				RHIGetPanicDelegate().ExecuteIfBound(FName("FailedBinaryProgramCreate"));
 				UE_LOG(LogRHI, Fatal, TEXT("RestoreGLProgramFromBinary : Failed to restore GL program from binary data! [%s]"), *LinkedProgram->Config.ProgramKey.ToString());
 			}
@@ -2913,23 +2724,6 @@ static FOpenGLLinkedProgram* LinkProgram( const FOpenGLLinkedProgramConfiguratio
 	
 		if( !FOpenGL::SupportsSeparateShaderObjects() )
 		{
-			// E.g. GLSL_430 uses layout(location=xx) instead of having to call glBindAttribLocation and glBindFragDataLocation
-			if (OpenGLShaderPlatformNeedsBindLocation(GMaxRHIShaderPlatform))
-			{
-				// Bind attribute indices.
-				if (Config.Shaders[CrossCompiler::SHADER_STAGE_VERTEX].Resource)
-				{
-					auto& VertexBindings = Config.Shaders[CrossCompiler::SHADER_STAGE_VERTEX].Bindings;
-					BindShaderLocations(GL_VERTEX_SHADER, Program, VertexBindings.InOutMask, VertexBindings.VertexAttributeRemap);
-				}
-
-				// Bind frag data locations.
-				if (Config.Shaders[CrossCompiler::SHADER_STAGE_PIXEL].Resource)
-				{
-					BindShaderLocations(GL_FRAGMENT_SHADER, Program, Config.Shaders[CrossCompiler::SHADER_STAGE_PIXEL].Bindings.InOutMask);
-				}
-			}
-
 			if(FOpenGLProgramBinaryCache::IsEnabled() || GetOpenGLProgramsCache().IsUsingLRU())
 			{
 				FOpenGL::ProgramParameter(Program, PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
@@ -2983,17 +2777,7 @@ static bool LinkComputeShader(FRHIComputeShader* ComputeShaderRHI, FOpenGLComput
 	check(ComputeShader->Resource != 0);
 	check(ComputeShaderRHI->GetHash() != FSHAHash());
 
-	const ANSICHAR* GlslCode = NULL;
-	if (!ComputeShader->bSuccessfullyCompiled)
-	{
-#if DEBUG_GL_SHADERS
-		GlslCode = ComputeShader->GlslCodeString;
-#endif
-		ComputeShader->bSuccessfullyCompiled = VerifyCompiledShader(ComputeShader->Resource, GlslCode);
-	}
-
 	FOpenGLLinkedProgramConfiguration Config;
-
 	Config.Shaders[CrossCompiler::SHADER_STAGE_COMPUTE].Resource = ComputeShader->Resource;
 	Config.Shaders[CrossCompiler::SHADER_STAGE_COMPUTE].Bindings = ComputeShader->Bindings;
 	Config.ProgramKey.ShaderHashes[CrossCompiler::SHADER_STAGE_COMPUTE] = ComputeShaderRHI->GetHash();
@@ -3005,12 +2789,9 @@ static bool LinkComputeShader(FRHIComputeShader* ComputeShaderRHI, FOpenGLComput
 		ComputeShader->LinkedProgram = LinkProgram(Config, false);
 		if(ComputeShader->LinkedProgram == nullptr)
 		{
-	#if DEBUG_GL_SHADERS
-			if (ComputeShader->bSuccessfullyCompiled)
-			{
-				UE_LOG(LogRHI, Error, TEXT("Compute Shader:\n%s"), ANSI_TO_TCHAR(ComputeShader->GlslCode.GetData()));
-			}
-	#endif //DEBUG_GL_SHADERS
+		#if DEBUG_GL_SHADERS
+			UE_LOG(LogRHI, Error, TEXT("Compute Shader:\n%s"), ANSI_TO_TCHAR(ComputeShader->GlslCode.GetData()));
+		#endif //DEBUG_GL_SHADERS
 			checkf(ComputeShader->LinkedProgram, TEXT("Compute shader failed to compile & link."));
 
 			FName LinkFailurePanic = FName("FailedComputeProgramLink");
@@ -3498,51 +3279,7 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 				FOpenGLHullShader* HullShader = ResourceCast(HullShaderRHI);
 				FOpenGLDomainShader* DomainShader = ResourceCast(DomainShaderRHI);
 				FOpenGLGeometryShader* GeometryShader = ResourceCast(GeometryShaderRHI);
-
-				// In case ProgramBinaryCache is enabled we defer shader compilation, look LinkProgram
-				if (!FOpenGLProgramBinaryCache::IsEnabled())
-				{
-					const ANSICHAR* GlslCode = NULL;
-					if (!VertexShader->bSuccessfullyCompiled)
-					{
-#if DEBUG_GL_SHADERS
-						GlslCode = VertexShader->GlslCodeString;
-#endif
-						VertexShader->bSuccessfullyCompiled = VerifyCompiledShader(VertexShader->Resource, GlslCode);
-					}
-					if (!PixelShader->bSuccessfullyCompiled)
-					{
-#if DEBUG_GL_SHADERS
-						GlslCode = PixelShader->GlslCodeString;
-#endif
-						PixelShader->bSuccessfullyCompiled = VerifyCompiledShader(PixelShader->Resource, GlslCode);
-					}
-					if (GeometryShader && !GeometryShader->bSuccessfullyCompiled)
-					{
-#if DEBUG_GL_SHADERS
-						GlslCode = GeometryShader->GlslCodeString;
-#endif
-						GeometryShader->bSuccessfullyCompiled = VerifyCompiledShader(GeometryShader->Resource, GlslCode);
-					}
-					if (FOpenGL::SupportsTessellation())
-					{
-						if (HullShader && !HullShader->bSuccessfullyCompiled)
-						{
-#if DEBUG_GL_SHADERS
-							GlslCode = HullShader->GlslCodeString;
-#endif
-							HullShader->bSuccessfullyCompiled = VerifyCompiledShader(HullShader->Resource, GlslCode);
-						}
-						if (DomainShader && !DomainShader->bSuccessfullyCompiled)
-						{
-#if DEBUG_GL_SHADERS
-							GlslCode = DomainShader->GlslCodeString;
-#endif
-							DomainShader->bSuccessfullyCompiled = VerifyCompiledShader(DomainShader->Resource, GlslCode);
-						}
-					}
-				}
-				
+		
 				// Make sure we have OpenGL context set up, and invalidate the parameters cache and current program (as we'll link a new one soon)
 				GetContextStateForCurrentContext().Program = -1;
 				MarkShaderParameterCachesDirty(PendingState.ShaderParameters, false);
@@ -3554,25 +3291,25 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 				if (LinkedProgram == NULL)
 				{
 #if DEBUG_GL_SHADERS
-					if (VertexShader->bSuccessfullyCompiled || FOpenGLProgramBinaryCache::IsEnabled())
+					if (VertexShader)
 					{
 						UE_LOG(LogRHI, Error, TEXT("Vertex Shader:\n%s"), ANSI_TO_TCHAR(VertexShader->GlslCode.GetData()));
 					}
-					if (PixelShader->bSuccessfullyCompiled || FOpenGLProgramBinaryCache::IsEnabled())
+					if (PixelShader)
 					{
 						UE_LOG(LogRHI, Error, TEXT("Pixel Shader:\n%s"), ANSI_TO_TCHAR(PixelShader->GlslCode.GetData()));
 					}
-					if (GeometryShader && GeometryShader->bSuccessfullyCompiled)
+					if (GeometryShader)
 					{
 						UE_LOG(LogRHI, Error, TEXT("Geometry Shader:\n%s"), ANSI_TO_TCHAR(GeometryShader->GlslCode.GetData()));
 					}
 					if (FOpenGL::SupportsTessellation())
 					{
-						if (HullShader && HullShader->bSuccessfullyCompiled)
+						if (HullShader)
 						{
 							UE_LOG(LogRHI, Error, TEXT("Hull Shader:\n%s"), ANSI_TO_TCHAR(HullShader->GlslCode.GetData()));
 						}
-						if (DomainShader && DomainShader->bSuccessfullyCompiled)
+						if (DomainShader)
 						{
 							UE_LOG(LogRHI, Error, TEXT("Domain Shader:\n%s"), ANSI_TO_TCHAR(DomainShader->GlslCode.GetData()));
 						}
@@ -4867,12 +4604,7 @@ void FOpenGLProgramBinaryCache::Shutdown()
 
 bool FOpenGLProgramBinaryCache::DeferShaderCompilation(GLuint Shader, const TArray<ANSICHAR>& GlslCode)
 {
-	bool bCanDeferShaderCompilation = true;
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
-	bCanDeferShaderCompilation = !FOpenGL::IsCheckingShaderCompilerHacks();
-#endif
-	
-	if (CachePtr && bCanDeferShaderCompilation)
+	if (CachePtr)
 	{
 		FPendingShaderCode PendingShaderCode;
 		CompressShader(GlslCode, PendingShaderCode);
@@ -4901,6 +4633,8 @@ bool FOpenGLProgramBinaryCache::UseCachedProgram(GLuint& ProgramOUT, const FOpen
 
 bool FOpenGLProgramBinaryCache::UseCachedProgram_internal(GLuint& ProgramOUT, const FOpenGLProgramKey& ProgramKey, TArray<uint8>& CachedProgramBinaryOUT)
 {
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLUseCachedProgramTime);
+	
 	FGLProgramBinaryFileCacheEntry** ProgramBinRefPtr = nullptr;
 
 	FScopeLock Lock(&GProgramBinaryCacheCS);
@@ -4977,12 +4711,7 @@ void FOpenGLProgramBinaryCache::CompilePendingShaders(const FOpenGLLinkedProgram
 			{
 				TArray<ANSICHAR> GlslCode;
 				UncompressShader(*PendingShaderCodePtr, GlslCode);
-				if(CompileCurrentShader(ShaderResource, GlslCode) != GL_TRUE)
-				{
-					// log shader compile failure.
-					VerifyCompiledShader(ShaderResource, GlslCode.Num() > 0 ? GlslCode.GetData() : nullptr);
-				}
-
+				CompileCurrentShader(ShaderResource, GlslCode);
 				CachePtr->ShadersPendingCompilation.Remove(ShaderResource);
 			}
 		}

@@ -23,6 +23,9 @@
 #include "Physics/PhysicsFiltering.h"
 #include "Chaos/ChaosPhysicalMaterial.h"
 #include "AI/NavigationSystemHelpers.h"
+#include "Net/UnrealNetwork.h"
+#include "Net/Core/PushModel/PushModel.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #if WITH_EDITOR
 #include "AssetToolsModule.h"
@@ -55,6 +58,55 @@ MSVC_PRAGMA(warning(pop))
 
 DEFINE_LOG_CATEGORY_STATIC(UGCC_LOG, Error, All);
 
+FString NetModeToString(ENetMode InMode)
+{
+	switch(InMode)
+	{
+	case ENetMode::NM_Client:
+		return FString("Client");
+	case ENetMode::NM_DedicatedServer:
+		return FString("DedicatedServer");
+	case ENetMode::NM_ListenServer:
+		return FString("ListenServer");
+	case ENetMode::NM_Standalone:
+		return FString("Standalone");
+	default:
+		break;
+	}
+
+	return FString("INVALID NETMODE");
+}
+
+FString RoleToString(ENetRole InRole)
+{
+	switch(InRole)
+	{
+	case ROLE_None:
+		return FString(TEXT("None"));
+	case ROLE_SimulatedProxy:
+		return FString(TEXT("SimProxy"));
+	case ROLE_AutonomousProxy:
+		return FString(TEXT("AutoProxy"));
+	case ROLE_Authority:
+		return FString(TEXT("Auth"));
+	default:
+		break;
+	}
+
+	return FString(TEXT("Invalid Role"));
+}
+
+int32 GetClusterLevel(const FTransformCollection* Collection, int32 TransformGroupIndex)
+{
+	int32 Level = 0;
+	while(Collection && Collection->Parent[TransformGroupIndex] != -1)
+	{
+		TransformGroupIndex = Collection->Parent[TransformGroupIndex];
+		Level++;
+	}
+	return Level;
+}
+
 #if WITH_PHYSX && !WITH_CHAOS_NEEDS_TO_BE_FIXED
 FGeometryCollectionSQAccelerator GlobalGeomCollectionAccelerator;	//todo(ocohen): proper lifetime management needed
 
@@ -74,6 +126,37 @@ void HackRegisterGeomAccelerator(UGeometryCollectionComponent& Component)
 #endif
 }
 #endif
+
+bool FGeometryCollectionRepData::Identical(const FGeometryCollectionRepData* Other, uint32 PortFlags) const
+{
+	return Other && (Version == Other->Version);
+}
+
+bool FGeometryCollectionRepData::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
+{
+	bOutSuccess = true;
+
+	Ar << Version;
+
+	int32 NumPoses = Poses.Num();
+	Ar << NumPoses;
+
+	if(Ar.IsLoading())
+	{
+		Poses.SetNum(NumPoses);
+	}
+
+	for(FGeometryCollectionRepPose& Pose : Poses)
+	{
+		SerializePackedVector<100, 30>(Pose.Position, Ar);
+		SerializePackedVector<100, 30>(Pose.LinearVelocity, Ar);
+		SerializePackedVector<100, 30>(Pose.AngularVelocity, Ar);
+		Pose.Rotation.NetSerialize(Ar, Map, bOutSuccess);
+		Ar << Pose.ParticleIndex;
+	}
+
+	return true;
+}
 
 // Size in CM used as a threshold for whether a geometry in the collection is collected and exported for
 // navigation purposes. Measured as the diagonal of the leaf node bounds.
@@ -125,6 +208,9 @@ UGeometryCollectionComponent::UGeometryCollectionComponent(const FObjectInitiali
 	, CachePlayback(false)
 	, bNotifyBreaks(false)
 	, bNotifyCollisions(false)
+	, bEnableReplication(false)
+	, bEnableAbandonAfterLevel(false)
+	, ReplicationAbandonClusterLevel(0)
 	, bRenderStateDirty(true)
 	, bShowBoneColors(false)
 	, bEnableBoneSelection(false)
@@ -167,17 +253,26 @@ UGeometryCollectionComponent::UGeometryCollectionComponent(const FObjectInitiali
 
 	DynamicCollection = nullptr;
 	bHasCustomNavigableGeometry = EHasCustomNavigableGeometry::Yes;
+
+	bWantsInitializeComponent = true;
 }
 
 Chaos::FPhysicsSolver* GetSolver(const UGeometryCollectionComponent& GeometryCollectionComponent)
 {
 #if INCLUDE_CHAOS
-	return GeometryCollectionComponent.ChaosSolverActor != nullptr ? 
-		GeometryCollectionComponent.ChaosSolverActor->GetSolver() : 
-		GeometryCollectionComponent.GetOwner()->GetWorld()->PhysicsScene_Chaos->GetSolver();
-#else
-	return nullptr;
+	if(GeometryCollectionComponent.ChaosSolverActor)
+	{
+		return GeometryCollectionComponent.ChaosSolverActor->GetSolver();
+	}
+	else if(UWorld* CurrentWorld = GeometryCollectionComponent.GetWorld())
+	{
+		if(FPhysScene* Scene = CurrentWorld->GetPhysicsScene())
+		{
+			return Scene->GetSolver();
+		}
+	}
 #endif
+	return nullptr;
 }
 
 void UGeometryCollectionComponent::BeginPlay()
@@ -245,6 +340,16 @@ void UGeometryCollectionComponent::EndPlay(const EEndPlayReason::Type ReasonEnd)
 	Super::EndPlay(ReasonEnd);
 
 	CurrentCacheTime = MAX_flt;
+}
+
+void UGeometryCollectionComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	
+	FDoRepLifetimeParams Params;
+	Params.bIsPushBased = true;
+	Params.RepNotifyCondition = REPNOTIFY_OnChanged;
+	DOREPLIFETIME_WITH_PARAMS_FAST(UGeometryCollectionComponent, RepData, Params);
 }
 
 FBoxSphereBounds UGeometryCollectionComponent::CalcBounds(const FTransform& LocalToWorldIn) const
@@ -335,43 +440,44 @@ FBoxSphereBounds UGeometryCollectionComponent::CalcBounds(const FTransform& Loca
 void UGeometryCollectionComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
 	Super::CreateRenderState_Concurrent(Context);
-
-	if (SceneProxy && RestCollection && RestCollection->HasVisibleGeometry())
-	{
-		FGeometryCollectionSceneProxy* const GeometryCollectionSceneProxy = static_cast<FGeometryCollectionSceneProxy*>(SceneProxy);
-#if GEOMETRYCOLLECTION_EDITOR_SELECTION
-		// Re-init subsections
-		if (bIsTransformSelectionModeEnabled)
-		{
-			GeometryCollectionSceneProxy->UseSubSections(true, false);  // Do not force reinit now, it'll be done in SetConstantData_RenderThread
-		}
-#endif  // #if GEOMETRYCOLLECTION_EDITOR_SELECTION
-
-		FGeometryCollectionConstantData* const ConstantData = ::new FGeometryCollectionConstantData;
-		InitConstantData(ConstantData);
-
-		FGeometryCollectionDynamicData* const DynamicData = ::new FGeometryCollectionDynamicData;
-		InitDynamicData(DynamicData);
-
-		ENQUEUE_RENDER_COMMAND(CreateRenderState)(
-			[GeometryCollectionSceneProxy, ConstantData, DynamicData](FRHICommandListImmediate& RHICmdList)
-			{
-				if (GeometryCollectionSceneProxy)
-				{
-					GeometryCollectionSceneProxy->SetConstantData_RenderThread(ConstantData);
-					GeometryCollectionSceneProxy->SetDynamicData_RenderThread(DynamicData);
-				}
-			}
-		);
-	}
 }
-
 
 FPrimitiveSceneProxy* UGeometryCollectionComponent::CreateSceneProxy()
 {
-	if (RestCollection)
+	if(RestCollection)
 	{
-		return new FGeometryCollectionSceneProxy(this);
+		FGeometryCollectionSceneProxy* NewProxy = new FGeometryCollectionSceneProxy(this);
+
+		if(RestCollection->HasVisibleGeometry())
+		{
+#if GEOMETRYCOLLECTION_EDITOR_SELECTION
+			// Re-init subsections
+			if(bIsTransformSelectionModeEnabled)
+			{
+				NewProxy->UseSubSections(true, false);  // Do not force reinit now, it'll be done in SetConstantData_RenderThread
+			}
+#endif  // #if GEOMETRYCOLLECTION_EDITOR_SELECTION
+
+			FGeometryCollectionConstantData* const ConstantData = ::new FGeometryCollectionConstantData;
+			InitConstantData(ConstantData);
+
+			FGeometryCollectionDynamicData* const DynamicData = ::new FGeometryCollectionDynamicData;
+			InitDynamicData(DynamicData);
+
+			// Send constant data and first dynamic data over to the proxy on the render thread
+			ENQUEUE_RENDER_COMMAND(CreateRenderState)(
+				[NewProxy, ConstantData, DynamicData](FRHICommandListImmediate& RHICmdList)
+			{
+				if(NewProxy)
+				{
+					NewProxy->SetConstantData_RenderThread(ConstantData);
+					NewProxy->SetDynamicData_RenderThread(DynamicData);
+				}
+			}
+			);
+		}
+
+		return NewProxy;
 	}
 	return nullptr;
 }
@@ -546,6 +652,105 @@ bool UGeometryCollectionComponent::DoCustomNavigableGeometryExport(FNavigableGeo
 	return true;
 }
 
+UPhysicalMaterial* UGeometryCollectionComponent::GetPhysicalMaterial() const
+{
+	// Pull material from first mesh element to grab physical material. Prefer an override if one exists
+	UPhysicalMaterial* PhysMatToUse = PhysicalMaterialOverride;
+
+	if(!PhysMatToUse)
+	{
+		// No override, try render materials
+		const int32 NumMaterials = GetNumMaterials();
+
+		if(NumMaterials > 0)
+		{
+			UMaterialInterface* FirstMatInterface = GetMaterial(0);
+
+			if(FirstMatInterface && FirstMatInterface->GetPhysicalMaterial())
+			{
+				PhysMatToUse = FirstMatInterface->GetPhysicalMaterial();
+			}
+		}
+	}
+
+	if(!PhysMatToUse)
+	{
+		// Still no material, fallback on default
+		PhysMatToUse = GEngine->DefaultPhysMaterial;
+	}
+
+	// Should definitely have a material at this point.
+	check(PhysMatToUse);
+	return PhysMatToUse;
+}
+
+void UGeometryCollectionComponent::InitializeComponent()
+{
+	Super::InitializeComponent();
+
+	AActor* Owner = GetOwner();
+
+	if(!Owner)
+	{
+		return;
+	}
+
+	const ENetRole LocalRole = Owner->GetLocalRole();
+	const ENetMode NetMode = Owner->GetNetMode();
+
+	// If we're replicating we need some extra setup - check netmode as we don't need this for
+	// standalone runtimes where we aren't going to network the component
+	if(GetIsReplicated() && NetMode != NM_Standalone)
+	{
+		if(LocalRole == ENetRole::ROLE_Authority)
+		{
+			// As we're the authority we need to track velocities in the dynamic collection so we
+			// can send them over to the other clients to correctly set their state. Attach this now.
+			// The physics proxy will pick them up and populate them as needed
+			DynamicCollection->AddAttribute<FVector>("LinearVelocity", FTransformCollection::TransformGroup);
+			DynamicCollection->AddAttribute<FVector>("AngularVelocity", FTransformCollection::TransformGroup);
+
+			// We also need to track our control of particles if that control can be shared between server and client
+			if(bEnableAbandonAfterLevel)
+			{
+				TManagedArray<bool>& ControlFlags = DynamicCollection->AddAttribute<bool>("AuthControl", FTransformCollection::TransformGroup);
+				for(bool& Flag : ControlFlags)
+				{
+					Flag = true;
+				}
+			}
+		}
+		else
+		{
+			// We're a replicated component and we're not in control.
+			Chaos::FPhysicsSolver* CurrSolver = GetSolver(*this);
+
+			if(CurrSolver)
+			{
+				CurrSolver->RegisterSimOneShotCallback([Prox = PhysicsProxy]()
+				{
+					// As we're not in control we make it so our simulated proxy cannot break clusters
+					// We have to set the strain to a high value but be below the max for the data type
+					// so releasing on authority demand works
+					const Chaos::FReal MaxStrain = TNumericLimits<Chaos::FReal>::Max() - TNumericLimits<Chaos::FReal>::Min();
+
+					TArray<Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>*> Particles = Prox->GetParticles();
+
+					for(Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3> * P : Particles)
+					{
+						if(!P)
+						{
+							continue;
+						}
+
+						P->SetStrain(MaxStrain);
+					}
+				});
+			}
+		}
+	}
+}
+
 static void DispatchGeometryCollectionBreakEvent(const FChaosBreakEvent& Event)
 {
 	if (UGeometryCollectionComponent* const GC = Cast<UGeometryCollectionComponent>(Event.Component))
@@ -604,6 +809,218 @@ void UGeometryCollectionComponent::UpdateBreakEventRegistration()
 	else
 	{
 		EventDispatcher->UnRegisterForBreakEvents(this);
+	}
+}
+
+void ActivateClusters(Chaos::FPBDRigidsEvolution::FRigidClustering& Clustering, Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Cluster)
+{
+	if(!Cluster)
+	{
+		return;
+	}
+
+	if(Cluster->ClusterIds().Id)
+	{
+		ActivateClusters(Clustering, Cluster->ClusterIds().Id->CastToClustered());
+	}
+
+	Clustering.DeactivateClusterParticle(Cluster);
+}
+
+void UGeometryCollectionComponent::OnRep_RepData(const FGeometryCollectionRepData& OldData)
+{
+	if(!DynamicCollection)
+	{
+		return;
+	}
+
+	if(AActor* Owner = GetOwner())
+	{
+		const int32 NumTransforms = DynamicCollection->Transform.Num();
+		const int32 NumNewPoses = RepData.Poses.Num();
+		if(NumTransforms < NumNewPoses)
+		{
+			return;
+		}
+
+		Chaos::FPhysicsSolver* Solver = GetSolver(*this);
+
+		for(int32 Index = 0; Index < NumNewPoses; ++Index)
+		{
+			const FGeometryCollectionRepPose& SourcePose = RepData.Poses[Index];
+			const int32 ParticleIndex = SourcePose.ParticleIndex;
+
+			if(ParticleIndex >= NumTransforms)
+			{
+				// Out of range
+				continue;
+			}
+
+			Solver->RegisterSimOneShotCallback([SourcePose, Prox = PhysicsProxy]()
+			{
+				Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Particle = Prox->GetParticles()[SourcePose.ParticleIndex];
+
+				Chaos::FPhysicsSolver* Solver = Prox->GetSolver<Chaos::FPhysicsSolver>();
+				Chaos::FPBDRigidsEvolution* Evo = Solver->GetEvolution();
+				check(Evo);
+				Chaos::FPBDRigidsEvolution::FRigidClustering& Clustering = Evo->GetRigidClustering();
+				
+				// Set X/R/V/W for next sim step from the replicated state
+				Particle->SetX(SourcePose.Position);
+				Particle->SetR(SourcePose.Rotation);
+				Particle->SetV(SourcePose.LinearVelocity);
+				Particle->SetW(SourcePose.AngularVelocity);
+
+				if(Particle->ClusterIds().Id)
+				{
+					// This particle is clustered but the remote authority has it activated. Fracture the parent cluster
+					ActivateClusters(Clustering, Particle->ClusterIds().Id->CastToClustered());
+				}
+				else if(Particle->Disabled())
+				{
+					// We might have disabled the particle - need to reactivate if it's active on the remote.
+					Particle->SetDisabled(false);
+				}
+
+				// Make sure to wake corrected particles
+				Particle->SetSleeping(false);
+			});
+		}
+	}
+}
+
+void UGeometryCollectionComponent::UpdateRepData()
+{
+	if(!bEnableReplication)
+	{
+		return;
+	}
+
+	AActor* Owner = GetOwner();
+	
+	// If we have no owner or our netmode means we never require replication then early out
+	if(!Owner || Owner->GetNetMode() == ENetMode::NM_Standalone)
+	{
+		return;
+	}
+	
+	if(Owner && GetIsReplicated() && Owner->GetLocalRole() == ROLE_Authority)
+	{
+		// We're inside a replicating actor and we're the authority - update the rep data
+		const int32 NumTransforms = DynamicCollection->Transform.Num();
+		RepData.Poses.Reset(NumTransforms);
+
+		TManagedArray<FVector>* LinearVelocity = DynamicCollection->FindAttributeTyped<FVector>("LinearVelocity", FTransformCollection::TransformGroup);
+		TManagedArray<FVector>* AngularVelocity = DynamicCollection->FindAttributeTyped<FVector>("AngularVelocity", FTransformCollection::TransformGroup);
+
+		for(int32 Index = 0; Index < NumTransforms; ++Index)
+		{
+			TManagedArray<TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>>>& GTParticles = PhysicsProxy->GetExternalParticles();
+			Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle = GTParticles[Index].Get();
+			if(!DynamicCollection->Active[Index] || DynamicCollection->DynamicState[Index] != static_cast<uint8>(Chaos::EObjectStateType::Dynamic))
+			{
+				continue;
+			}
+
+			const int32 ClusterLevel = GetClusterLevel(RestCollection->GetGeometryCollection().Get(), Index);
+			const bool bLevelValid = !EnableClustering || !bEnableAbandonAfterLevel || ClusterLevel <= ReplicationAbandonClusterLevel;
+			if(!bLevelValid)
+			{
+				const int32 ParentTransformIndex = RestCollection->GetGeometryCollection()->Parent[Index];
+				TManagedArray<bool>* ControlFlags = DynamicCollection->FindAttributeTyped<bool>("AuthControl", FTransformCollection::TransformGroup);
+
+				if(ControlFlags && (*ControlFlags)[ParentTransformIndex])
+				{
+					(*ControlFlags)[ParentTransformIndex] = false;
+					NetAbandonCluster(ParentTransformIndex);
+				}
+
+				continue;
+			}
+
+			RepData.Poses.AddDefaulted();
+			FGeometryCollectionRepPose& Pose = RepData.Poses.Last();
+
+			// No scale transfered - shouldn't be a simulated property
+			Pose.ParticleIndex = Index;
+			Pose.Position = Particle->X();
+			Pose.Rotation = Particle->R();
+			if(LinearVelocity)
+			{
+				check(AngularVelocity);
+				Pose.LinearVelocity = (*LinearVelocity)[Index];
+				Pose.AngularVelocity = (*AngularVelocity)[Index];
+			}
+			else
+			{
+				Pose.LinearVelocity = FVector::ZeroVector;
+				Pose.AngularVelocity = FVector::ZeroVector;
+			}
+		}
+
+		RepData.Version++;
+		MARK_PROPERTY_DIRTY_FROM_NAME(UGeometryCollectionComponent, RepData, this);
+	}
+}
+
+void SetHierarchyStrain(Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* P, TMap<Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3>*, TArray<Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3>*>>& Map, float Strain)
+{
+	TArray<Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3>*>* Children = Map.Find(P);
+
+	if(Children)
+	{
+		for(Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3> * ChildP : (*Children))
+		{
+			SetHierarchyStrain(ChildP->CastToClustered(), Map, Strain);
+		}
+	}
+
+	if(P)
+	{
+		P->SetStrain(Strain);
+	}
+}
+
+void UGeometryCollectionComponent::NetAbandonCluster_Implementation(int32 TransformIndex)
+{
+	// Called on clients when the server abandons a particle. TransformIndex is the index of the parent
+	// of that particle, should only get called once per cluster but survives multiple calls
+	
+	if(GetOwnerRole() == ENetRole::ROLE_Authority)
+	{
+		// Owner called abandon - takes no action
+		return;
+	}
+
+	if(!EnableClustering)
+	{
+		// No clustering information to update
+		return;
+	}
+
+	if(TransformIndex >= 0 && TransformIndex < DynamicCollection->NumElements(FTransformCollection::TransformGroup))
+	{
+		int32 ClusterLevel = GetClusterLevel(RestCollection->GetGeometryCollection().Get(), TransformIndex);
+		float Strain = DamageThreshold.IsValidIndex(ClusterLevel) ? DamageThreshold[ClusterLevel] : DamageThreshold.Num() > 0 ? DamageThreshold[0] : 0.0f;
+
+		if(Strain >= 0)
+		{
+			Chaos::FPhysicsSolver* Solver = GetSolver(*this);
+
+			Solver->RegisterSimOneShotCallback([Prox = PhysicsProxy, Strain, TransformIndex, Solver]()
+			{
+				Chaos::TPBDRigidClustering<Chaos::FPBDRigidsEvolution, Chaos::FPBDCollisionConstraints, Chaos::FReal, 3>& Clustering = Solver->GetEvolution()->GetRigidClustering();
+				Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* Parent = Prox->GetParticles()[TransformIndex];
+
+				if(!Parent->Disabled())
+				{
+					SetHierarchyStrain(Parent, Clustering.GetChildrenMap(), Strain);
+
+					// We know the server must have fractured this cluster, so repeat here
+					Clustering.DeactivateClusterParticle(Parent);
+				}
+			});
+		}
 	}
 }
 
@@ -1136,7 +1553,7 @@ void UGeometryCollectionComponent::TickComponent(float DeltaTime, enum ELevelTic
 	//if (bRenderStateDirty && DynamicCollection)	//todo: always send for now
 	if(RestCollection)
 	{
-		if(ensureMsgf(DynamicCollection, TEXT("No dynamic collection available for component %s during tick."), *GetName()))
+		if(CHAOS_ENSURE(DynamicCollection)) //, TEXT("No dynamic collection available for component %s during tick."), *GetName()))
 		{
 			if(RestCollection->HasVisibleGeometry() || DynamicCollection->IsDirty())
 			{
@@ -1175,6 +1592,8 @@ void UGeometryCollectionComponent::OnRegister()
 #endif
 
 #endif // WITH_CHAOS
+
+	SetIsReplicated(bEnableReplication);
 
 	Super::OnRegister();
 }
@@ -1256,15 +1675,6 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 		const bool bValidCollection = DynamicCollection && DynamicCollection->Transform.Num() > 0;
 		if (bValidWorld && bValidCollection)
 		{
-			if (!ChaosMaterial)
-			{
-				ChaosMaterial.Reset(new Chaos::FChaosPhysicsMaterial());
-			}
-			if (PhysicalMaterial)
-			{
-				PhysicalMaterial->CopyTo(*ChaosMaterial);
-			}
-
 			FPhysxUserData::Set<UPrimitiveComponent>(&PhysicsUserData, this);
 
 			FSimulationParameters SimulationParameters;
@@ -1312,7 +1722,12 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 				SimulationParameters.RemoveOnFractureEnabled = SimulationParameters.Shared.RemoveOnFractureIndices.Num() > 0;
 				SimulationParameters.WorldTransform = GetComponentToWorld();
 				SimulationParameters.UserData = static_cast<void*>(&PhysicsUserData);
-				SimulationParameters.PhysicalMaterial = Chaos::MakeSerializable(ChaosMaterial);
+
+				UPhysicalMaterial* EnginePhysicalMaterial = GetPhysicalMaterial();
+				if(ensure(EnginePhysicalMaterial))
+				{
+					SimulationParameters.PhysicalMaterialHandle = EnginePhysicalMaterial->GetPhysicsMaterial();
+				}
 			}
 
 
@@ -1397,6 +1812,9 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 
 
 				WorldBounds = Results.WorldBounds;
+
+				// Update replication data for clients if necessary
+				UpdateRepData();
 
 #if GEOMETRYCOLLECTION_DEBUG_DRAW
 				// Notify debug draw componentUGeometryCollectionDebugDrawComponent of particle changes
@@ -2062,13 +2480,14 @@ void UGeometryCollectionComponent::DispatchCommand(const FFieldSystemCommand& In
 {
 	if (PhysicsProxy)
 	{
-		FChaosSolversModule* ChaosModule = FModuleManager::Get().GetModulePtr<FChaosSolversModule>("ChaosSolvers");
+		FChaosSolversModule* ChaosModule = FChaosSolversModule::GetModule();
 		checkSlow(ChaosModule);
 
-		PhysicsProxy->GetSolver<Chaos::FPBDRigidsSolver>()->EnqueueCommandImmediate([PhysicsProxy = this->PhysicsProxy, NewCommand = InCommand]()
+		auto Solver = PhysicsProxy->GetSolver<Chaos::FPBDRigidsSolver>();
+		Solver->EnqueueCommandImmediate([Solver, PhysicsProxy = this->PhysicsProxy, NewCommand = InCommand]()
 		{
 			// Pass through nullptr here as geom component commands can never affect other solvers
-			PhysicsProxy->BufferCommand(nullptr, NewCommand);
+			PhysicsProxy->BufferCommand(Solver, NewCommand);
 		});
 	}
 }

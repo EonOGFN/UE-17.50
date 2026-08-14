@@ -17,7 +17,22 @@
 #include "IAudioExtensionPlugin.h"
 #include "ISoundfieldFormat.h"
 #include "Sound/SoundModulationDestination.h"
+#include "Stats/Stats.h"
 
+// Tracks the time it takes to up the source manager (computes source buffers, source effects, sample rate conversion)
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Manager Update"), STAT_AudioMixerSourceManagerUpdate, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to compute the source buffers (handle decoding tasks, resampling)
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Buffers"), STAT_AudioMixerSourceBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the source buffers through their source effects
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Effect Buffers"), STAT_AudioMixerSourceEffectBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to apply channel maps and get final pre-submix source buffers
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Output Buffers"), STAT_AudioMixerSourceOutputBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the HRTF effect.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("HRTF"), STAT_AudioMixerHRTF, STATGROUP_AudioMixer, AUDIOMIXER_API);
 
 namespace Audio
 {
@@ -105,10 +120,9 @@ namespace Audio
 		UOcclusionPluginSourceSettingsBase* OcclusionPluginSettings = nullptr;
 		UReverbPluginSourceSettingsBase* ReverbPluginSettings = nullptr;
 
-		FSoundModulationDestinationSettings VolumeModulationSettings;
-		FSoundModulationDestinationSettings PitchModulationSettings;
-		FSoundModulationDestinationSettings LowpassModulationSettings;
-		FSoundModulationDestinationSettings HighpassModulationSettings;
+		FSoundModulationDefaultSettings ModulationSettings;
+
+		FQuartzQuantizedRequestData QuantizedRequestData;
 
 		FName AudioComponentUserID;
 		uint64 AudioComponentID = 0;
@@ -156,6 +170,7 @@ namespace Audio
 
 		void Play(const int32 SourceId);
 		void Stop(const int32 SourceId);
+		void StopInternal(const int32 SourceId);
 		void StopFade(const int32 SourceId, const int32 NumFrames);
 		void Pause(const int32 SourceId);
 		void SetPitch(const int32 SourceId, const float Pitch);
@@ -184,6 +199,10 @@ namespace Audio
 		void ClearStoppingSounds();
 		void MixOutputBuffers(const int32 SourceId, int32 InNumOutputChannels, const float InSendLevel, EMixerSourceSubmixSendStage InSubmixSendStage, AlignedFloatBuffer& OutWetBuffer) const;
 
+		// Retrieves a channel map for the given source ID for the given output channels
+		// can be used even when a source is 3D if the source is doing any kind of bus sending or otherwise needs a channel map
+		void Get2DChannelMap(const int32 SourceId, int32 InNumOutputChannels, Audio::AlignedFloatBuffer& OutChannelMap);
+
 		// Called by a soundfield submix to get encoded audio.
 		// If this source wasn't encoded (possibly because it is paused or finished playing),
 		// this returns nullptr.
@@ -201,6 +220,13 @@ namespace Audio
 
 		void UpdateSourceEffectChain(const uint32 SourceEffectChainId, const TArray<FSourceEffectChainEntry>& SourceEffectChain, const bool bPlayEffectChainTails);
 
+
+		// Quantized event methods
+		void PauseSoundForQuantizationCommand(const int32 SourceId);
+		void SetSubBufferDelayForSound(const int32 SourceId, const int32 FramesToDelay);
+		void UnPauseSoundForQuantizationCommand(const int32 SourceId);
+
+		// Buffer getters
 		const float* GetPreDistanceAttenuationBuffer(const int32 SourceId) const;
 		const float* GetPreEffectBuffer(const int32 SourceId) const;
 		const float* GetPreviousSourceBusBuffer(const int32 SourceId) const;
@@ -213,7 +239,7 @@ namespace Audio
 		void FlushCommandQueue(bool bPumpCommandQueue = false);
 	private:
 		void ReleaseSource(const int32 SourceId);
-		void BuildSourceEffectChain(const int32 SourceId, FSoundEffectSourceInitData& InitData, const TArray<FSourceEffectChainEntry>& SourceEffectChain);
+		void BuildSourceEffectChain(const int32 SourceId, FSoundEffectSourceInitData& InitData, const TArray<FSourceEffectChainEntry>& SourceEffectChain, TArray<TSoundEffectSourcePtr>& OutSourceEffects);
 		void ResetSourceEffectChain(const int32 SourceId);
 		void ReadSourceFrame(const int32 SourceId);
 
@@ -308,6 +334,10 @@ namespace Audio
 			Audio::AlignedFloatBuffer PreDistanceAttenuationBuffer;
 			Audio::AlignedFloatBuffer SourceEffectScratchBuffer;
 
+			// Data used for delaying the rendering of source audio for sample-accurate quantization
+			int32 SubCallbackDelayLengthInFrames{ 0 };
+			Audio::TCircularAudioBuffer<float> SourceBufferDelayLine;
+
 			TArray<float> CurrentFrameValues;
 			TArray<float> NextFrameValues;
 			float CurrentFrameAlpha;
@@ -376,12 +406,17 @@ namespace Audio
 			FSpatializationParams SpatParams;
 			Audio::AlignedFloatBuffer ScratchChannelMap;
 
+			// Quantization data
+			FQuartzQuantizedCommandHandle QuantizedCommandHandle;
+
 			// State management
 			uint8 bIs3D:1;
 			uint8 bIsCenterChannelOnly:1;
 			uint8 bIsActive:1;
 			uint8 bIsPlaying:1;
 			uint8 bIsPaused:1;
+			uint8 bIsPausedForQuantization:1;
+			uint8 bDelayLineSet:1;
 			uint8 bIsStopping:1;
 			uint8 bHasStarted:1;
 			uint8 bIsBusy:1;

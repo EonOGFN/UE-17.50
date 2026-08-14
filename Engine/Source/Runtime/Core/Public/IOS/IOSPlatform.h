@@ -7,6 +7,7 @@
 #pragma once
 
 #include "Clang/ClangPlatform.h"
+#include "Availability.h"
 
 /**
 * iOS specific types
@@ -134,3 +135,5 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define DLLIMPORT
 
 #define IOS_MAX_PATH 1024
+
+static_assert(__IPHONE_OS_VERSION_MAX_ALLOWED >= 13000, "Unreal requires Xcode 11 or later to build"); 

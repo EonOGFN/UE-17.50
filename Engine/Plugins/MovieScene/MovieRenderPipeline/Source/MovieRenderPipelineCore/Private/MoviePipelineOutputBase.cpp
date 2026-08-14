@@ -4,23 +4,6 @@
 #include "MovieRenderPipelineCoreModule.h"
 #include "Engine/RendererSettings.h"
 
-void UMoviePipelineOutputBase::ValidateStateImpl()
-{
-	Super::ValidateStateImpl();
-
-	if (IsAlphaSupported())
-	{
-		const URendererSettings* RenderSettings = GetDefault<URendererSettings>();
-		if (RenderSettings->bEnableAlphaChannelInPostProcessing == EAlphaChannelMode::Type::Disabled)
-		{
-			ValidationState = EMoviePipelineValidationState::Warnings;
-			ValidationResults.Add(NSLOCTEXT("MovieRenderPipeline", "Outputs_AlphaWithoutProjectSetting",
-				"This option does not work without enabling the Alpha Support in Tonemapper setting via Project Settings > Rendering > Post Processing > Enable Alpha Channel Support."));
-		}
-
-	}
-}
-
 namespace UE
 {
 namespace MoviePipeline
@@ -34,6 +17,8 @@ namespace MoviePipeline
 		{
 			if (!InOutFilenameFormatString.Contains(TEXT("{render_pass}"), ESearchCase::IgnoreCase))
 			{
+				UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Multiple render passes exported but no {render_pass} format found. Automatically adding!"));
+				
 				// Search for a frame number in the output string
 				int32 FrameNumberIndex = INDEX_NONE;
 				for (const FString& Identifier : FrameNumberIdentifiers)

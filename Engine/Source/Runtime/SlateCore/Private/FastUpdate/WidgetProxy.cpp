@@ -7,6 +7,7 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Types/ReflectionMetadata.h"
 #include "Input/HittestGrid.h"
+#include "Trace/SlateTrace.h"
 #include "Widgets/SWidgetUtils.h"
 
 const FSlateWidgetPersistentState FSlateWidgetPersistentState::NoState;
@@ -30,7 +31,7 @@ FWidgetProxy::FWidgetProxy(SWidget& InWidget)
 
 int32 FWidgetProxy::Update(const FPaintArgs& PaintArgs, int32 MyIndex, FSlateWindowElementList& OutDrawElements)
 {
-// Commenting this since it could be triggered in specific cases where Widgte->UpdateFlags is reset and the proxy is not in sync.
+// Commenting this since it could be triggered in specific cases where Widgte->UpdateFlags in reset but the Widget Proxy is still in the  update list
 //#if WITH_SLATE_DEBUGGING
 //	ensure(UpdateFlags == Widget->UpdateFlags);
 //#endif
@@ -44,29 +45,29 @@ int32 FWidgetProxy::Update(const FPaintArgs& PaintArgs, int32 MyIndex, FSlateWin
 	}
 	else if(!bInvisibleDueToParentOrSelfVisibility)
 	{
-#if WITH_SLATE_DEBUGGING
 		EWidgetUpdateFlags PreviousUpdateFlag = UpdateFlags;
-#endif
+		TSharedPtr<SWidget> CurrentWidget = Widget->AsShared();
 
 		if (EnumHasAnyFlags(UpdateFlags, EWidgetUpdateFlags::NeedsActiveTimerUpdate))
 		{
 			SCOPE_CYCLE_COUNTER(STAT_SlateExecuteActiveTimers);
-			Widget->ExecuteActiveTimers(PaintArgs.GetCurrentTime(), PaintArgs.GetDeltaTime());
+			CurrentWidget->ExecuteActiveTimers(PaintArgs.GetCurrentTime(), PaintArgs.GetDeltaTime());
 		}
 
 		if (EnumHasAnyFlags(UpdateFlags, EWidgetUpdateFlags::NeedsTick))
 		{
-			const FSlateWidgetPersistentState& MyState = Widget->GetPersistentState();
+			const FSlateWidgetPersistentState& MyState = CurrentWidget->GetPersistentState();
 
 			INC_DWORD_STAT(STAT_SlateNumTickedWidgets);
 			SCOPE_CYCLE_COUNTER(STAT_SlateTickWidgets);
 
-			Widget->Tick(MyState.DesktopGeometry, PaintArgs.GetCurrentTime(), PaintArgs.GetDeltaTime());
+			CurrentWidget->Tick(MyState.DesktopGeometry, PaintArgs.GetCurrentTime(), PaintArgs.GetDeltaTime());
 		}
 
 #if WITH_SLATE_DEBUGGING
-		FSlateDebugging::BroadcastWidgetUpdated(Widget, PreviousUpdateFlag);
+		FSlateDebugging::BroadcastWidgetUpdated(CurrentWidget.Get(), PreviousUpdateFlag);
 #endif
+		UE_TRACE_SLATE_WIDGET_UPDATED(CurrentWidget.Get(), PreviousUpdateFlag);
 	}
 
 	return OutgoingLayerId;
@@ -87,6 +88,7 @@ bool FWidgetProxy::ProcessInvalidation(FWidgetUpdateList& UpdateList, TArray<FWi
 #if WITH_SLATE_DEBUGGING
 			FSlateDebugging::BroadcastWidgetInvalidate(ParentProxy.Widget, Widget, EInvalidateWidgetReason::Layout);
 #endif
+			UE_TRACE_SLATE_WIDGET_INVALIDATED(ParentProxy.Widget, Widget, EInvalidateWidgetReason::Layout);
 			UpdateList.Push(ParentProxy);
 		}
 		bWidgetNeedsRepaint = true;
@@ -136,6 +138,7 @@ bool FWidgetProxy::ProcessInvalidation(FWidgetUpdateList& UpdateList, TArray<FWi
 #if WITH_SLATE_DEBUGGING
 					FSlateDebugging::BroadcastWidgetInvalidate(ParentProxy.Widget, Widget, EInvalidateWidgetReason::Layout);
 #endif
+					UE_TRACE_SLATE_WIDGET_INVALIDATED(ParentProxy.Widget, Widget, EInvalidateWidgetReason::Layout);
 					UpdateList.Push(ParentProxy);
 				}
 			}
@@ -298,6 +301,7 @@ void FWidgetProxyHandle::MarkWidgetDirty(EInvalidateWidgetReason InvalidateReaso
 #if WITH_SLATE_DEBUGGING
 	FSlateDebugging::BroadcastWidgetInvalidate(Proxy.Widget, nullptr, InvalidateReason);
 #endif
+	UE_TRACE_SLATE_WIDGET_INVALIDATED(Proxy.Widget, nullptr, InvalidateReason);
 }
 
 void FWidgetProxyHandle::UpdateWidgetFlags(EWidgetUpdateFlags NewFlags)

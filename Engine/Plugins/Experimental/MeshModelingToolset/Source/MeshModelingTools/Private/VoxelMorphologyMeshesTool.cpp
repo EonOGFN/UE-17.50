@@ -36,6 +36,12 @@ void UVoxelMorphologyMeshesTool::SetupProperties()
 	MorphologyProperties = NewObject<UVoxelMorphologyMeshesToolProperties>(this);
 	MorphologyProperties->RestoreProperties(this);
 	AddToolPropertySource(MorphologyProperties);
+
+	SetToolDisplayName(LOCTEXT("VoxelMorphologyMeshesToolName", "Mesh Morphology Tool"));
+	GetToolManager()->DisplayMessage(
+		LOCTEXT("OnStartTool", "Apply Morphological operations to the input meshes to create a new Mesh, using voxelization techniques. UVs, sharp edges, and small/thin features will be lost. Increase Voxel Count to enhance accuracy."),
+		EToolMessageLevel::UserNotification);
+
 }
 
 
@@ -56,7 +62,9 @@ TUniquePtr<FDynamicMeshOperator> UVoxelMorphologyMeshesTool::MakeNewOperator()
 	for (int Idx = 0; Idx < ComponentTargets.Num(); Idx++)
 	{
 		Op->Meshes[Idx] = OriginalDynamicMeshes[Idx];
-		Op->Transforms[Idx] = TransformProxies[Idx]->GetTransform();
+		FTransform UseTransform = TransformProxies[Idx]->GetTransform();
+		UseTransform.MultiplyScale3D(TransformInitialScales[Idx]);
+		Op->Transforms[Idx] = UseTransform;
 	}
 
 	VoxProperties->SetPropertiesOnOp(*Op);

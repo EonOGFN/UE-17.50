@@ -69,16 +69,22 @@ namespace Chaos
 	public:
 		using FAccelerationStructure = ISpatialAcceleration<TAccelerationStructureHandle<FReal, 3>, FReal, 3>;
 
-		FSpatialAccelerationBroadPhase(const TPBDRigidsSOAs<FReal, 3>& InParticles, const FReal InThickness, const FReal InVelocityInflation)
-			: FBroadPhase(InThickness, InVelocityInflation)
+		FSpatialAccelerationBroadPhase(const TPBDRigidsSOAs<FReal, 3>& InParticles, const FReal InBoundsExpansion, const FReal InVelocityInflation, const FReal InCullDistance)
+			: FBroadPhase(InBoundsExpansion, InVelocityInflation)
 			, Particles(InParticles)
 			, SpatialAcceleration(nullptr)
+			, CullDistance(InCullDistance)
 		{
 		}
 
 		void SetSpatialAcceleration(const FAccelerationStructure* InSpatialAcceleration)
 		{
 			SpatialAcceleration = InSpatialAcceleration;
+		}
+
+		void SetCullDistance(FReal InCullDistance)
+		{
+			CullDistance = InCullDistance;
 		}
 
 		/**
@@ -135,20 +141,41 @@ namespace Chaos
 			const bool bResimSkipCollision = ResimCache && ResimCache->IsResimming();
 			if(!bResimSkipCollision)
 			{
-				Particles.GetNonDisabledDynamicView().ParallelFor(
-					[&](auto& Particle1,int32 ActiveIdxIdx)
+				int32 EntryCount = 0;
+				const TParticleView<TPBDRigidParticles<FReal, 3>>& View = Particles.GetNonDisabledDynamicView();
+
+				// Calculate maximum possible particle slots
+				for(int32 Index = 0; Index < View.SOAViews.Num(); ++Index)
 				{
-					ProduceParticleOverlaps</*bResimming=*/false>(Dt,Particle1,InSpatialAcceleration,NarrowPhase,Receiver,StatData);
+					EntryCount += View.SOAViews[Index].Size();
+				}
+
+				Receiver.Prepare(EntryCount);
+
+				View.ParallelFor([&](auto& Particle1,int32 ActiveIdxIdx)
+				{
+					ProduceParticleOverlaps</*bResimming=*/false>(Dt,Particle1,InSpatialAcceleration,NarrowPhase,Receiver,StatData, ActiveIdxIdx);
 				},bDisableParallelFor);
 			}
 			else
 			{
-				ResimCache->GetDesyncedView().ParallelFor(
+				int32 EntryCount = 0;
+				const TParticleView<TGeometryParticles<FReal, 3>>& View = ResimCache->GetDesyncedView();
+
+				// Calculate maximum possible particle slots
+				for(int32 Index = 0; Index < View.SOAViews.Num(); ++Index)
+				{
+					EntryCount += View.SOAViews[Index].Size();
+				}
+
+				Receiver.Prepare(EntryCount);
+
+				View.ParallelFor(
 					[&](auto& Particle1,int32 ActiveIdxIdx)
 				{
 					//TODO: use transient handle
 					TGenericParticleHandleHandleImp<FReal,3> GenericHandle(Particle1.Handle());
-					ProduceParticleOverlaps</*bResimming=*/true>(Dt,GenericHandle,InSpatialAcceleration,NarrowPhase,Receiver,StatData);
+					ProduceParticleOverlaps</*bResimming=*/true>(Dt,GenericHandle,InSpatialAcceleration,NarrowPhase,Receiver,StatData, ActiveIdxIdx);
 				},bDisableParallelFor);
 			}
 		}
@@ -163,7 +190,8 @@ namespace Chaos
 		    const T_SPATIALACCELERATION& InSpatialAcceleration,
 		    FNarrowPhase& NarrowPhase,
 		    FAsyncCollisionReceiver& Receiver,
-		    CollisionStats::FStatData& StatData)
+		    CollisionStats::FStatData& StatData,
+			int32 EntryIndex)
 		{
 			CHAOS_COLLISION_STAT(StatData.IncrementSimulatedParticles());
 
@@ -175,29 +203,12 @@ namespace Chaos
 			if (bIsResimming || (Particle1.ObjectState() == EObjectStateType::Dynamic || Particle1.ObjectState() == EObjectStateType::Sleeping))
 			{
 				const bool bBody1Bounded = HasBoundingBox(Particle1);
-				const FReal Box1Thickness = ComputeBoundsThickness(Particle1, Dt, BoundsThickness, BoundsThicknessVelocityInflation).Size();
-				
-				// By default, cull distance will be the bounds thickness. Even if the object does not have
-				// bounds, this way we will get some non-zero cull distance.
-				FReal Particle1CullDistance = Box1Thickness;
-				
 				{
 					SCOPE_CYCLE_COUNTER(STAT_Collisions_SpatialBroadPhase);
-					// @todo(ccaulfield): the spatial acceleration scheme needs to know the expanded bboxes for all particles, not just the one doing the test
 					if (bBody1Bounded)
 					{
-						// @todo(ccaulfield): COLLISION - see the NOTE below - fix it
-#if CHAOS_PARTICLEHANDLE_TODO
-						const TAABB<FReal, 3> Box1 = InSpatialAcceleration.GetWorldSpaceBoundingBox(Particle1);
-#else
-						TAABB<FReal, 3> Box1 = ComputeWorldSpaceBoundingBox<FReal>(Particle1);
-						Box1.ThickenSymmetrically(FVec3(Box1Thickness));
-#endif
-
-						// Take the longest edge of the expanded bounding box for the constraint cull distance.
-						// This is a heuristic for how likely an iteration of the solver is likely to move
-						// any point on the object.
-						Particle1CullDistance = Box1.Extents()[Box1.LargestAxis()];
+						const FReal Box1Thickness = ComputeBoundsThickness(Particle1, Dt, BoundsThickness, BoundsThicknessVelocityInflation).Size();
+						const TAABB<FReal, 3> Box1 = ComputeWorldSpaceBoundingBox<FReal>(Particle1).ThickenSymmetrically(FVec3(Box1Thickness));
 
 						CHAOS_COLLISION_STAT(StatData.RecordBoundsData(Box1));
 
@@ -220,6 +231,7 @@ namespace Chaos
 
 				SCOPE_CYCLE_COUNTER(STAT_Collisions_Filtering);
 				const int32 NumPotentials = PotentialIntersections.Num();
+				FCollisionConstraintsArray NewConstraints;
 				for (int32 i = 0; i < NumPotentials; ++i)
 				{
 					auto& Particle2 = *PotentialIntersections[i].GetGeometryParticleHandle_PhysicsThread();
@@ -284,11 +296,11 @@ namespace Chaos
 						continue;
 					}
 
+					// Make sure we don't add a second set of constaint for the same body pair (with the body order flipped)
 					const bool bBody2Bounded = HasBoundingBox(Particle2);
 					const bool bIsParticle2Dynamic = Particle2.CastToRigidParticle() && Particle2.ObjectState() == EObjectStateType::Dynamic;
 					if (bBody1Bounded == bBody2Bounded && bIsParticle2Dynamic)
 					{
-						//no bidirectional constraints.
 						if (Particle1.ParticleID() < Particle2.ParticleID() && bSecondParticleWillHaveAnswer)
 						{
 							//question: if !bSecondParticleWillHaveAnswer do we need to reorder constraint?
@@ -296,27 +308,24 @@ namespace Chaos
 						}
 					}
 				
-					FReal Box2Thickness;
-					{
-						SCOPE_CYCLE_COUNTER(STAT_Collisions_ComputeBoundsThickness);
-						Box2Thickness = bIsParticle2Dynamic ? ComputeBoundsThickness(*Particle2.CastToRigidParticle(), Dt, BoundsThickness, BoundsThicknessVelocityInflation).Size()
-							: (bIsParticle2Kinematic ? ComputeBoundsThickness(*Particle2.CastToKinematicParticle(), Dt, BoundsThickness, BoundsThicknessVelocityInflation).Size() : (FReal)0);
-					}
-
-					FCollisionConstraintsArray NewConstraints;
+					
 					{
 						SCOPE_CYCLE_COUNTER(STAT_Collisions_GenerateCollisions);
-						
-						// Each particle has a heuristic for cull distance, we take the larger one to decrease the chance
-						// that a constraint will get culled prematurely.
-						const FReal CullDistance = FMath::Max(Particle1CullDistance, Box2Thickness);
-						NarrowPhase.GenerateCollisions(NewConstraints, Dt, Particle1.Handle(), Particle2.Handle(), CullDistance, StatData);
+						// Generate constraints for the potentially overlapping shape pairs. Also run collision detection to generate
+						// the contact position and normal (for contacts within CullDistance) for use in collision callbacks.
+						NarrowPhase.GenerateCollisions(NewConstraints, Dt, Particle1.Handle(), Particle2.Handle(), CullDistance);
 					}
+				}
 
-					{
-						SCOPE_CYCLE_COUNTER(STAT_Collisions_ReceiveCollisions);
-						Receiver.ReceiveCollisions(NewConstraints);
-					}
+				{
+					SCOPE_CYCLE_COUNTER(STAT_Collisions_ReceiveCollisions);
+
+					CHAOS_COLLISION_STAT(if (NewConstraints.Num()) { StatData.IncrementCountNP(NewConstraints.Num()); });
+					CHAOS_COLLISION_STAT(if (!NewConstraints.Num()) { StatData.IncrementRejectedNP(); });
+
+					// We are probably running in a parallel task here. The Receiver collects the contacts from all the tasks 
+					// and passes them to theconstraint container in serial.
+					Receiver.ReceiveCollisions(MoveTemp(NewConstraints), EntryIndex);
 				}
 			}
 
@@ -325,6 +334,7 @@ namespace Chaos
 
 		const TPBDRigidsSOAs<FReal, 3>& Particles;
 		const FAccelerationStructure* SpatialAcceleration;
+		FReal CullDistance;
 
 		FIgnoreCollisionManager IgnoreCollisionManager;
 	};

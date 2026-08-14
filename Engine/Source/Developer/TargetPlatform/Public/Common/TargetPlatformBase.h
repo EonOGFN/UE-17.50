@@ -5,6 +5,9 @@
 #include "CoreMinimal.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "PlatformInfo.h"
+#include "HAL/PlatformFilemanager.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "Misc/Paths.h"
 
 /**
  * Base class for target platforms.
@@ -42,9 +45,9 @@ public:
 
 	TARGETPLATFORM_API virtual bool UsesBasePassVelocity() const override;
 
-	TARGETPLATFORM_API virtual bool UsesAnisotropicBRDF() const override;
+    TARGETPLATFORM_API virtual bool VelocityEncodeDepth() const override;
 
-	TARGETPLATFORM_API virtual bool UsesSelectiveBasePassOutputs() const override;
+    TARGETPLATFORM_API virtual bool UsesSelectiveBasePassOutputs() const override;
 	
 	TARGETPLATFORM_API virtual bool UsesDistanceFields() const override;
 
@@ -62,6 +65,11 @@ public:
 		OutFormats.Add(FName(TEXT("FullHDR")));
 	}
 
+	virtual FName FinalizeVirtualTextureLayerFormat(FName Format) const override
+	{
+		return Format;
+	}
+
 	virtual FName GetVirtualTextureLayerFormat(
 		int32 SourceFormat,
 		bool bAllowCompression, bool bNoAlpha,
@@ -76,9 +84,22 @@ public:
 		return true;
 	}
 
-	virtual bool CanSupportXGEShaderCompile() const override
+	virtual bool CanSupportRemoteShaderCompile() const override
 	{
 		return true;
+	}
+	
+	virtual void GetShaderCompilerDependencies(TArray<FString>& OutDependencies) const override
+	{
+	}
+
+	/** Helper method to fill a dependencies array for the shader compiler with absolute paths, passing a relative path to the Engine as the parameter. */
+	static void AddDependencySCArrayHelper(TArray<FString>& OutDependencies, const FString& DependencyRelativePath)
+	{
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		FString DependencyAbsolutePath = PlatformFile.ConvertToAbsolutePathForExternalAppForRead(*(FPaths::EngineDir() / DependencyRelativePath));
+		FPaths::NormalizeDirectoryName(DependencyAbsolutePath);
+		OutDependencies.AddUnique(DependencyAbsolutePath);
 	}
 
 	virtual bool IsSdkInstalled(bool bProjectHasCode, FString& OutDocumentationPath) const override

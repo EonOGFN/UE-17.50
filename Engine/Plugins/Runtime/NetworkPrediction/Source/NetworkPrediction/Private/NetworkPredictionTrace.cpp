@@ -44,12 +44,15 @@ UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimulationScope)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, WorldPreInit)
+	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
+UE_TRACE_EVENT_END()
+
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PieBegin)
-	UE_TRACE_EVENT_FIELD(uint8, DummyData)
+	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, WorldFrameStart)
-	UE_TRACE_EVENT_FIELD(uint32, GameInstanceID)
 	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 	UE_TRACE_EVENT_FIELD(float, DeltaSeconds)
 UE_TRACE_EVENT_END()
@@ -80,12 +83,25 @@ UE_TRACE_EVENT_BEGIN(NetworkPrediction, ShouldReconcile)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, Reconcile)
+UE_TRACE_EVENT_END()
+
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, RollbackInject)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PushInputFrame)
 	UE_TRACE_EVENT_FIELD(int32, Frame)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, FixedTickOffset)
+	UE_TRACE_EVENT_FIELD(int32, Offset)
+	UE_TRACE_EVENT_FIELD(bool, Changed)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, BufferedInput)
+	UE_TRACE_EVENT_FIELD(int32, NumBufferedFrames)
+	UE_TRACE_EVENT_FIELD(bool, bFault)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, ProduceInput)
@@ -158,22 +174,21 @@ void FNetworkPredictionTrace::TraceWorldFrameStart(UGameInstance* GameInstance, 
 		return;
 	}
 
-	uint32 GameInstanceID = GameInstanceMap.GetId(GameInstance);
-
 	UE_TRACE_LOG(NetworkPrediction, WorldFrameStart, NetworkPredictionChannel)
-		<< WorldFrameStart.GameInstanceID(GameInstanceID)
 		<< WorldFrameStart.EngineFrameNumber(GFrameNumber)
 		<< WorldFrameStart.DeltaSeconds(DeltaSeconds);
 }
 
 void FNetworkPredictionTrace::TraceSimulationConfig(int32 TraceID, ENetRole NetRole, bool bHasNetConnection, const FNetworkPredictionInstanceArchetype& Archetype, const FNetworkPredictionInstanceConfig& Config, int32 ServiceMask)
 {
+	npEnsureMsgf(NetRole != ENetRole::ROLE_None && NetRole != ENetRole::ROLE_MAX, TEXT("Invalid NetRole %d"), NetRole);
+
 	UE_TRACE_LOG(NetworkPrediction, SimulationConfig, NetworkPredictionChannel)
 		<< SimulationConfig.TraceID(TraceID)
 		<< SimulationConfig.NetRole((uint8)NetRole)
 		<< SimulationConfig.bHasNetConnection((uint8)bHasNetConnection)
 		<< SimulationConfig.TickingPolicy((uint8)Archetype.TickingMode)
-		<< SimulationConfig.ServiceMask(ServiceMask);
+		<< SimulationConfig.ServiceMask(ServiceMask);		
 }
 
 void FNetworkPredictionTrace::TraceSimulationScope(int32 TraceID)
@@ -238,6 +253,14 @@ void FNetworkPredictionTrace::TraceNetRecv(int32 Frame, int32 TimeMS)
 		<< NetRecv.TimeMS(TimeMS);
 }
 
+void FNetworkPredictionTrace::TraceReconcile(const FAnsiStringView& StrView)
+{
+	const uint16 AttachmentSize = (uint16)((StrView.Len()+1) * sizeof(FAnsiStringView::ElementType));
+
+	UE_TRACE_LOG(NetworkPrediction, Reconcile, NetworkPredictionChannel, AttachmentSize)
+		<< Reconcile.Attachment(StrView.GetData(), AttachmentSize);
+}
+
 void FNetworkPredictionTrace::TraceShouldReconcile(int32 TraceID)
 {
 	UE_TRACE_LOG(NetworkPrediction, ShouldReconcile, NetworkPredictionChannel)
@@ -253,14 +276,33 @@ void FNetworkPredictionTrace::TraceRollbackInject(int32 TraceID)
 void FNetworkPredictionTrace::TracePIEStart()
 {
 	UE_TRACE_LOG(NetworkPrediction, PieBegin, NetworkPredictionChannel)
-		<< PieBegin.DummyData(0); // temp to quiet clang
+		<< PieBegin.EngineFrameNumber(GFrameNumber);
+}
 
+void FNetworkPredictionTrace::TraceWorldPreInit()
+{
+	UE_TRACE_LOG(NetworkPrediction, WorldPreInit, NetworkPredictionChannel)
+		<< WorldPreInit.EngineFrameNumber(GFrameNumber);
 }
 
 void FNetworkPredictionTrace::TracePushInputFrame(int32 Frame)
 {
 	UE_TRACE_LOG(NetworkPrediction, PushInputFrame, NetworkPredictionChannel)
 		<< PushInputFrame.Frame(Frame);
+}
+
+void FNetworkPredictionTrace::TraceFixedTickOffset(int32 Offset, bool bChanged)
+{
+	UE_TRACE_LOG(NetworkPrediction, FixedTickOffset, NetworkPredictionChannel)
+		<< FixedTickOffset.Offset(Offset)
+		<< FixedTickOffset.Changed(bChanged);
+}
+
+void FNetworkPredictionTrace::TraceBufferedInput(int32 NumBufferedFrames, bool bFault)
+{
+	UE_TRACE_LOG(NetworkPrediction, BufferedInput, NetworkPredictionChannel)
+		<< BufferedInput.NumBufferedFrames(NumBufferedFrames)
+		<< BufferedInput.bFault(bFault);
 }
 
 void FNetworkPredictionTrace::TraceProduceInput(int32 TraceID)
@@ -271,7 +313,7 @@ void FNetworkPredictionTrace::TraceProduceInput(int32 TraceID)
 
 void FNetworkPredictionTrace::TraceOOBStateMod(int32 TraceID, int32 Frame, const FAnsiStringView& StrView)
 {
-	const uint16 AttachmentSize = (uint16)((StrView.Len()) * sizeof(FAnsiStringView::ElementType));
+	const uint16 AttachmentSize = (uint16)((StrView.Len()+1) * sizeof(FAnsiStringView::ElementType));
 
 	UE_TRACE_LOG(NetworkPrediction, OOBStateMod, NetworkPredictionChannel, AttachmentSize)
 		<< OOBStateMod.TraceID(TraceID)

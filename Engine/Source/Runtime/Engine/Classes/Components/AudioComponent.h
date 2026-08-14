@@ -9,6 +9,10 @@
 #include "Sound/SoundWave.h"
 #include "UObject/ObjectMacros.h"
 #include "Math/RandomStream.h"
+#include "Sound/QuartzSubscription.h"
+#include "Sound/QuartzQuantizationUtilities.h"
+#include "Quartz/AudioMixerClockHandle.h"
+#include "Quartz/AudioMixerQuantizedCommands.h"
 
 #include "AudioComponent.generated.h"
 
@@ -376,6 +380,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Attachment, meta = (EditCondition = "bAutoManageAttachment"))
 	EAttachmentRule AutoAttachScaleRule;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Modulation)
+	FSoundModulationDefaultRoutingSettings ModulationRouting;
+
 	/** Called when PlayState changes */
 	UPROPERTY(BlueprintAssignable)
 	FOnAudioPlayStateChanged OnAudioPlayStateChanged;
@@ -455,6 +462,19 @@ public:
 	/** Start a sound playing on an audio component */
 	UFUNCTION(BlueprintCallable, Category="Audio|Components|Audio")
 	virtual void Play(float StartTime = 0.0f);
+
+	/** Start a sound playing on an audio component on a given quantization boundary with the handle to an existing clock */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio", meta=(WorldContext = "WorldContextObject", AdvancedDisplay = "3", UnsafeDuringActorConstruction = "true", Keywords = "play", AutoCreateRefTerm = "InDelegate"))
+	virtual void PlayQuantized(
+		  const UObject* WorldContextObject
+		, UPARAM(ref) UQuartzClockHandle*& InClockHandle
+		, UPARAM(ref) FQuartzQuantizationBoundary& InQuantizationBoundary
+		, const FOnQuartzCommandEventBP& InDelegate
+		, float InStartTime = 0.f
+		, float InFadeInDuration = 0.f
+		, float InFadeVolumeLevel = 1.f
+		, EAudioFaderCurve InFadeCurve = EAudioFaderCurve::Linear
+	);
 
 	/** Stop an audio component's sound, issue any delegates if needed */
 	UFUNCTION(BlueprintCallable, Category="Audio|Components|Audio")
@@ -547,6 +567,10 @@ public:
 	/** Sets lowpass filter frequency of the audio component. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
 	void SetLowPassFilterFrequency(float InLowPassFilterFrequency);
+
+	/** Sets whether or not to output the audio to bus only. */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
+	void SetOutputToBusOnly(bool bInOutputToBusOnly);
 
 	/** Queries if the sound wave playing in this audio component has cooked FFT data. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
@@ -678,6 +702,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Attachment, meta=(EditCondition="bAutoManageAttachment"))
 	FName AutoAttachSocketName;
 
+	struct PlayInternalRequestData
+	{
+		// start time
+		float StartTime = 0.0f;
+
+		// fade data
+		float FadeInDuration = 0.0f;
+		float FadeVolumeLevel = 1.0f;
+		EAudioFaderCurve FadeCurve = EAudioFaderCurve::Linear;
+
+		// Quantized event data
+		Audio::FQuartzQuantizedRequestData QuantizedRequestData;
+	};
+
 private:
 
 	uint64 AudioComponentID;
@@ -685,7 +723,7 @@ private:
 	float RetriggerTimeSinceLastUpdate;
 	float RetriggerUpdateInterval;
 
-	/** Saved relative transform before auto attachement. Used during detachment to restore the transform if we had automatically attached. */
+	/** Saved relative transform before auto attachment. Used during detachment to restore the transform if we had automatically attached. */
 	FVector SavedAutoAttachRelativeLocation;
 	FRotator SavedAutoAttachRelativeRotation;
 	FVector SavedAutoAttachRelativeScale3D;
@@ -695,7 +733,7 @@ private:
 		USoundWave* SoundWave;
 		float PlaybackTime;
 
-		// Cachced indices to boost searching cooked data indices
+		// Cached indices to boost searching cooked data indices
 		uint32 LastEnvelopeCookedIndex;
 		uint32 LastFFTCookedIndex;
 
@@ -720,8 +758,9 @@ private:
 	void CancelAutoAttachment(bool bDetachFromParent, const UWorld* MyWorld);
 
 protected:
+
 	/** Utility function called by Play and FadeIn to start a sound playing. */
-	void PlayInternal(const float StartTime = 0.0f, const float FadeInDuration = 0.0f, const float FadeVolumeLevel = 1.0f, const EAudioFaderCurve FadeCurve = EAudioFaderCurve::Linear);
+	void PlayInternal(const PlayInternalRequestData& InPlayRequestData);
 
 #if WITH_EDITORONLY_DATA
 	/** Utility function that updates which texture is displayed on the sprite dependent on the properties of the Audio Component. */

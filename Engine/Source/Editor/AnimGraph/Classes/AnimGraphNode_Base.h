@@ -13,7 +13,6 @@
 #include "K2Node.h"
 #include "AnimGraphNode_Base.generated.h"
 
-class FAnimBlueprintCompilerContext;
 class FAnimGraphNodeDetails;
 class FBlueprintActionDatabaseRegistrar;
 class FCanvas;
@@ -23,6 +22,9 @@ class IDetailLayoutBuilder;
 class UAnimGraphNode_Base;
 class UEdGraphSchema;
 class USkeletalMeshComponent;
+class IAnimBlueprintCompilerHandlerCollection;
+class IAnimBlueprintGeneratedClassCompiledData;
+class IAnimBlueprintCompilationContext;
 
 struct FPoseLinkMappingRecord
 {
@@ -187,6 +189,7 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 	// UObject interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	virtual void Serialize(FArchive& Ar) override;
 	// End of UObject interface
 
 	// UEdGraphNode interface
@@ -198,6 +201,7 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
 	virtual void AddSearchMetaDataInfo(TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const override;
+	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	// End of UEdGraphNode interface
 
 	// UK2Node interface
@@ -254,15 +258,6 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 
 	// Replace references to animations that exist in the supplied maps 	
 	virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& AnimAssetReplacementMap) {};
-	
-	// Process this node's data during compilation (override point)
-	virtual void OnProcessDuringCompilation(FAnimBlueprintCompilerContext& InCompilerContext) {}
-
-	// Get all the subsystems that we want to add to the class to support this node
-	virtual void GetRequiredClassSubsystems(TArray<TSubclassOf<UAnimBlueprintClassSubsystem>>& OutSubsystemClasses) const {}
-
-	// Process this node's data during compilation
-	void ProcessDuringCompilation(FAnimBlueprintCompilerContext& InCompilerContext);
 
 	// Helper function for GetAllAnimationSequencesReferred
 	void HandleAnimReferenceCollection(UAnimationAsset* AnimAsset, TArray<UAnimationAsset*>& AnimationAssets) const;
@@ -360,7 +355,7 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 protected:
 	friend class FAnimBlueprintCompilerContext;
 	friend class FAnimGraphNodeDetails;
-	friend class UAnimBlueprintCompilerSubsystem_Base;
+	friend class FAnimBlueprintCompilerHandler_Base;
 
 	// Gets the animation FNode type represented by this ed graph node
 	UScriptStruct* GetFNodeType() const;
@@ -378,6 +373,12 @@ protected:
 
 	/** Get the property (and possibly array index) associated with the supplied pin */
 	virtual void GetPinAssociatedProperty(const UScriptStruct* NodeType, const UEdGraphPin* InputPin, FProperty*& OutProperty, int32& OutIndex) const;
+
+	// Process this node's data during compilation
+	void ProcessDuringCompilation(IAnimBlueprintCompilationContext& InCompilationContext, IAnimBlueprintGeneratedClassCompiledData& OutCompiledData);
+
+	// Process this node's data during compilation (override point)
+	virtual void OnProcessDuringCompilation(IAnimBlueprintCompilationContext& InCompilationContext, IAnimBlueprintGeneratedClassCompiledData& OutCompiledData) {}
 
 	// Allocates or reallocates pins
 	void InternalPinCreation(TArray<UEdGraphPin*>* OldPins);

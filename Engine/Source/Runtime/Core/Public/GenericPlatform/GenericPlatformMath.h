@@ -374,7 +374,12 @@ struct FGenericPlatformMath
 	static FORCEINLINE void RandInit(int32 Seed) { srand( Seed ); }
 
 	/** Returns a random float between 0 and 1, inclusive. */
-	static FORCEINLINE float FRand() { return Rand() / (float)RAND_MAX; }
+	static FORCEINLINE float FRand() 
+	{ 
+		// FP32 mantissa can only represent 24 bits before losing precision
+		constexpr int32 RandMax = 0x00ffffff < RAND_MAX ? 0x00ffffff : RAND_MAX;
+		return (Rand() & RandMax) / (float)RandMax;
+	}
 
 	/** Seeds future calls to SRand() */
 	static CORE_API void SRandInit( int32 Seed );
@@ -478,7 +483,20 @@ struct FGenericPlatformMath
 	}
 
 	/**
-	 * Counts the number of leading zeros in the bit representation of the value
+	 * Counts the number of leading zeros in the bit representation of the 8-bit value
+	 *
+	 * @param Value the value to determine the number of leading zeros for
+	 *
+	 * @return the number of zeros before the first "on" bit
+	 */
+	static FORCEINLINE uint8 CountLeadingZeros8(uint8 Value)
+	{
+		if (Value == 0) return 8;
+		return uint8(7 - FloorLog2(uint32(Value)));
+	}
+
+	/**
+	 * Counts the number of leading zeros in the bit representation of the 32-bit value
 	 *
 	 * @param Value the value to determine the number of leading zeros for
 	 *
@@ -585,6 +603,17 @@ struct FGenericPlatformMath
 		return x;
 	}
 
+	static FORCEINLINE uint64 MortonCode2_64( uint64 x )
+	{
+		x &= 0x00000000ffffffff;
+		x = (x ^ (x << 16)) & 0x0000ffff0000ffff;
+		x = (x ^ (x << 8)) & 0x00ff00ff00ff00ff;
+		x = (x ^ (x << 4)) & 0x0f0f0f0f0f0f0f0f;
+		x = (x ^ (x << 2)) & 0x3333333333333333;
+		x = (x ^ (x << 1)) & 0x5555555555555555;
+		return x;
+	}
+
 	/** Reverses MortonCode2. Compacts every other bit to the right. */
 	static FORCEINLINE uint32 ReverseMortonCode2( uint32 x )
 	{
@@ -593,6 +622,17 @@ struct FGenericPlatformMath
 		x = (x ^ (x >> 2)) & 0x0f0f0f0f;
 		x = (x ^ (x >> 4)) & 0x00ff00ff;
 		x = (x ^ (x >> 8)) & 0x0000ffff;
+		return x;
+	}
+
+	static FORCEINLINE uint64 ReverseMortonCode2_64( uint64 x )
+	{
+		x &= 0x5555555555555555;
+		x = (x ^ (x >> 1)) & 0x3333333333333333;
+		x = (x ^ (x >> 2)) & 0x0f0f0f0f0f0f0f0f;
+		x = (x ^ (x >> 4)) & 0x00ff00ff00ff00ff;
+		x = (x ^ (x >> 8)) & 0x0000ffff0000ffff;
+		x = (x ^ (x >> 16)) & 0x00000000ffffffff;
 		return x;
 	}
 

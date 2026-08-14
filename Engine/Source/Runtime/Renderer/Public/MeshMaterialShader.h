@@ -34,8 +34,8 @@ struct FMeshMaterialShaderPermutationParameters : public FMaterialShaderPermutat
 	// Type of vertex factory to compile.
 	const FVertexFactoryType* VertexFactoryType;
 
-	FMeshMaterialShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType, const int32 InPermutationId)
-		: FMaterialShaderPermutationParameters(InPlatform, InMaterialParameters, InPermutationId)
+	FMeshMaterialShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType, int32 InPermutationId, EShaderPermutationFlags InFlags)
+		: FMaterialShaderPermutationParameters(InPlatform, InMaterialParameters, InPermutationId, InFlags)
 		, VertexFactoryType(InVertexFactoryType)
 	{}
 };
@@ -43,11 +43,13 @@ struct FMeshMaterialShaderPermutationParameters : public FMaterialShaderPermutat
 struct FVertexFactoryShaderPermutationParameters
 {
 	EShaderPlatform Platform;
+	EShaderPermutationFlags Flags;
 	FMaterialShaderParameters MaterialParameters;
 	const FVertexFactoryType* VertexFactoryType;
 
-	FVertexFactoryShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType)
+	FVertexFactoryShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType, EShaderPermutationFlags InFlags)
 		: Platform(InPlatform)
+		, Flags(InFlags)
 		, MaterialParameters(InMaterialParameters)
 		, VertexFactoryType(InVertexFactoryType)
 	{}
@@ -64,12 +66,6 @@ public:
 	FMeshMaterialShader() {}
 
 	FMeshMaterialShader(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer);
-
-	// Declared as a friend, so that it can be called from other modules via static linkage, even if the compiler doesn't inline it.
-	FORCEINLINE friend void ValidateAfterBind(const FShaderType* Type, FMeshMaterialShader* Shader)
-	{
-		checkfSlow(Shader->PassUniformBuffer.IsInitialized(), TEXT("FMeshMaterialShader must bind a pass uniform buffer, even if it is just FSceneTexturesUniformParameters: %s"), Type->GetName());
-	}
 
 	void GetShaderBindings(
 		const FScene* Scene,
@@ -119,3 +115,4 @@ private:
 protected:
 	LAYOUT_FIELD(FShaderUniformBufferParameter, PassUniformBuffer);
 };
+

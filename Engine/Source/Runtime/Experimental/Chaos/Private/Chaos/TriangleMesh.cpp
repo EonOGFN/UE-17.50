@@ -4,6 +4,7 @@
 #include "Chaos/Box.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Plane.h"
+#include "HAL/IConsoleManager.h"
 #include "Math/NumericLimits.h"
 #include "Math/RandomStream.h"
 #include "Templates/Sorting.h"
@@ -11,6 +12,15 @@
 
 #include <algorithm>
 #include <iostream>
+
+#if INTEL_ISPC
+#include "TriangleMesh.ispc.generated.h"
+#endif
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+bool bChaos_TriangleMesh_ISPC_Enabled = true;
+FAutoConsoleVariableRef CVarChaosTriangleMeshISPCEnabled(TEXT("p.Chaos.TriangleMesh.ISPC"), bChaos_TriangleMesh_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in triangle mesh calculations"));
+#endif
 
 using namespace Chaos;
 
@@ -105,9 +115,9 @@ void TTriangleMesh<T>::ResetAuxiliaryStructures()
 }
 
 template<class T>
-TPair<int32, int32> TTriangleMesh<T>::GetVertexRange() const
+TVector<int32, 2> TTriangleMesh<T>::GetVertexRange() const
 {
-	return TPair<int32, int32>(MStartIdx, MStartIdx + MNumIndices - 1);
+	return TVector<int32, 2>(MStartIdx, MStartIdx + MNumIndices - 1);
 }
 
 template<class T>
@@ -158,21 +168,20 @@ const TMap<int32, TSet<uint32>>& TTriangleMesh<T>::GetPointToNeighborsMap() cons
 }
 
 template<class T>
-const TMap<int32, TArray<int32>>& TTriangleMesh<T>::GetPointToTriangleMap() const
+TConstArrayView<TArray<int32>> TTriangleMesh<T>::GetPointToTriangleMap() const
 {
-	if (MPointToTriangleMap.Num())
+	if (!MPointToTriangleMap.Num())
 	{
-		return MPointToTriangleMap;
-	}
-	MPointToTriangleMap.Reserve(MNumIndices);
-	for (int i = 0; i < MElements.Num(); ++i)
-	{
-		for (int Axis = 0; Axis < 3; ++Axis)
+		MPointToTriangleMap.AddDefaulted(MNumIndices);
+		for (int i = 0; i < MElements.Num(); ++i)
 		{
-			MPointToTriangleMap.FindOrAdd(MElements[i][Axis]).Add(i);
+			for (int Axis = 0; Axis < 3; ++Axis)
+			{
+				MPointToTriangleMap[MElements[i][Axis] - MStartIdx].Add(i);  // Access MPointToTriangleMap with local index
+			}
 		}
 	}
-	return MPointToTriangleMap;
+	return TConstArrayView<TArray<int32>>(MPointToTriangleMap.GetData() - MStartIdx, MStartIdx + MNumIndices);  // Return an array view that is using global indexation
 }
 
 template<class T>
@@ -196,7 +205,7 @@ TArray<TVector<int32, 4>> TTriangleMesh<T>::GetUniqueAdjacentElements() const
 	for (int32 SurfaceIndex = MStartIdx; SurfaceIndex < MStartIdx + MNumIndices; ++SurfaceIndex)
 	{
 		TMap<int32, TArray<int32>> SubPointToTriangleMap;
-		for (auto TriangleIndex : MPointToTriangleMap[SurfaceIndex])
+		for (auto TriangleIndex : MPointToTriangleMap[SurfaceIndex - MStartIdx])  // Access MPointToTriangleMap with local index
 		{
 			SubPointToTriangleMap.FindOrAdd(MElements[TriangleIndex][0]).Add(TriangleIndex);
 			SubPointToTriangleMap.FindOrAdd(MElements[TriangleIndex][1]).Add(TriangleIndex);
@@ -252,7 +261,7 @@ TArray<TVector<int32, 4>> TTriangleMesh<T>::GetUniqueAdjacentElements() const
 }
 
 template<class T>
-TArray<TVector<T, 3>> TTriangleMesh<T>::GetFaceNormals(const TArrayView<const TVector<T, 3>>& Points, const bool ReturnEmptyOnError) const
+TArray<TVector<T, 3>> TTriangleMesh<T>::GetFaceNormals(const TConstArrayView<TVector<T, 3>>& Points, const bool ReturnEmptyOnError) const
 {
 	TArray<TVector<T, 3>> Normals;
 	GetFaceNormals(Normals, Points, ReturnEmptyOnError);
@@ -262,7 +271,7 @@ TArray<TVector<T, 3>> TTriangleMesh<T>::GetFaceNormals(const TArrayView<const TV
 // Note:	This function assumes Counter Clockwise triangle windings in a Left Handed coordinate system
 //			If this is not the case the returned face normals may need to be inverted
 template<class T>
-void TTriangleMesh<T>::GetFaceNormals(TArray<TVector<T, 3>>& Normals, const TArrayView<const TVector<T, 3>>& Points, const bool ReturnEmptyOnError) const
+void TTriangleMesh<T>::GetFaceNormals(TArray<TVector<T, 3>>& Normals, const TConstArrayView<TVector<T, 3>>& Points, const bool ReturnEmptyOnError) const
 {
 	Normals.Reset(MElements.Num());
 	if (ReturnEmptyOnError)
@@ -288,65 +297,94 @@ void TTriangleMesh<T>::GetFaceNormals(TArray<TVector<T, 3>>& Normals, const TArr
 	}
 	else
 	{
-		for (const TVector<int32, 3>& Tri : MElements)
+		if (bChaos_TriangleMesh_ISPC_Enabled)
 		{
-			TVector<T, 3> p10 = Points[Tri[1]] - Points[Tri[0]];
-			TVector<T, 3> p20 = Points[Tri[2]] - Points[Tri[0]];
-			TVector<T, 3> Cross = TVector<T, 3>::CrossProduct(p20, p10);
-			Normals.Add(Cross.GetSafeNormal());
+			static_assert(std::is_same<T, float>::value == true, "ISPC only supports float template type");
+			Normals.SetNumUninitialized(MElements.Num());
+
+#if INTEL_ISPC
+			ispc::GetFaceNormals(
+				(ispc::FVector*)Normals.GetData(),
+				(ispc::FVector*)Points.GetData(),
+				(ispc::FIntVector*)MElements.GetData(),
+				MElements.Num());
+#endif
+		}
+		else
+		{
+			for (const TVector<int32, 3>& Tri : MElements)
+			{
+				TVector<T, 3> p10 = Points[Tri[1]] - Points[Tri[0]];
+				TVector<T, 3> p20 = Points[Tri[2]] - Points[Tri[0]];
+				TVector<T, 3> Cross = TVector<T, 3>::CrossProduct(p20, p10);
+				Normals.Add(Cross.GetSafeNormal());
+			}
 		}
 	}
 }
 
 template<class T>
-TArray<TVector<T, 3>> TTriangleMesh<T>::GetPointNormals(const TArrayView<const TVector<T, 3>>& Points, const bool bReturnEmptyOnError, const bool bUseGlobalArray)
+TArray<TVector<T, 3>> TTriangleMesh<T>::GetPointNormals(const TConstArrayView<TVector<T, 3>>& Points, const bool ReturnEmptyOnError)
 {
-	TArray<TVector<T, 3>> FaceNormals = GetFaceNormals(Points, bReturnEmptyOnError);
 	TArray<TVector<T, 3>> PointNormals;
-	GetPointNormals(PointNormals, FaceNormals, bReturnEmptyOnError, bUseGlobalArray);
+	const TArray<TVector<T, 3>> FaceNormals = GetFaceNormals(Points, ReturnEmptyOnError);
+	if (FaceNormals.Num())
+	{
+		PointNormals.SetNumUninitialized(MNumIndices);
+		GetPointNormals(PointNormals, FaceNormals, /*bUseGlobalArray =*/ false);
+	}
 	return PointNormals;
 }
 
 template<class T>
-void TTriangleMesh<T>::GetPointNormals(TArray<TVector<T, 3>>& PointNormals, const TArray<TVector<T, 3>>& FaceNormals, const bool bReturnEmptyOnError, const bool bUseGlobalArray)
+void TTriangleMesh<T>::GetPointNormals(TArrayView<TVector<T, 3>> PointNormals, const TConstArrayView<TVector<T, 3>>& FaceNormals, const bool bUseGlobalArray)
 {
 	GetPointToTriangleMap(); // build MPointToTriangleMap
 	const TTriangleMesh<T>* ConstThis = this;
-	ConstThis->GetPointNormals(PointNormals, FaceNormals, bReturnEmptyOnError, bUseGlobalArray);
+	ConstThis->GetPointNormals(PointNormals, FaceNormals, bUseGlobalArray);
 }
 
 template<class T>
-void TTriangleMesh<T>::GetPointNormals(TArray<TVector<T, 3>>& PointNormals, const TArray<TVector<T, 3>>& FaceNormals, const bool bReturnEmptyOnError, const bool bUseGlobalArray) const
+void TTriangleMesh<T>::GetPointNormals(TArrayView<TVector<T, 3>> PointNormals, const TConstArrayView<TVector<T, 3>>& FaceNormals, const bool bUseGlobalArray) const
 {
 	check(MPointToTriangleMap.Num() != 0);
-	PointNormals.SetNum(MNumIndices);
-	for (auto Element : MPointToTriangleMap)
+
+	if (bChaos_TriangleMesh_ISPC_Enabled)
 	{
-		checkSlow(Element.Key >= MStartIdx);
-		const int32 NormalIndex = bUseGlobalArray ? Element.Key : GlobalToLocal(Element.Key);  // Select whether the points normal indices match the points indices or start at 0
-		if (PointNormals.Num() <= NormalIndex)
+		static_assert(std::is_same<T, float>::value == true, "ISPC only supports float template type");
+
+#if INTEL_ISPC
+		ispc::GetPointNormals(
+			(ispc::FVector*)PointNormals.GetData(),
+			(const ispc::FVector*)FaceNormals.GetData(),
+			(const ispc::TArrayInt*)MPointToTriangleMap.GetData(),
+			bUseGlobalArray ? LocalToGlobal(0) : 0,
+			FaceNormals.Num(),
+			MNumIndices);
+#endif
+	}
+	else
+	{
+		for (int32 Element = 0; Element < MNumIndices; ++Element)  // Iterate points with local indexes
 		{
-			PointNormals.SetNum(NormalIndex);
-		}
-		TVector<T, 3> Normal(0);
-		for (int32 k = 0; k < Element.Value.Num(); ++k)
-		{
-			if (FaceNormals.IsValidIndex(Element.Value[k]))
+			const int32 NormalIndex = bUseGlobalArray ? LocalToGlobal(Element) : Element;  // Select whether the points normal indices match the points indices or start at 0
+			TVector<T, 3>& Normal = PointNormals[NormalIndex];
+			Normal = TVector<T, 3>(0);
+			const TArray<int32>& TriangleMap = MPointToTriangleMap[Element];  // Access MPointToTriangleMap with local index
+			for (int32 k = 0; k < TriangleMap.Num(); ++k)
 			{
-				Normal += FaceNormals[Element.Value[k]];
+				if (FaceNormals.IsValidIndex(TriangleMap[k]))
+				{
+					Normal += FaceNormals[TriangleMap[k]];
+				}
 			}
-			else if (bReturnEmptyOnError)
-			{
-				PointNormals.Reset();
-				return;
-			}
+			Normal = Normal.GetSafeNormal();
 		}
-		PointNormals[NormalIndex] = Normal.GetSafeNormal();
 	}
 }
 
 template<class T>
-void AddTrianglesToHull(const TArrayView<const TVector<T, 3>>& Points, const int32 I0, const int32 I1, const int32 I2, const TPlane<T, 3>& SplitPlane, const TArray<int32>& InIndices, TArray<TVector<int32, 3>>& OutIndices)
+void AddTrianglesToHull(const TConstArrayView<TVector<T, 3>>& Points, const int32 I0, const int32 I1, const int32 I2, const TPlane<T, 3>& SplitPlane, const TArray<int32>& InIndices, TArray<TVector<int32, 3>>& OutIndices)
 {
 	int32 MaxD = 0; //This doesn't need to be initialized but we need to avoid the compiler warning
 	T MaxDistance = 0;
@@ -450,7 +488,7 @@ void AddTrianglesToHull(const TArrayView<const TVector<T, 3>>& Points, const int
 
 // @todo(mlentine, ocohen); Merge different hull creation versions
 template<class T>
-TTriangleMesh<T> TTriangleMesh<T>::GetConvexHullFromParticles(const TArrayView<const TVector<T, 3>>& Points)
+TTriangleMesh<T> TTriangleMesh<T>::GetConvexHullFromParticles(const TConstArrayView<TVector<T, 3>>& Points)
 {
 	TArray<TVector<int32, 3>> Indices;
 	if (Points.Num() <= 2)
@@ -692,7 +730,7 @@ TSegmentMesh<T>& TTriangleMesh<T>::GetSegmentMesh()
 			{
 				// This is a non-manifold mesh, where this edge is shared by
 				// more than 2 faces.
-				ensureMsgf(false, TEXT("Skipping non-manifold edge to face mapping."));
+				CHAOS_ENSURE_MSG(false, TEXT("Skipping non-manifold edge to face mapping."));
 			}
 		}
 	}
@@ -738,7 +776,7 @@ TSet<int32> TTriangleMesh<T>::GetBoundaryPoints()
 template <class T>
 TMap<int32, int32> TTriangleMesh<T>::FindCoincidentVertexRemappings(
 	const TArray<int32>& TestIndices,
-	const TArrayView<const TVector<T, 3>>& Points)
+	const TConstArrayView<TVector<T, 3>>& Points)
 {
 	// From index -> To index
 	TMap<int32, int32> Remappings;
@@ -879,7 +917,7 @@ TArray<T> TTriangleMesh<T>::GetCurvatureOnEdges(const TArray<TVector<T, 3>>& Fac
 }
 
 template<class T>
-TArray<T> TTriangleMesh<T>::GetCurvatureOnEdges(const TArrayView<const TVector<T, 3>>& Points)
+TArray<T> TTriangleMesh<T>::GetCurvatureOnEdges(const TConstArrayView<TVector<T, 3>>& Points)
 {
 	const TArray<TVector<T, 3>> FaceNormals = GetFaceNormals(Points, false);
 	return GetCurvatureOnEdges(FaceNormals);
@@ -913,7 +951,7 @@ TArray<T> TTriangleMesh<T>::GetCurvatureOnPoints(const TArray<T>& EdgeCurvatures
 }
 
 template<class T>
-TArray<T> TTriangleMesh<T>::GetCurvatureOnPoints(const TArrayView<const TVector<T, 3>>& Points)
+TArray<T> TTriangleMesh<T>::GetCurvatureOnPoints(const TConstArrayView<TVector<T, 3>>& Points)
 {
 	const TArray<T> EdgeCurvatures = GetCurvatureOnEdges(Points);
 	return GetCurvatureOnPoints(EdgeCurvatures);
@@ -979,7 +1017,7 @@ private:
 
 template<class T>
 TArray<int32> TTriangleMesh<T>::GetVertexImportanceOrdering(
-    const TArrayView<const TVector<T, 3>>& Points,
+    const TConstArrayView<TVector<T, 3>>& Points,
     const TArray<T>& PointCurvatures,
     TArray<int32>* CoincidentVertices,
     const bool RestrictToLocalIndexRange)
@@ -1029,7 +1067,7 @@ TArray<int32> TTriangleMesh<T>::GetVertexImportanceOrdering(
 		const bool IsFree = Neighbors == nullptr || Neighbors->Num() == 0;
 		Rank[Idx - Offset] = IsFree ? 1 : 0;
 		FoundFreeParticle |= IsFree;
-			}
+	}
 	if (FoundFreeParticle)
 	{
 		StableSort(&PointOrder[0], NumPoints, AscendingRankPred);
@@ -1066,7 +1104,7 @@ TArray<int32> TTriangleMesh<T>::GetVertexImportanceOrdering(
 	TAABB<T, 3> Bbox(Points[0], Points[0]);
 	for (int i = 1; i < NumPoints; i++)
 	{
-		Bbox.GrowToInclude(Points[i+Offset]);
+		Bbox.GrowToInclude(Points[i + Offset]);
 	}
 	const TVector<T, 3> Center = Bbox.Center();
 
@@ -1219,7 +1257,7 @@ TArray<int32> TTriangleMesh<T>::GetVertexImportanceOrdering(
 
 template<class T>
 TArray<int32>
-TTriangleMesh<T>::GetVertexImportanceOrdering(const TArrayView<const TVector<T, 3>>& Points, TArray<int32>* CoincidentVertices, const bool RestrictToLocalIndexRange)
+TTriangleMesh<T>::GetVertexImportanceOrdering(const TConstArrayView<TVector<T, 3>>& Points, TArray<int32>* CoincidentVertices, const bool RestrictToLocalIndexRange)
 {
 	const TArray<T> pointCurvatures = GetCurvatureOnPoints(Points);
 	return GetVertexImportanceOrdering(Points, pointCurvatures, CoincidentVertices, RestrictToLocalIndexRange);
@@ -1323,4 +1361,12 @@ void TTriangleMesh<T>::RemoveDegenerateElements()
 	}
 }
 
+#ifdef __clang__
+#if PLATFORM_WINDOWS
 template class Chaos::TTriangleMesh<float>;
+#else
+template class CHAOS_API Chaos::TTriangleMesh<float>;
+#endif
+#else
+template class Chaos::TTriangleMesh<float>;
+#endif

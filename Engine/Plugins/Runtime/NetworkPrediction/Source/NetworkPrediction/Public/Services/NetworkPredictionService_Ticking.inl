@@ -24,7 +24,7 @@ struct TTickUtil
 		// can only write to the output/pending state. (Input state is frozen now).
 		FNetworkPredictionStateView* View = Instance.Info.View;
 		View->bTickInProgress = true;
-		View->UpdateView(Step.Frame, &OutputFrameData.InputCmd, &OutputFrameData.SyncState, &OutputFrameData.AuxState);
+		View->UpdateView(Step.Frame, Step.TotalSimulationTime, &OutputFrameData.InputCmd, &OutputFrameData.SyncState, &OutputFrameData.AuxState);
 
 		// FIXME: aux. Copy it over and make a fake lazy writer for now
 		OutputFrameData.AuxState = InputFrameData.AuxState;
@@ -61,7 +61,7 @@ public:
 };
 
 template<typename InModelDef>
-class TLocalTickService : public ILocalTickService
+class TLocalTickServiceBase : public ILocalTickService
 {
 public:
 
@@ -71,7 +71,7 @@ public:
 	using SyncType = typename StateTypes::SyncType;
 	using AuxType = typename StateTypes::AuxType;
 
-	TLocalTickService(TModelDataStore<ModelDef>* InDataStore)
+	TLocalTickServiceBase(TModelDataStore<ModelDef>* InDataStore)
 		: DataStore(InDataStore) { }
 
 	void RegisterInstance(FNetworkPredictionID ID)
@@ -84,7 +84,7 @@ public:
 		InstancesToTick.Remove((int32)ID);
 	}
 
-	void Tick(const FNetSimTimeStep& Step, const FServiceTimeStep& ServiceStep) final override
+	void Tick(const FNetSimTimeStep& Step, const FServiceTimeStep& ServiceStep) override
 	{
 		Tick_Internal<false>(Step, ServiceStep);
 	}
@@ -104,7 +104,7 @@ public:
 		}
 	}
 
-private:
+protected:
 
 	template<bool bIsResim>
 	void Tick_Internal(const FNetSimTimeStep& Step, const FServiceTimeStep& ServiceStep)
@@ -181,6 +181,18 @@ private:
 	TSortedMap<int32, FInstance> InstancesToTick;
 	TModelDataStore<ModelDef>* DataStore;
 	
+};
+
+// To allow template specialization
+template<typename InModelDef>
+class TLocalTickService : public TLocalTickServiceBase<InModelDef>
+{
+public:
+	TLocalTickService(TModelDataStore<InModelDef>* InDataStore) 
+		: TLocalTickServiceBase<InModelDef>(InDataStore)
+	{
+
+	}
 };
 
 // -------------------------------------------------------------
