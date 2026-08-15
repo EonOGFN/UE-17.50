@@ -3,7 +3,7 @@ Unreal Engine for Fortnite (17.50)
 
 Unreal Engine 4.26.1 that aims to fully support 17.50 Fortnite!
 
-might work on 17.00 to 18.40 once complete, current status:
+might work with certain assets on versions 17.30 through 18.40 once complete, current status:
 
 - [X] Materials
 - [X] Textures
