@@ -763,29 +763,6 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 				++ObjectIndex;
 			}
 
-			// Add a track for translating the RootBone by the samples centers
-			// Each mesh has the same samples centers so use the first one
-			if (SamplesOffsets.IsSet() && CompressedMeshData.Num() > 0 && CompressedMeshData[0].CurveValues.Num() > 0)
-			{
-				const int32 NumSamples = CompressedMeshData[0].CurveValues[0].Num(); // We might have less bases than we have samples, so use the number of curve values here
-
-				FRawAnimSequenceTrack RootBoneTrack;
-				RootBoneTrack.PosKeys.Reserve(NumSamples);
-				RootBoneTrack.RotKeys.Add(FQuat::Identity); // At least one rotation key is required for the track to be valid
-
-				for (int32 SampleIndex = 0; SampleIndex < NumSamples; ++SampleIndex)
-				{
-					const FVector SampleOffset = SamplesOffsets.GetValue()[SampleIndex];
-					RootBoneTrack.PosKeys.Add(SampleOffset);
-				}
-
-				const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
-				const TArray<FMeshBoneInfo>& BonesInfo = RefSkeleton.GetRawRefBoneInfo();
-				Sequence->AddNewRawTrack(BonesInfo[0].Name, &RootBoneTrack);
-			}
-
-			Sequence->RawCurveData.RemoveRedundantKeys();
-
 			// Set recompute tangent flag on skeletal mesh sections
 			for (FSkelMeshSection& Section : LODModel.Sections)
 			{

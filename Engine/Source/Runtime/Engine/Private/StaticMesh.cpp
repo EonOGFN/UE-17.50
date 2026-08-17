@@ -1486,7 +1486,7 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 				&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
 				&& CVarKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
 			{
-				MinMobileLODIdx = Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Mobile")) - Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Desktop"));
+				MinMobileLODIdx = Owner->MinLOD.GetValueForPlatformIdentifiers(TEXT("Mobile")) - Owner->MinLOD.GetValueForPlatformIdentifiers(TEXT("Desktop"));
 				MinMobileLODIdx = FMath::Clamp(MinMobileLODIdx, 0, 255); // Will be cast to uint8 when applying LOD bias. Also, make sure it's not < 0,
 																		 // which can happen if the desktop min LOD is higher than the mobile setting
 			}
