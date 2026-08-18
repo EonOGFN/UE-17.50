@@ -5,15 +5,15 @@ Unreal Engine 4.26.1 that aims to fully support 17.50 Fortnite!
 
 might work with certain assets on versions 17.30 through 18.40 once complete, current status:
 
-- [X] Materials
+- [X] Materials (need to fix issues with performance mode)
 - [X] Textures
-- [ ] Skeletal Meshes
+- [X] Skeletal Meshes
 - [ ] Static Meshes
 - [X] Skeletons
 - [ ] Niagara
-- [ ] Animation Sequences/Montages
-- [ ] Animation Blueprints
-- [ ] Blueprints
+- [X] Animation Sequences/Montages
+- [X] Animation Blueprints
+- [X] Blueprints
 - [ ] Maps
 - [ ] Landscapes
 
