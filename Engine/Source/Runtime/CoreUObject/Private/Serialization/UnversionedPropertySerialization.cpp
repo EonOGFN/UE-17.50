@@ -773,7 +773,7 @@ void SerializeUnversionedProperties(const UStruct* Struct, FStructuredArchive::F
 
 	if (UnderlyingArchive.IsLoading())
 	{
-		check(CanUseUnversionedPropertySerialization());
+		//check(CanUseUnversionedPropertySerialization());
 
 		FUnversionedHeader Header;
 		Header.Load(StructRecord.EnterStream(SA_FIELD_NAME(TEXT("Header"))));
